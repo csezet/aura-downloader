@@ -1,10 +1,9 @@
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QVBoxLayout, QLabel, QSizePolicy
+    QFrame, QHBoxLayout, QVBoxLayout, QLabel, QSizePolicy, QGraphicsOpacityEffect
 )
-from PySide6.QtCore import Qt, QThread, Signal, QByteArray
+from PySide6.QtCore import Qt, QThread, Signal, QByteArray, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QPixmap, QImage, QPainter, QPainterPath
 import requests
-from ui.animations import FadeSlideHelper
 
 class ImageLoaderWorker(QThread):
     image_loaded = Signal(QPixmap)
@@ -33,7 +32,15 @@ class PreviewCard(QFrame):
         self.setFixedHeight(115)
         self.setVisible(False)
 
-        self._anim = FadeSlideHelper(self, target_height=115, duration=220)
+        # Smooth Opacity Fade
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+        self.opacity_effect.setOpacity(1.0)
+
+        self.fade_anim = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_anim.setDuration(220)
+        self.fade_anim.setEasingCurve(QEasingCurve.OutCubic)
+
         self._image_worker = None
 
         layout = QHBoxLayout(self)
@@ -105,7 +112,11 @@ class PreviewCard(QFrame):
         else:
             self.thumb_label.setText("NO PREVIEW")
 
-        self._anim.show_animated(115)
+        self.setVisible(True)
+        self.fade_anim.stop()
+        self.fade_anim.setStartValue(0.0)
+        self.fade_anim.setEndValue(1.0)
+        self.fade_anim.start()
 
     def _on_image_loaded(self, pixmap: QPixmap):
         if not pixmap.isNull():
@@ -125,6 +136,6 @@ class PreviewCard(QFrame):
             self.thumb_label.setText("")
 
     def clear(self):
-        self._anim.hide_animated()
+        self.setVisible(False)
         self.thumb_label.clear()
         self.thumb_label.setText("NO PREVIEW")

@@ -1,10 +1,10 @@
 import os
 import subprocess
 from PySide6.QtWidgets import (
-    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
+    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QGraphicsOpacityEffect
 )
-from PySide6.QtCore import Qt, Signal
-from ui.animations import FadeSlideHelper, SmoothProgressBar
+from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve
+from ui.animations import SmoothProgressBar
 
 class ProgressWidget(QFrame):
     cancelled = Signal()
@@ -12,14 +12,21 @@ class ProgressWidget(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setProperty("class", "GlassCard")
-        self.setMaximumHeight(0)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setFixedHeight(95)
         self.setVisible(False)
         self._current_file_path = None
 
-        self._anim = FadeSlideHelper(self, target_height=90, duration=240)
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+        self.opacity_effect.setOpacity(1.0)
+
+        self.fade_anim = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_anim.setDuration(200)
+        self.fade_anim.setEasingCurve(QEasingCurve.OutCubic)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setContentsMargins(14, 10, 14, 10)
         layout.setSpacing(8)
 
         # Header status and percent
@@ -86,7 +93,11 @@ class ProgressWidget(QFrame):
         self.open_file_btn.setVisible(False)
         self.open_dir_btn.setVisible(False)
         self._current_file_path = None
-        self._anim.show_animated(90)
+        self.setVisible(True)
+        self.fade_anim.stop()
+        self.fade_anim.setStartValue(0.0)
+        self.fade_anim.setEndValue(1.0)
+        self.fade_anim.start()
 
     def update_progress(self, data: dict):
         percent = data.get("percent", 0.0)
@@ -126,10 +137,10 @@ class ProgressWidget(QFrame):
         self.metrics_label.setText(message[:75] + ("..." if len(message) > 75 else ""))
         self.cancel_btn.setText("ЗАКРЫТЬ")
         self.cancel_btn.setVisible(True)
-        self._anim.show_animated(90)
+        self.setVisible(True)
 
     def hide_progress(self):
-        self._anim.hide_animated()
+        self.setVisible(False)
 
     def _open_file(self):
         if self._current_file_path and os.path.exists(self._current_file_path):

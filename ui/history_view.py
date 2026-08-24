@@ -1,11 +1,10 @@
 import os
 import subprocess
 from PySide6.QtWidgets import (
-    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QWidget
+    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QWidget, QSizePolicy, QGraphicsOpacityEffect
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve
 from core.history import history
-from ui.animations import FadeSlideHelper
 
 class HistoryItemWidget(QFrame):
     def __init__(self, item: dict, parent=None):
@@ -77,10 +76,17 @@ class HistoryDrawer(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setProperty("class", "GlassCard")
-        self.setMaximumHeight(0)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setFixedHeight(180)
         self.setVisible(False)
 
-        self._anim = FadeSlideHelper(self, target_height=180, duration=240)
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+        self.opacity_effect.setOpacity(1.0)
+
+        self.fade_anim = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_anim.setDuration(200)
+        self.fade_anim.setEasingCurve(QEasingCurve.OutCubic)
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(12, 10, 12, 10)
@@ -125,13 +131,17 @@ class HistoryDrawer(QFrame):
 
     def show_animated(self):
         self.refresh()
-        self._anim.show_animated(180)
+        self.setVisible(True)
+        self.fade_anim.stop()
+        self.fade_anim.setStartValue(0.0)
+        self.fade_anim.setEndValue(1.0)
+        self.fade_anim.start()
 
     def hide_animated(self):
-        self._anim.hide_animated()
+        self.setVisible(False)
 
     def toggle_animated(self):
-        if self.isVisible() and self.height() > 10:
+        if self.isVisible():
             self.hide_animated()
         else:
             self.show_animated()

@@ -3,7 +3,7 @@ import subprocess
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
     QPushButton, QLabel, QComboBox, QFrame, QApplication, QGraphicsDropShadowEffect,
-    QSizePolicy, QScrollArea
+    QSizePolicy
 )
 from PySide6.QtCore import Qt, QSize, QEvent
 from PySide6.QtGui import QColor
@@ -87,7 +87,7 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # 1. Custom Title Bar
+        # 1. Custom Title Bar (Clean, NO //)
         self.title_bar = CustomTitleBar(self, title="A U R A   D O W N L O A D E R", icon_path=self.icon_path)
         main_layout.addWidget(self.title_bar)
 
