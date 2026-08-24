@@ -17,7 +17,7 @@ def refresh_windows_icon_cache():
 
 def create_shortcuts():
     project_dir = Path(__file__).resolve().parent
-    main_script = project_dir / "main.py"
+    main_script = project_dir / "main.pyw"
     icon_path = project_dir / "assets" / "app_logo.ico"
 
     python_dir = Path(sys.executable).parent

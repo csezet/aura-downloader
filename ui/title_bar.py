@@ -1,9 +1,11 @@
+import os
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QPushButton, QSpacerItem, QSizePolicy
-from PySide6.QtCore import Qt, QPoint
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtCore import Qt, QPoint, QSize, QByteArray
+from PySide6.QtGui import QIcon, QPixmap, QPainter
+from PySide6.QtSvg import QSvgRenderer
 
 class CustomTitleBar(QWidget):
-    def __init__(self, parent=None, title="Aura Downloader", icon_path=None):
+    def __init__(self, parent=None, title="A U R A   D O W N L O A D E R", icon_path=None):
         super().__init__(parent)
         self.parent_window = parent
         self.setObjectName("TitleBar")
@@ -15,15 +17,28 @@ class CustomTitleBar(QWidget):
         layout.setContentsMargins(14, 4, 10, 4)
         layout.setSpacing(10)
 
-        # App Icon
+        # High Quality Crisp SVG / Pixmap Logo
         self.icon_label = QLabel()
-        if icon_path:
-            pixmap = QPixmap(icon_path).scaled(22, 22, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            self.icon_label.setPixmap(pixmap)
-        self.icon_label.setFixedSize(24, 24)
+        self.icon_label.setFixedSize(26, 26)
+        
+        svg_path = os.path.join(os.path.dirname(__file__), "..", "assets", "logo.svg")
+        if os.path.exists(svg_path):
+            renderer = QSvgRenderer(svg_path)
+            pixmap = QPixmap(52, 52)  # 2x High-DPI
+            pixmap.fill(Qt.transparent)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            renderer.render(painter)
+            painter.end()
+            self.icon_label.setPixmap(pixmap.scaled(26, 26, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        elif icon_path and os.path.exists(icon_path):
+            pixmap = QPixmap(icon_path).scaled(52, 52, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.icon_label.setPixmap(pixmap.scaled(26, 26, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
         layout.addWidget(self.icon_label)
 
-        # App Title & Subtitle
+        # App Title (Clean, NO //)
         self.title_label = QLabel(title)
         self.title_label.setObjectName("AppTitle")
         layout.addWidget(self.title_label)

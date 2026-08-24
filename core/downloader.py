@@ -234,19 +234,18 @@ class DownloadWorker(QThread):
             if cookies:
                 ydl_opts['cookiesfrombrowser'] = cookies
 
-            # Trimmer support (Download specific section)
+            # Trimmer section
             if trim_enabled and (trim_start or trim_end):
                 start_sec = parse_time_str(trim_start) or 0
                 end_sec = parse_time_str(trim_end)
-                if end_sec:
+                if end_sec is not None and end_sec > start_sec:
                     ydl_opts['download_ranges'] = yt_dlp.utils.download_range_func(None, [(start_sec, end_sec)])
-                else:
+                elif start_sec > 0:
                     ydl_opts['download_ranges'] = yt_dlp.utils.download_range_func(None, [(start_sec, float('inf'))])
 
             if mode == 'audio_only':
                 ydl_opts.update({
                     'format': 'bestaudio/best',
-                    'writethumbnail': True,
                     'postprocessors': [
                         {
                             'key': 'FFmpegExtractAudio',
@@ -256,10 +255,6 @@ class DownloadWorker(QThread):
                         {
                             'key': 'FFmpegMetadata',
                             'add_metadata': True,
-                        },
-                        {
-                            'key': 'EmbedThumbnail',
-                            'already_have_thumbnail': False,
                         }
                     ],
                 })
@@ -290,7 +285,6 @@ class DownloadWorker(QThread):
                     'postprocessors': [{'key': 'FFmpegMetadata', 'add_metadata': True}]
                 })
             else:
-                # Best quality (Video + Audio)
                 ydl_opts.update({
                     'format': 'bestvideo+bestaudio/best',
                     'merge_output_format': 'mp4',
@@ -315,33 +309,27 @@ class DownloadWorker(QThread):
                 if not os.path.exists(final_path) and self._last_filename and os.path.exists(self._last_filename):
                     final_path = self._last_filename
 
-                # Post processing: GIF conversion
+                # GIF post processing
                 if mode == 'gif' and os.path.exists(final_path):
-                    self.status_message.emit("Конвертация в анимированный GIF...")
+                    self.status_message.emit("Конвертация в GIF...")
                     gif_path = convert_to_gif(final_path)
-                    try:
-                        os.remove(final_path)
-                    except Exception:
-                        pass
+                    if gif_path != final_path:
+                        try:
+                            os.remove(final_path)
+                        except Exception:
+                            pass
                     final_path = gif_path
 
-                # Post processing: Discord 8MB / Telegram 50MB compression
+                # Discord compression post processing
                 elif mode == 'discord_8mb' and os.path.exists(final_path):
-                    self.status_message.emit("Сжатие под Discord (8 MB)...")
-                    compressed_path = compress_to_target_size(final_path, target_mb=7.8)
-                    try:
-                        os.remove(final_path)
-                    except Exception:
-                        pass
-                    final_path = compressed_path
-                elif mode == 'telegram_50mb' and os.path.exists(final_path):
-                    self.status_message.emit("Сжатие под Telegram (50 MB)...")
-                    compressed_path = compress_to_target_size(final_path, target_mb=48.0)
-                    try:
-                        os.remove(final_path)
-                    except Exception:
-                        pass
-                    final_path = compressed_path
+                    self.status_message.emit("Сжатие для Discord (< 8 МБ)...")
+                    comp_path = compress_to_target_size(final_path, target_mb=7.8)
+                    if comp_path != final_path:
+                        try:
+                            os.remove(final_path)
+                        except Exception:
+                            pass
+                    final_path = comp_path
 
                 file_size = os.path.getsize(final_path) if os.path.exists(final_path) else 0
                 title = info.get('title', Path(final_path).stem if final_path else 'Скачанный файл')
