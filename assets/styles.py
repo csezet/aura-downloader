@@ -38,7 +38,7 @@ def get_stylesheet(glass_opacity: float = 0.45) -> str:
         background-color: transparent;
         border: none;
         border-radius: 6px;
-        color: #71717A;
+        color: #A1A1AA;
         font-size: 13px;
         font-weight: bold;
         min-width: 32px;
@@ -49,28 +49,55 @@ def get_stylesheet(glass_opacity: float = 0.45) -> str:
         padding: 0px;
     }}
     #TitleButton:hover {{
-        background-color: #FFFFFF;
-        color: #000000;
+        background-color: rgba(255, 255, 255, 0.12);
+        color: #FFFFFF;
         margin: 0px;
         padding: 0px;
     }}
     #TitleButton:pressed {{
-        background-color: #A1A1AA;
-        color: #000000;
+        background-color: rgba(255, 255, 255, 0.20);
+        color: #FFFFFF;
         margin: 0px;
         padding: 0px;
     }}
     #CloseButton:hover {{
-        background-color: #EF4444;
+        background-color: #E81123;
         color: #FFFFFF;
         margin: 0px;
         padding: 0px;
     }}
     #CloseButton:pressed {{
-        background-color: #DC2626;
+        background-color: #B80D1A;
         color: #FFFFFF;
         margin: 0px;
         padding: 0px;
+    }}
+
+    /* Modern Dark ScrollBars */
+    QScrollBar:vertical {{
+        background: transparent;
+        width: 6px;
+        margin: 0px;
+        border-radius: 3px;
+    }}
+    QScrollBar::handle:vertical {{
+        background: rgba(255, 255, 255, 0.18);
+        min-height: 24px;
+        border-radius: 3px;
+    }}
+    QScrollBar::handle:vertical:hover {{
+        background: rgba(255, 255, 255, 0.35);
+    }}
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+        height: 0px;
+        background: none;
+    }}
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+        background: none;
+    }}
+    QScrollBar:horizontal {{
+        height: 0px;
+        background: transparent;
     }}
 
     /* Glass Cards & Containers */

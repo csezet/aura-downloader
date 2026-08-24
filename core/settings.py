@@ -6,7 +6,7 @@ DEFAULT_DOWNLOAD_DIR = str(Path.home() / "Downloads" / "AuraDownloads")
 
 DEFAULT_SETTINGS = {
     "download_dir": DEFAULT_DOWNLOAD_DIR,
-    "auto_paste": True,
+    "auto_paste": False,
     "quality_preset": "best",
     "audio_format": "mp3",
     "audio_quality": "320",
