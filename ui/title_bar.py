@@ -28,10 +28,6 @@ class CustomTitleBar(QWidget):
         self.title_label.setObjectName("AppTitle")
         layout.addWidget(self.title_label)
 
-        version_badge = QLabel("v1.0")
-        version_badge.setObjectName("Badge")
-        layout.addWidget(version_badge)
-
         layout.addSpacerItem(QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
 
         # Window Controls

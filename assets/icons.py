@@ -20,18 +20,17 @@ ICONS_SVG = {
     "play": '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3"/></svg>''',
 }
 
-_icon_cache = {}
+_pixmap_cache = {}
 
-def get_svg_icon(name: str, color: str = "#EDEDED", size: int = 20) -> QIcon:
+def get_svg_pixmap(name: str, color: str = "#EDEDED", size: int = 20) -> QPixmap:
     key = f"{name}_{color}_{size}"
-    if key in _icon_cache:
-        return _icon_cache[key]
+    if key in _pixmap_cache:
+        return _pixmap_cache[key]
 
     svg_data = ICONS_SVG.get(name)
     if not svg_data:
-        return QIcon()
+        return QPixmap(size, size)
 
-    # Inject stroke / fill color
     colored_svg = svg_data.replace('stroke="currentColor"', f'stroke="{color}"').replace('fill="currentColor"', f'fill="{color}"')
     
     renderer = QSvgRenderer(QByteArray(colored_svg.encode("utf-8")))
@@ -44,6 +43,30 @@ def get_svg_icon(name: str, color: str = "#EDEDED", size: int = 20) -> QIcon:
     renderer.render(painter)
     painter.end()
 
-    icon = QIcon(pixmap)
-    _icon_cache[key] = icon
+    _pixmap_cache[key] = pixmap
+    return pixmap
+
+def get_svg_icon(name: str, color: str = "#EDEDED", size: int = 20) -> QIcon:
+    return QIcon(get_svg_pixmap(name, color=color, size=size))
+
+def get_dual_state_icon(name: str, size: int = 16) -> QIcon:
+    """
+    Creates an adaptive QIcon:
+    - Normal / Inactive: White (#EDEDED)
+    - Active / Hovered / Checked: Pure Black (#000000)
+    """
+    icon = QIcon()
+    pix_white = get_svg_pixmap(name, color="#EDEDED", size=size)
+    pix_black = get_svg_pixmap(name, color="#000000", size=size)
+
+    # Inactive / Normal
+    icon.addPixmap(pix_white, QIcon.Mode.Normal, QIcon.State.Off)
+    # Hover / Active
+    icon.addPixmap(pix_black, QIcon.Mode.Active, QIcon.State.Off)
+    # Selected / Checked
+    icon.addPixmap(pix_black, QIcon.Mode.Normal, QIcon.State.On)
+    icon.addPixmap(pix_black, QIcon.Mode.Active, QIcon.State.On)
+    icon.addPixmap(pix_black, QIcon.Mode.Selected, QIcon.State.Off)
+    icon.addPixmap(pix_black, QIcon.Mode.Selected, QIcon.State.On)
+
     return icon

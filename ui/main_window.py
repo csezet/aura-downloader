@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
     QPushButton, QLabel, QComboBox, QFrame, QApplication, QGraphicsDropShadowEffect
 )
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, QEvent
 from PySide6.QtGui import QColor
 
 from core.settings import settings
@@ -12,7 +12,7 @@ from core.history import history
 from core.downloader import MetadataWorker, DownloadWorker
 from core.clipboard import ClipboardWatcher
 from assets.styles import get_stylesheet
-from assets.icons import get_svg_icon
+from assets.icons import get_svg_icon, get_dual_state_icon
 from ui.window_effects import apply_acrylic_effect
 from ui.title_bar import CustomTitleBar
 from ui.preview_card import PreviewCard
@@ -21,6 +21,28 @@ from ui.history_view import HistoryDrawer
 from ui.trim_widget import TrimWidget
 from ui.batch_dialog import BatchDialog
 from ui.settings_modal import SettingsModal
+
+class HoverIconFilter(QWidget):
+    """
+    Event filter to dynamically switch button icon color:
+    - Normal: White (#EDEDED)
+    - Hover: Black (#000000)
+    """
+    def __init__(self, button: QPushButton, icon_name: str, size: int = 16):
+        super().__init__(button)
+        self.button = button
+        self.icon_name = icon_name
+        self.size = size
+        self.button.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if obj == self.button:
+            if event.type() == QEvent.Enter:
+                self.button.setIcon(get_svg_icon(self.icon_name, color="#000000", size=self.size))
+            elif event.type() == QEvent.Leave:
+                self.button.setIcon(get_svg_icon(self.icon_name, color="#EDEDED", size=self.size))
+        return super().eventFilter(obj, event)
+
 
 class MainWindow(QMainWindow):
     def __init__(self, icon_path=None):
@@ -67,7 +89,7 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # 1. Custom Title Bar
+        # 1. Custom Title Bar (Clean, without v1.0 badge)
         self.title_bar = CustomTitleBar(self, title="A U R A // D O W N L O A D E R", icon_path=self.icon_path)
         main_layout.addWidget(self.title_bar)
 
@@ -89,34 +111,38 @@ class MainWindow(QMainWindow):
         input_bar.addWidget(self.url_input, stretch=1)
 
         self.paste_btn = QPushButton(" ВСТАВИТЬ")
-        self.paste_btn.setIcon(get_svg_icon("paste", size=16))
+        self.paste_btn.setIcon(get_svg_icon("paste", color="#EDEDED", size=16))
         self.paste_btn.setIconSize(QSize(16, 16))
         self.paste_btn.setProperty("class", "GlassButton")
         self.paste_btn.clicked.connect(self._paste_and_fetch)
+        self._h_paste = HoverIconFilter(self.paste_btn, "paste", 16)
         input_bar.addWidget(self.paste_btn)
 
         self.batch_btn = QPushButton(" ПАКЕТ")
-        self.batch_btn.setIcon(get_svg_icon("batch", size=16))
+        self.batch_btn.setIcon(get_svg_icon("batch", color="#EDEDED", size=16))
         self.batch_btn.setIconSize(QSize(16, 16))
         self.batch_btn.setProperty("class", "GlassButton")
         self.batch_btn.setToolTip("Пакетная загрузка списка ссылок")
         self.batch_btn.clicked.connect(self._open_batch_dialog)
+        self._h_batch = HoverIconFilter(self.batch_btn, "batch", 16)
         input_bar.addWidget(self.batch_btn)
 
         self.history_btn = QPushButton(" ИСТОРИЯ")
-        self.history_btn.setIcon(get_svg_icon("history", size=16))
+        self.history_btn.setIcon(get_svg_icon("history", color="#EDEDED", size=16))
         self.history_btn.setIconSize(QSize(16, 16))
         self.history_btn.setProperty("class", "GlassButton")
         self.history_btn.clicked.connect(self._toggle_history)
+        self._h_history = HoverIconFilter(self.history_btn, "history", 16)
         input_bar.addWidget(self.history_btn)
 
         self.settings_btn = QPushButton()
-        self.settings_btn.setIcon(get_svg_icon("settings", size=18))
+        self.settings_btn.setIcon(get_svg_icon("settings", color="#EDEDED", size=18))
         self.settings_btn.setIconSize(QSize(18, 18))
         self.settings_btn.setProperty("class", "GlassButton")
         self.settings_btn.setFixedSize(36, 36)
         self.settings_btn.setToolTip("Настройки")
         self.settings_btn.clicked.connect(self._open_settings)
+        self._h_settings = HoverIconFilter(self.settings_btn, "settings", 18)
         input_bar.addWidget(self.settings_btn)
 
         content_layout.addLayout(input_bar)
@@ -129,7 +155,7 @@ class MainWindow(QMainWindow):
         modes_layout.setSpacing(6)
 
         self.pill_best = QPushButton(" ЛУЧШЕЕ")
-        self.pill_best.setIcon(get_svg_icon("sparkles", size=14))
+        self.pill_best.setIcon(get_svg_icon("sparkles", color="#000000", size=14))
         self.pill_best.setIconSize(QSize(14, 14))
         self.pill_best.setProperty("class", "ModePill")
         self.pill_best.setProperty("active", "true")
@@ -137,7 +163,7 @@ class MainWindow(QMainWindow):
         modes_layout.addWidget(self.pill_best)
 
         self.pill_custom = QPushButton(" ВИДЕО")
-        self.pill_custom.setIcon(get_svg_icon("video", size=14))
+        self.pill_custom.setIcon(get_svg_icon("video", color="#EDEDED", size=14))
         self.pill_custom.setIconSize(QSize(14, 14))
         self.pill_custom.setProperty("class", "ModePill")
         self.pill_custom.clicked.connect(lambda: self._set_mode("custom"))
@@ -151,7 +177,7 @@ class MainWindow(QMainWindow):
         modes_layout.addWidget(self.res_combo)
 
         self.pill_audio = QPushButton(" АУДИО")
-        self.pill_audio.setIcon(get_svg_icon("music", size=14))
+        self.pill_audio.setIcon(get_svg_icon("music", color="#EDEDED", size=14))
         self.pill_audio.setIconSize(QSize(14, 14))
         self.pill_audio.setProperty("class", "ModePill")
         self.pill_audio.clicked.connect(lambda: self._set_mode("audio_only"))
@@ -164,7 +190,7 @@ class MainWindow(QMainWindow):
         modes_layout.addWidget(self.audio_fmt_combo)
 
         self.pill_gif = QPushButton(" GIF")
-        self.pill_gif.setIcon(get_svg_icon("gif", size=14))
+        self.pill_gif.setIcon(get_svg_icon("gif", color="#EDEDED", size=14))
         self.pill_gif.setIconSize(QSize(14, 14))
         self.pill_gif.setProperty("class", "ModePill")
         self.pill_gif.setToolTip("Конвертировать в анимированный GIF")
@@ -172,7 +198,7 @@ class MainWindow(QMainWindow):
         modes_layout.addWidget(self.pill_gif)
 
         self.pill_discord = QPushButton(" DISCORD")
-        self.pill_discord.setIcon(get_svg_icon("discord", size=14))
+        self.pill_discord.setIcon(get_svg_icon("discord", color="#EDEDED", size=14))
         self.pill_discord.setIconSize(QSize(14, 14))
         self.pill_discord.setProperty("class", "ModePill")
         self.pill_discord.setToolTip("Сжать видео для отправки в Discord (< 8 МБ)")
@@ -180,7 +206,7 @@ class MainWindow(QMainWindow):
         modes_layout.addWidget(self.pill_discord)
 
         self.pill_video_only = QPushButton(" БЕЗ ЗВУКА")
-        self.pill_video_only.setIcon(get_svg_icon("mute", size=14))
+        self.pill_video_only.setIcon(get_svg_icon("mute", color="#EDEDED", size=14))
         self.pill_video_only.setIconSize(QSize(14, 14))
         self.pill_video_only.setProperty("class", "ModePill")
         self.pill_video_only.setToolTip("Только видеоряд без аудио")
@@ -190,7 +216,7 @@ class MainWindow(QMainWindow):
         modes_layout.addStretch()
         content_layout.addWidget(modes_card)
 
-        # 4. Trimmer Widget (Timecode segment download)
+        # 4. Trimmer Widget
         self.trim_widget = TrimWidget()
         content_layout.addWidget(self.trim_widget)
 
@@ -209,7 +235,7 @@ class MainWindow(QMainWindow):
 
         content_layout.addStretch()
 
-        # 8. Main Action Button
+        # 8. Main Action Button (Always Black Icon on White Button)
         self.download_btn = QPushButton("  СКАЧАТЬ В ЛУЧШЕМ КАЧЕСТВЕ (MP4)")
         self.download_btn.setIcon(get_svg_icon("download", color="#000000", size=20))
         self.download_btn.setIconSize(QSize(20, 20))
@@ -228,11 +254,12 @@ class MainWindow(QMainWindow):
         footer_layout.addWidget(self.dest_lbl, stretch=1)
 
         open_folder_btn = QPushButton(" ОТКРЫТЬ ПАПКУ")
-        open_folder_btn.setIcon(get_svg_icon("folder", size=13))
+        open_folder_btn.setIcon(get_svg_icon("folder", color="#EDEDED", size=13))
         open_folder_btn.setIconSize(QSize(13, 13))
         open_folder_btn.setProperty("class", "GlassButton")
         open_folder_btn.setStyleSheet("font-size: 10px; padding: 3px 8px; font-weight: 700;")
         open_folder_btn.clicked.connect(self._open_dest_dir)
+        self._h_folder = HoverIconFilter(open_folder_btn, "folder", 13)
         footer_layout.addWidget(open_folder_btn)
 
         content_layout.addLayout(footer_layout)
@@ -296,29 +323,27 @@ class MainWindow(QMainWindow):
 
     def _set_mode(self, mode: str):
         self.current_mode = mode
-        pills = [self.pill_best, self.pill_custom, self.pill_audio, self.pill_gif, self.pill_discord, self.pill_video_only]
-        for p in pills:
-            p.setProperty("active", "false")
+        pill_map = [
+            (self.pill_best, "sparkles", "best"),
+            (self.pill_custom, "video", "custom"),
+            (self.pill_audio, "music", "audio_only"),
+            (self.pill_gif, "gif", "gif"),
+            (self.pill_discord, "discord", "discord_8mb"),
+            (self.pill_video_only, "mute", "video_only"),
+        ]
 
         self.res_combo.setVisible(mode in ["custom", "video_only"])
         self.audio_fmt_combo.setVisible(mode == "audio_only")
 
-        if mode == "best":
-            self.pill_best.setProperty("active", "true")
-        elif mode == "custom":
-            self.pill_custom.setProperty("active", "true")
-        elif mode == "audio_only":
-            self.pill_audio.setProperty("active", "true")
-        elif mode == "gif":
-            self.pill_gif.setProperty("active", "true")
-        elif mode == "discord_8mb":
-            self.pill_discord.setProperty("active", "true")
-        elif mode == "video_only":
-            self.pill_video_only.setProperty("active", "true")
-
-        for p in pills:
-            p.style().unpolish(p)
-            p.style().polish(p)
+        for pill, icon_name, p_mode in pill_map:
+            if p_mode == mode:
+                pill.setProperty("active", "true")
+                pill.setIcon(get_svg_icon(icon_name, color="#000000", size=14))
+            else:
+                pill.setProperty("active", "false")
+                pill.setIcon(get_svg_icon(icon_name, color="#EDEDED", size=14))
+            pill.style().unpolish(pill)
+            pill.style().polish(pill)
 
         self._update_download_button_text()
 
