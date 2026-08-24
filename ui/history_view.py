@@ -1,7 +1,7 @@
 import os
 import subprocess
 from PySide6.QtWidgets import (
-    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QWidget, QSizePolicy
+    QDialog, QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QWidget, QSizePolicy
 )
 from PySide6.QtCore import Qt
 from core.history import history
@@ -12,27 +12,28 @@ class HistoryItemWidget(QFrame):
         self.item = item
         self.setStyleSheet("""
             QFrame {
-                background-color: rgba(255, 255, 255, 0.02);
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                border-radius: 6px;
-                padding: 3px;
+                background-color: rgba(255, 255, 255, 0.04);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 8px;
+                padding: 4px;
             }
             QFrame:hover {
-                background-color: rgba(255, 255, 255, 0.06);
-                border: 1px solid rgba(255, 255, 255, 0.2);
+                background-color: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.25);
             }
         """)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(8)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(10)
 
         info_layout = QVBoxLayout()
-        info_layout.setSpacing(2)
+        info_layout.setSpacing(3)
 
         title = item.get("title", "Без названия")
         self.title_lbl = QLabel(title)
         self.title_lbl.setStyleSheet("font-size: 12px; font-weight: 700; color: #FFFFFF;")
+        self.title_lbl.setWordWrap(True)
         info_layout.addWidget(self.title_lbl)
 
         format_type = item.get("format_type", "MP4")
@@ -48,14 +49,14 @@ class HistoryItemWidget(QFrame):
 
         if file_exists:
             self.play_btn = QPushButton("▶")
-            self.play_btn.setFixedSize(26, 26)
+            self.play_btn.setFixedSize(28, 28)
             self.play_btn.setProperty("class", "GlassButton")
             self.play_btn.setToolTip("Воспроизвести")
             self.play_btn.clicked.connect(self._play)
             layout.addWidget(self.play_btn)
 
             self.folder_btn = QPushButton("📂")
-            self.folder_btn.setFixedSize(26, 26)
+            self.folder_btn.setFixedSize(28, 28)
             self.folder_btn.setProperty("class", "GlassButton")
             self.folder_btn.setToolTip("Показать в папке")
             self.folder_btn.clicked.connect(self._open_folder)
@@ -72,41 +73,58 @@ class HistoryItemWidget(QFrame):
             subprocess.run(['explorer', '/select,', os.path.normpath(fp)])
 
 
-class HistoryDrawer(QFrame):
+class HistoryModal(QDialog):
+    """
+    Independent sleek modal window for Download History
+    """
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setProperty("class", "GlassCard")
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.setFixedHeight(180)
-        self.setVisible(False)
+        self.setWindowTitle("История загрузок")
+        self.setFixedSize(540, 460)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+
+        self._drag_pos = None
 
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(12, 10, 12, 10)
-        main_layout.setSpacing(8)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+
+        # Opaque Container
+        container = QFrame()
+        container.setStyleSheet("""
+            QFrame {
+                background-color: #11141A;
+                border: 1px solid rgba(255, 255, 255, 0.18);
+                border-radius: 12px;
+            }
+        """)
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(18, 16, 18, 16)
+        container_layout.setSpacing(12)
 
         # Header
         header = QHBoxLayout()
         title = QLabel("📜 ИСТОРИЯ ЗАГРУЗОК")
-        title.setStyleSheet("font-size: 12px; font-weight: 800; color: #FFFFFF; letter-spacing: 0.8px;")
+        title.setStyleSheet("font-size: 14px; font-weight: 800; color: #FFFFFF; letter-spacing: 0.8px; background: transparent; border: none;")
         header.addWidget(title)
 
         header.addStretch()
 
         clear_btn = QPushButton("ОЧИСТИТЬ")
         clear_btn.setProperty("class", "GlassButton")
-        clear_btn.setStyleSheet("font-size: 10px; padding: 2px 6px; font-weight: 700;")
+        clear_btn.setStyleSheet("font-size: 11px; padding: 4px 10px; font-weight: 700;")
         clear_btn.clicked.connect(self._clear_history)
         header.addWidget(clear_btn)
 
         close_btn = QPushButton("✕")
         close_btn.setProperty("class", "GlassButton")
-        close_btn.setFixedSize(22, 22)
-        close_btn.clicked.connect(self.hide_animated)
+        close_btn.setFixedSize(26, 26)
+        close_btn.clicked.connect(self.close)
         header.addWidget(close_btn)
 
-        main_layout.addLayout(header)
+        container_layout.addLayout(header)
 
-        # Scroll Area
+        # Scroll Area for items
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setStyleSheet("background: transparent; border: none;")
@@ -115,26 +133,16 @@ class HistoryDrawer(QFrame):
         self.list_container.setStyleSheet("background: transparent;")
         self.list_layout = QVBoxLayout(self.list_container)
         self.list_layout.setContentsMargins(0, 0, 0, 0)
-        self.list_layout.setSpacing(4)
+        self.list_layout.setSpacing(6)
         self.list_layout.addStretch()
 
         self.scroll.setWidget(self.list_container)
-        main_layout.addWidget(self.scroll)
+        container_layout.addWidget(self.scroll)
 
-    def show_animated(self):
-        self.refresh()
-        self.setVisible(True)
+        main_layout.addWidget(container)
+        self._refresh()
 
-    def hide_animated(self):
-        self.setVisible(False)
-
-    def toggle_animated(self):
-        if self.isVisible():
-            self.hide_animated()
-        else:
-            self.show_animated()
-
-    def refresh(self):
+    def _refresh(self):
         while self.list_layout.count() > 1:
             child = self.list_layout.takeAt(0)
             if child.widget():
@@ -144,7 +152,7 @@ class HistoryDrawer(QFrame):
         if not items:
             empty_lbl = QLabel("История загрузок пуста")
             empty_lbl.setAlignment(Qt.AlignCenter)
-            empty_lbl.setStyleSheet("color: #71717A; font-size: 11px; padding: 16px; font-family: 'Consolas', monospace;")
+            empty_lbl.setStyleSheet("color: #71717A; font-size: 12px; padding: 30px; font-family: 'Consolas', monospace; background: transparent; border: none;")
             self.list_layout.insertWidget(0, empty_lbl)
         else:
             for item in items:
@@ -153,4 +161,14 @@ class HistoryDrawer(QFrame):
 
     def _clear_history(self):
         history.clear()
-        self.refresh()
+        self._refresh()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() == Qt.LeftButton and self._drag_pos is not None:
+            self.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()

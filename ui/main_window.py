@@ -18,7 +18,7 @@ from ui.window_effects import apply_acrylic_effect
 from ui.title_bar import CustomTitleBar
 from ui.preview_card import PreviewCard
 from ui.progress_widget import ProgressWidget
-from ui.history_view import HistoryDrawer
+from ui.history_view import HistoryModal
 from ui.trim_widget import TrimWidget
 from ui.batch_dialog import BatchDialog
 from ui.settings_modal import SettingsModal
@@ -46,9 +46,9 @@ class MainWindow(QMainWindow):
         self.icon_path = icon_path
         self.setWindowTitle("Aura Downloader")
         
-        # Adaptive, compact window size (fits all screens: 1080p, 2K, 4K, 720p laptops)
-        self.resize(750, 480)
-        self.setMinimumSize(620, 390)
+        # Optimal Window Dimensions (compact & spacious)
+        self.resize(760, 520)
+        self.setMinimumSize(640, 420)
 
         # Frameless and translucent window flags
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
@@ -94,7 +94,7 @@ class MainWindow(QMainWindow):
         # Content Area
         content_widget = QWidget()
         content_layout = QVBoxLayout(content_widget)
-        content_layout.setContentsMargins(18, 12, 18, 14)
+        content_layout.setContentsMargins(18, 14, 18, 16)
         content_layout.setSpacing(10)
 
         # 2. Upper Input Bar
@@ -129,7 +129,8 @@ class MainWindow(QMainWindow):
         self.history_btn.setIcon(get_svg_icon("history", color="#EDEDED", size=15))
         self.history_btn.setIconSize(QSize(15, 15))
         self.history_btn.setProperty("class", "GlassButton")
-        self.history_btn.clicked.connect(self._toggle_history)
+        self.history_btn.setToolTip("Открыть историю загрузок")
+        self.history_btn.clicked.connect(self._open_history_modal)
         self._h_history = HoverIconFilter(self.history_btn, "history", 15)
         input_bar.addWidget(self.history_btn)
 
@@ -218,30 +219,29 @@ class MainWindow(QMainWindow):
         self.trim_widget = TrimWidget()
         content_layout.addWidget(self.trim_widget)
 
-        # 5. Preview Card (Directly stacked under Trimmer)
+        # 5. Preview Card (shows on metadata loaded)
         self.preview_card = PreviewCard()
         content_layout.addWidget(self.preview_card)
 
-        # 6. Progress Widget (Directly stacked)
+        # 6. Progress Widget (shows on download)
         self.progress_widget = ProgressWidget()
         self.progress_widget.cancelled.connect(self._cancel_download)
         content_layout.addWidget(self.progress_widget)
 
-        # 7. History Drawer (Expandable in place)
-        self.history_drawer = HistoryDrawer()
-        content_layout.addWidget(self.history_drawer)
+        # Elastic Stretch pushes Download Button & Footer to the bottom by default!
+        content_layout.addStretch(1)
 
-        # 8. Main Action Button (Always attached right below active cards!)
+        # 7. Main Action Button (Anchored at the bottom!)
         self.download_btn = QPushButton("  СКАЧАТЬ В ЛУЧШЕМ КАЧЕСТВЕ (MP4)")
         self.download_btn.setIcon(get_svg_icon("download", color="#000000", size=18))
         self.download_btn.setIconSize(QSize(18, 18))
         self.download_btn.setObjectName("PrimaryButton")
-        self.download_btn.setMinimumHeight(42)
+        self.download_btn.setMinimumHeight(44)
         self.download_btn.setCursor(Qt.PointingHandCursor)
         self.download_btn.clicked.connect(self._start_download)
         content_layout.addWidget(self.download_btn)
 
-        # 9. Footer
+        # 8. Footer (Anchored at the very bottom!)
         footer_layout = QHBoxLayout()
         footer_layout.setContentsMargins(2, 0, 2, 0)
 
@@ -259,10 +259,6 @@ class MainWindow(QMainWindow):
         footer_layout.addWidget(open_folder_btn)
 
         content_layout.addLayout(footer_layout)
-
-        # Bottom stretch: expands ONLY at the very bottom on fullscreen, keeping controls unified!
-        content_layout.addStretch(1)
-
         main_layout.addWidget(content_widget)
 
     def _setup_clipboard(self):
@@ -385,7 +381,6 @@ class MainWindow(QMainWindow):
         }
 
         save_dir = settings.get("download_dir")
-        self.history_drawer.hide_animated()
         self.progress_widget.start_progress()
         self.download_btn.setEnabled(False)
 
@@ -432,8 +427,9 @@ class MainWindow(QMainWindow):
         dialog = BatchDialog(self)
         dialog.exec()
 
-    def _toggle_history(self):
-        self.history_drawer.toggle_animated()
+    def _open_history_modal(self):
+        modal = HistoryModal(self)
+        modal.exec()
 
     def _open_settings(self):
         dialog = SettingsModal(self)
