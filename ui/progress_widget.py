@@ -1,9 +1,9 @@
 import os
 import subprocess
 from PySide6.QtWidgets import (
-    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QGraphicsOpacityEffect
+    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy
 )
-from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve
+from PySide6.QtCore import Qt, Signal
 from ui.animations import SmoothProgressBar
 
 class ProgressWidget(QFrame):
@@ -16,14 +16,6 @@ class ProgressWidget(QFrame):
         self.setFixedHeight(95)
         self.setVisible(False)
         self._current_file_path = None
-
-        self.opacity_effect = QGraphicsOpacityEffect(self)
-        self.setGraphicsEffect(self.opacity_effect)
-        self.opacity_effect.setOpacity(1.0)
-
-        self.fade_anim = QPropertyAnimation(self.opacity_effect, b"opacity")
-        self.fade_anim.setDuration(200)
-        self.fade_anim.setEasingCurve(QEasingCurve.OutCubic)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 10, 14, 10)
@@ -94,10 +86,6 @@ class ProgressWidget(QFrame):
         self.open_dir_btn.setVisible(False)
         self._current_file_path = None
         self.setVisible(True)
-        self.fade_anim.stop()
-        self.fade_anim.setStartValue(0.0)
-        self.fade_anim.setEndValue(1.0)
-        self.fade_anim.start()
 
     def update_progress(self, data: dict):
         percent = data.get("percent", 0.0)

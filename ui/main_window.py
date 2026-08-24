@@ -227,13 +227,11 @@ class MainWindow(QMainWindow):
         self.progress_widget.cancelled.connect(self._cancel_download)
         content_layout.addWidget(self.progress_widget)
 
-        # 7. History Drawer (Expandable)
+        # 7. History Drawer (Expandable in place)
         self.history_drawer = HistoryDrawer()
         content_layout.addWidget(self.history_drawer)
 
-        content_layout.addStretch(1)
-
-        # 8. Main Action Button
+        # 8. Main Action Button (Always attached right below active cards!)
         self.download_btn = QPushButton("  СКАЧАТЬ В ЛУЧШЕМ КАЧЕСТВЕ (MP4)")
         self.download_btn.setIcon(get_svg_icon("download", color="#000000", size=18))
         self.download_btn.setIconSize(QSize(18, 18))
@@ -261,6 +259,10 @@ class MainWindow(QMainWindow):
         footer_layout.addWidget(open_folder_btn)
 
         content_layout.addLayout(footer_layout)
+
+        # Bottom stretch: expands ONLY at the very bottom on fullscreen, keeping controls unified!
+        content_layout.addStretch(1)
+
         main_layout.addWidget(content_widget)
 
     def _setup_clipboard(self):

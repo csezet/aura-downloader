@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QVBoxLayout, QLabel, QSizePolicy, QGraphicsOpacityEffect
+    QFrame, QHBoxLayout, QVBoxLayout, QLabel, QSizePolicy
 )
-from PySide6.QtCore import Qt, QThread, Signal, QByteArray, QPropertyAnimation, QEasingCurve
+from PySide6.QtCore import Qt, QThread, Signal, QByteArray
 from PySide6.QtGui import QPixmap, QImage, QPainter, QPainterPath
 import requests
 
@@ -31,15 +31,6 @@ class PreviewCard(QFrame):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setFixedHeight(115)
         self.setVisible(False)
-
-        # Smooth Opacity Fade
-        self.opacity_effect = QGraphicsOpacityEffect(self)
-        self.setGraphicsEffect(self.opacity_effect)
-        self.opacity_effect.setOpacity(1.0)
-
-        self.fade_anim = QPropertyAnimation(self.opacity_effect, b"opacity")
-        self.fade_anim.setDuration(220)
-        self.fade_anim.setEasingCurve(QEasingCurve.OutCubic)
 
         self._image_worker = None
 
@@ -113,10 +104,6 @@ class PreviewCard(QFrame):
             self.thumb_label.setText("NO PREVIEW")
 
         self.setVisible(True)
-        self.fade_anim.stop()
-        self.fade_anim.setStartValue(0.0)
-        self.fade_anim.setEndValue(1.0)
-        self.fade_anim.start()
 
     def _on_image_loaded(self, pixmap: QPixmap):
         if not pixmap.isNull():

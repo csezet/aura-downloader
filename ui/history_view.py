@@ -1,9 +1,9 @@
 import os
 import subprocess
 from PySide6.QtWidgets import (
-    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QWidget, QSizePolicy, QGraphicsOpacityEffect
+    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QWidget, QSizePolicy
 )
-from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve
+from PySide6.QtCore import Qt
 from core.history import history
 
 class HistoryItemWidget(QFrame):
@@ -80,14 +80,6 @@ class HistoryDrawer(QFrame):
         self.setFixedHeight(180)
         self.setVisible(False)
 
-        self.opacity_effect = QGraphicsOpacityEffect(self)
-        self.setGraphicsEffect(self.opacity_effect)
-        self.opacity_effect.setOpacity(1.0)
-
-        self.fade_anim = QPropertyAnimation(self.opacity_effect, b"opacity")
-        self.fade_anim.setDuration(200)
-        self.fade_anim.setEasingCurve(QEasingCurve.OutCubic)
-
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(12, 10, 12, 10)
         main_layout.setSpacing(8)
@@ -132,10 +124,6 @@ class HistoryDrawer(QFrame):
     def show_animated(self):
         self.refresh()
         self.setVisible(True)
-        self.fade_anim.stop()
-        self.fade_anim.setStartValue(0.0)
-        self.fade_anim.setEndValue(1.0)
-        self.fade_anim.start()
 
     def hide_animated(self):
         self.setVisible(False)
