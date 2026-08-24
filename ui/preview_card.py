@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QVBoxLayout, QLabel
+    QFrame, QHBoxLayout, QVBoxLayout, QLabel, QSizePolicy
 )
 from PySide6.QtCore import Qt, QThread, Signal, QByteArray
 from PySide6.QtGui import QPixmap, QImage, QPainter, QPainterPath
@@ -29,10 +29,11 @@ class PreviewCard(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setProperty("class", "GlassCard")
-        self.setMaximumHeight(0)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setFixedHeight(115)
         self.setVisible(False)
 
-        self._anim = FadeSlideHelper(self, target_height=115, duration=260)
+        self._anim = FadeSlideHelper(self, target_height=115, duration=220)
         self._image_worker = None
 
         layout = QHBoxLayout(self)
