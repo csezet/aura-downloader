@@ -13,24 +13,24 @@ class ProgressWidget(QFrame):
         super().__init__(parent)
         self.setProperty("class", "GlassCard")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.setFixedHeight(95)
+        self.setFixedHeight(88)
         self.setVisible(False)
         self._current_file_path = None
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 10, 14, 10)
-        layout.setSpacing(8)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(6)
 
         # Header status and percent
         header_layout = QHBoxLayout()
-        self.status_label = QLabel("ПОДГОТОВКА...")
-        self.status_label.setStyleSheet("font-size: 12px; font-weight: 800; color: #FFFFFF; letter-spacing: 0.5px;")
+        self.status_label = QLabel("⚡ СКАЧИВАНИЕ...")
+        self.status_label.setStyleSheet("font-size: 11px; font-weight: 800; color: #FFFFFF; letter-spacing: 0.5px;")
         header_layout.addWidget(self.status_label)
 
         header_layout.addStretch()
 
         self.percent_label = QLabel("0.0%")
-        self.percent_label.setStyleSheet("font-size: 13px; font-weight: 800; color: #FFFFFF; font-family: 'Consolas', monospace;")
+        self.percent_label.setStyleSheet("font-size: 12px; font-weight: 800; color: #FFFFFF; font-family: 'Consolas', monospace;")
         header_layout.addWidget(self.percent_label)
 
         layout.addLayout(header_layout)
@@ -39,15 +39,16 @@ class ProgressWidget(QFrame):
         self.progress_bar = SmoothProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
+        self.progress_bar.setFixedHeight(8)
         self.progress_bar.setTextVisible(False)
         layout.addWidget(self.progress_bar)
 
         # Bottom metrics & buttons
         bottom_layout = QHBoxLayout()
-        bottom_layout.setSpacing(10)
+        bottom_layout.setSpacing(8)
 
         self.metrics_label = QLabel("SPEED: -- MB/S // SIZE: 0 B / 0 B // ETA: --:--")
-        self.metrics_label.setStyleSheet("font-size: 11px; color: #A1A1AA; font-family: 'Consolas', monospace;")
+        self.metrics_label.setStyleSheet("font-size: 10px; color: #A1A1AA; font-family: 'Consolas', monospace;")
         bottom_layout.addWidget(self.metrics_label)
 
         bottom_layout.addStretch()
@@ -55,32 +56,33 @@ class ProgressWidget(QFrame):
         # Action Buttons
         self.cancel_btn = QPushButton("✕ ОТМЕНА")
         self.cancel_btn.setProperty("class", "GlassButton")
-        self.cancel_btn.setStyleSheet("color: #EF4444; padding: 3px 8px; font-size: 11px; font-weight: 700;")
+        self.cancel_btn.setStyleSheet("color: #EF4444; padding: 2px 8px; font-size: 10px; font-weight: 700;")
         self.cancel_btn.clicked.connect(self.cancelled.emit)
         bottom_layout.addWidget(self.cancel_btn)
 
         self.open_file_btn = QPushButton("▶ ОТКРЫТЬ")
         self.open_file_btn.setProperty("class", "GlassButton")
-        self.open_file_btn.setStyleSheet("padding: 3px 8px; font-size: 11px; font-weight: 700;")
+        self.open_file_btn.setStyleSheet("padding: 2px 8px; font-size: 10px; font-weight: 700;")
         self.open_file_btn.clicked.connect(self._open_file)
         self.open_file_btn.setVisible(False)
         bottom_layout.addWidget(self.open_file_btn)
 
         self.open_dir_btn = QPushButton("📂 ПАПКА")
         self.open_dir_btn.setProperty("class", "GlassButton")
-        self.open_dir_btn.setStyleSheet("padding: 3px 8px; font-size: 11px; font-weight: 700;")
+        self.open_dir_btn.setStyleSheet("padding: 2px 8px; font-size: 10px; font-weight: 700;")
         self.open_dir_btn.clicked.connect(self._open_dir)
         self.open_dir_btn.setVisible(False)
         bottom_layout.addWidget(self.open_dir_btn)
 
         layout.addLayout(bottom_layout)
 
-    def start_progress(self, message="ЗАПУСК ЗАГРУЗКИ..."):
+    def start_progress(self, message="⚡ СКАЧИВАНИЕ..."):
         self.progress_bar.setValue(0)
         self.percent_label.setText("0.0%")
         self.status_label.setText(message)
-        self.status_label.setStyleSheet("font-size: 12px; font-weight: 800; color: #FFFFFF;")
+        self.status_label.setStyleSheet("font-size: 11px; font-weight: 800; color: #FFFFFF;")
         self.metrics_label.setText("SPEED: -- MB/S // SIZE: 0 B / 0 B // ETA: --:--")
+        self.cancel_btn.setText("✕ ОТМЕНА")
         self.cancel_btn.setVisible(True)
         self.open_file_btn.setVisible(False)
         self.open_dir_btn.setVisible(False)
@@ -109,7 +111,7 @@ class ProgressWidget(QFrame):
         self.progress_bar.setSmoothValue(100)
         self.percent_label.setText("100%")
         self.status_label.setText("✓ ЗАВЕРШЕНО УСПЕШНО")
-        self.status_label.setStyleSheet("font-size: 12px; font-weight: 800; color: #FFFFFF;")
+        self.status_label.setStyleSheet("font-size: 11px; font-weight: 800; color: #10B981;")
         
         file_size_str = result.get("file_size_str", "")
         self.metrics_label.setText(f"ИТОГОВЫЙ РАЗМЕР: {file_size_str}")
@@ -121,8 +123,8 @@ class ProgressWidget(QFrame):
 
     def set_error(self, message: str):
         self.status_label.setText("✕ ОШИБКА ЗАГРУЗКИ")
-        self.status_label.setStyleSheet("font-size: 12px; font-weight: 800; color: #EF4444;")
-        self.metrics_label.setText(message[:75] + ("..." if len(message) > 75 else ""))
+        self.status_label.setStyleSheet("font-size: 11px; font-weight: 800; color: #EF4444;")
+        self.metrics_label.setText(message[:70] + ("..." if len(message) > 70 else ""))
         self.cancel_btn.setText("ЗАКРЫТЬ")
         self.cancel_btn.setVisible(True)
         self.setVisible(True)

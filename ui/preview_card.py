@@ -29,25 +29,25 @@ class PreviewCard(QFrame):
         super().__init__(parent)
         self.setProperty("class", "GlassCard")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.setFixedHeight(115)
+        self.setFixedHeight(100)
         self.setVisible(False)
 
         self._image_worker = None
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 10, 12, 10)
-        layout.setSpacing(14)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(12)
 
-        # Thumbnail Label
+        # Thumbnail Label (115x72)
         self.thumb_label = QLabel()
-        self.thumb_label.setFixedSize(130, 85)
+        self.thumb_label.setFixedSize(115, 72)
         self.thumb_label.setAlignment(Qt.AlignCenter)
         self.thumb_label.setStyleSheet("""
             background-color: rgba(0, 0, 0, 0.6);
             border: 1px solid rgba(255, 255, 255, 0.15);
             border-radius: 6px;
             color: #71717A;
-            font-size: 11px;
+            font-size: 10px;
             font-family: 'Consolas', monospace;
         """)
         self.thumb_label.setText("NO PREVIEW")
@@ -55,12 +55,12 @@ class PreviewCard(QFrame):
 
         # Info Layout
         info_layout = QVBoxLayout()
-        info_layout.setContentsMargins(0, 2, 0, 2)
-        info_layout.setSpacing(5)
+        info_layout.setContentsMargins(0, 0, 0, 0)
+        info_layout.setSpacing(4)
 
         # Top line: Badges
         badge_layout = QHBoxLayout()
-        badge_layout.setSpacing(8)
+        badge_layout.setSpacing(6)
         
         self.platform_badge = QLabel("YOUTUBE")
         self.platform_badge.setObjectName("PlatformBadge")
@@ -75,14 +75,14 @@ class PreviewCard(QFrame):
 
         # Title
         self.title_label = QLabel("Название видео")
-        self.title_label.setStyleSheet("font-size: 13px; font-weight: 700; color: #FFFFFF;")
+        self.title_label.setStyleSheet("font-size: 12px; font-weight: 700; color: #FFFFFF;")
         self.title_label.setWordWrap(True)
-        self.title_label.setMaximumHeight(38)
+        self.title_label.setMaximumHeight(34)
         info_layout.addWidget(self.title_label)
 
         # Author / Channel
         self.author_label = QLabel("Автор канала")
-        self.author_label.setStyleSheet("font-size: 11px; color: #A1A1AA;")
+        self.author_label.setStyleSheet("font-size: 10px; color: #A1A1AA;")
         info_layout.addWidget(self.author_label)
 
         info_layout.addStretch()
@@ -107,14 +107,14 @@ class PreviewCard(QFrame):
 
     def _on_image_loaded(self, pixmap: QPixmap):
         if not pixmap.isNull():
-            scaled = pixmap.scaled(130, 85, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-            target = QPixmap(130, 85)
+            scaled = pixmap.scaled(115, 72, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+            target = QPixmap(115, 72)
             target.fill(Qt.transparent)
 
             painter = QPainter(target)
             painter.setRenderHint(QPainter.Antialiasing, True)
             path = QPainterPath()
-            path.addRoundedRect(0, 0, 130, 85, 6, 6)
+            path.addRoundedRect(0, 0, 115, 72, 6, 6)
             painter.setClipPath(path)
             painter.drawPixmap(0, 0, scaled)
             painter.end()

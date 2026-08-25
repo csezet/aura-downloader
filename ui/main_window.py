@@ -46,9 +46,9 @@ class MainWindow(QMainWindow):
         self.icon_path = icon_path
         self.setWindowTitle("Aura Downloader")
         
-        # Optimal Window Dimensions (compact & spacious)
-        self.resize(760, 520)
-        self.setMinimumSize(640, 420)
+        # Generous, well-spaced window dimensions to prevent any clipping/overlap
+        self.resize(760, 560)
+        self.setMinimumSize(660, 500)
 
         # Frameless and translucent window flags
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
@@ -266,7 +266,7 @@ class MainWindow(QMainWindow):
         self.clipboard_watcher.url_detected.connect(self._on_clipboard_url)
 
     def _on_clipboard_url(self, url: str):
-        if settings.get("auto_paste", True) and not self.download_worker:
+        if settings.get("auto_paste", False) and not self.download_worker:
             self.url_input.setText(url)
             self._fetch_metadata()
 
