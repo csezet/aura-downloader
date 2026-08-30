@@ -10,6 +10,31 @@ def get_startupinfo():
     startupinfo.wShowWindow = subprocess.SW_HIDE
     return startupinfo
 
+def get_video_dimensions(input_path: str) -> tuple:
+    try:
+        cmd = [
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "csv=s=x:p=0",
+            input_path
+        ]
+        res = subprocess.run(
+            cmd,
+            startupinfo=get_startupinfo(),
+            creationflags=CREATE_NO_WINDOW,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True
+        )
+        parts = res.stdout.strip().split('x')
+        if len(parts) == 2:
+            return int(parts[0]), int(parts[1])
+    except Exception:
+        pass
+    return 1920, 1080
+
 def convert_to_gif(input_path: str, output_path: str = None, fps: int = 15, width: int = 480) -> str:
     if not input_path or not os.path.exists(input_path):
         return input_path
@@ -101,4 +126,74 @@ def compress_to_target_size(input_path: str, target_mb: float = 8.0, output_path
         return output_path
     except Exception as e:
         print(f"Video compression error: {e}")
+        return input_path
+
+def crop_video(input_path: str, crop_params: dict, output_path: str = None) -> str:
+    if not input_path or not os.path.exists(input_path) or not crop_params:
+        return input_path
+
+    if not output_path:
+        base, ext = os.path.splitext(input_path)
+        output_path = f"{base}_crop{ext or '.mp4'}"
+
+    try:
+        real_w, real_h = get_video_dimensions(input_path)
+        
+        if 'x_norm' in crop_params:
+            x_norm = max(0.0, min(1.0, float(crop_params.get('x_norm', 0.0))))
+            y_norm = max(0.0, min(1.0, float(crop_params.get('y_norm', 0.0))))
+            w_norm = max(0.05, min(1.0, float(crop_params.get('w_norm', 1.0))))
+            h_norm = max(0.05, min(1.0, float(crop_params.get('h_norm', 1.0))))
+
+            crop_w = int(real_w * w_norm)
+            crop_h = int(real_h * h_norm)
+            crop_x = int(real_w * x_norm)
+            crop_y = int(real_h * y_norm)
+        else:
+            crop_w = int(crop_params.get('w', real_w))
+            crop_h = int(crop_params.get('h', real_h))
+            crop_x = int(crop_params.get('x', 0))
+            crop_y = int(crop_params.get('y', 0))
+
+        # Enforce even dimensions for H.264/H.265/VP9 codecs
+        crop_w = max(2, crop_w - (crop_w % 2))
+        crop_h = max(2, crop_h - (crop_h % 2))
+        crop_x = crop_x - (crop_x % 2)
+        crop_y = crop_y - (crop_y % 2)
+
+        # Clamp within video boundaries
+        if crop_x + crop_w > real_w:
+            crop_w = max(2, real_w - crop_x - ((real_w - crop_x) % 2))
+        if crop_y + crop_h > real_h:
+            crop_h = max(2, real_h - crop_y - ((real_h - crop_y) % 2))
+
+        crop_filter = f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y}"
+        
+        is_gif = input_path.lower().endswith('.gif')
+        if is_gif:
+            filter_complex = f"[0:v] {crop_filter},split [a][b];[a] palettegen [p];[b][p] paletteuse"
+            cmd = ["ffmpeg", "-y", "-i", input_path, "-vf", filter_complex, output_path]
+        else:
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", input_path,
+                "-vf", crop_filter,
+                "-c:v", "libx264",
+                "-crf", "18",
+                "-preset", "faster",
+                "-c:a", "copy",
+                output_path
+            ]
+
+        subprocess.run(
+            cmd,
+            startupinfo=get_startupinfo(),
+            creationflags=CREATE_NO_WINDOW,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True
+        )
+        return output_path
+    except Exception as e:
+        print(f"Video crop error: {e}")
         return input_path
