@@ -4,9 +4,9 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
     QPushButton, QLabel, QComboBox, QFrame, QApplication, QGraphicsDropShadowEffect,
-    QSizePolicy, QFileDialog
+    QGraphicsOpacityEffect, QSizePolicy, QFileDialog
 )
-from PySide6.QtCore import Qt, QSize, QEvent
+from PySide6.QtCore import Qt, QSize, QEvent, QPropertyAnimation
 from PySide6.QtGui import QColor, QPixmap
 
 from core.settings import settings
@@ -44,6 +44,65 @@ class HoverIconFilter(QWidget):
         return super().eventFilter(obj, event)
 
 
+class DropOverlay(QFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setStyleSheet("""
+            DropOverlay {
+                background-color: rgba(10, 14, 20, 0.92);
+                border: 2px dashed rgba(255, 255, 255, 0.85);
+                border-radius: 12px;
+            }
+        """)
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignCenter)
+        layout.setSpacing(12)
+
+        icon_lbl = QLabel()
+        icon_lbl.setPixmap(get_svg_icon("upload", color="#FFFFFF", size=44).pixmap(44, 44))
+        icon_lbl.setAlignment(Qt.AlignCenter)
+        icon_lbl.setStyleSheet("background: transparent; border: none;")
+        layout.addWidget(icon_lbl)
+
+        title = QLabel("ОТПУСТИТЕ ФАЙЛ ДЛЯ ОБРАБОТКИ")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("color: #FFFFFF; font-size: 15px; font-weight: 800; letter-spacing: 1px; background: transparent; border: none;")
+        layout.addWidget(title)
+
+        subtitle = QLabel("MP4 • MOV • MKV • WEBM • AVI • FLV • WMV")
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setStyleSheet("color: #A1A1AA; font-size: 11px; font-weight: 700; font-family: 'Consolas', monospace; background: transparent; border: none;")
+        layout.addWidget(subtitle)
+
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+        self.anim = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.anim.setDuration(160)
+        self.setVisible(False)
+
+    def show_animated(self):
+        if self.parent():
+            self.resize(self.parent().size())
+            self.raise_()
+        self.setVisible(True)
+        self.anim.stop()
+        self.anim.setStartValue(0.0)
+        self.anim.setEndValue(1.0)
+        self.anim.start()
+
+    def hide_animated(self):
+        self.anim.stop()
+        self.anim.setStartValue(1.0)
+        self.anim.setEndValue(0.0)
+        self.anim.finished.connect(self._on_hide_done)
+        self.anim.start()
+
+    def _on_hide_done(self):
+        if self.opacity_effect.opacity() <= 0.05:
+            self.setVisible(False)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, icon_path=None):
         super().__init__()
@@ -73,27 +132,29 @@ class MainWindow(QMainWindow):
         hwnd = int(self.winId())
         apply_acrylic_effect(hwnd)
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'drop_overlay') and self.drop_overlay.isVisible():
+            self.drop_overlay.resize(self.central_container.size())
+
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
                 file_path = url.toLocalFile()
                 if is_video_file(file_path):
                     event.acceptProposedAction()
-                    self.central_container.setStyleSheet("""
-                        #CentralWidget {
-                            border: 2px dashed #FFFFFF;
-                            background-color: rgba(20, 24, 32, 0.85);
-                        }
-                    """)
+                    self.drop_overlay.show_animated()
                     return
         event.ignore()
 
     def dragLeaveEvent(self, event):
-        self._apply_theme()
+        if hasattr(self, 'drop_overlay'):
+            self.drop_overlay.hide_animated()
         event.accept()
 
     def dropEvent(self, event):
-        self._apply_theme()
+        if hasattr(self, 'drop_overlay'):
+            self.drop_overlay.hide_animated()
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
                 file_path = url.toLocalFile()
@@ -315,6 +376,9 @@ class MainWindow(QMainWindow):
 
         content_layout.addLayout(footer_layout)
         main_layout.addWidget(content_widget)
+
+        # 9. Animated Drop Overlay
+        self.drop_overlay = DropOverlay(self.central_container)
 
     def _setup_clipboard(self):
         self.clipboard_watcher = ClipboardWatcher(self)
