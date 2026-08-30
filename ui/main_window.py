@@ -296,13 +296,15 @@ class MainWindow(QMainWindow):
         sw = 1920
         sh = 1080
         if self.current_video_info:
-            formats = self.current_video_info.get("available_res", [])
-            if formats and "4K" in formats[0]:
-                sw, sh = 3840, 2160
-            elif formats and "2K" in formats[0]:
-                sw, sh = 2560, 1440
-            elif formats and "720p" in formats[0] and len(formats) == 1:
-                sw, sh = 1280, 720
+            w = self.current_video_info.get("width")
+            h = self.current_video_info.get("height")
+            if w and h and w > 0 and h > 0:
+                sw, sh = w, h
+            elif pixmap and not pixmap.isNull():
+                sw, sh = pixmap.width(), pixmap.height()
+        elif pixmap and not pixmap.isNull():
+            sw, sh = pixmap.width(), pixmap.height()
+
         self.crop_widget.set_source_info(pixmap, width=sw, height=sh)
 
     def _fetch_metadata(self):
@@ -325,6 +327,10 @@ class MainWindow(QMainWindow):
         self.current_video_info = info
         self.preview_card.set_data(info)
         
+        w = info.get("width", 1920)
+        h = info.get("height", 1080)
+        self.crop_widget.set_source_info(self.preview_card.get_pixmap(), width=w, height=h)
+
         if info.get("duration"):
             self.trim_widget.set_duration_hint(info["duration"])
 
