@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QComboBox, QPushButton, QWidget
 )
-from PySide6.QtCore import Qt, Signal, QThread
+from PySide6.QtCore import Qt, Signal, QThread, QSize
 from PySide6.QtGui import QIcon
 from assets.icons import get_svg_icon
 from ui.toggle_switch import ToggleSwitch
@@ -51,8 +51,10 @@ class SmoothWidget(QFrame):
         self.fps_combo.setEnabled(False)
         layout.addWidget(self.fps_combo)
 
-        # AI Engine Badge / Button
-        self.engine_btn = QPushButton("⚡ AI RIFE (Vulkan)")
+        # AI Engine Badge / Button with sleek SVG icon
+        self.engine_btn = QPushButton(" AI RIFE (Vulkan)")
+        self.engine_btn.setIcon(get_svg_icon("zap", color="#A1A1AA", size=12))
+        self.engine_btn.setIconSize(QSize(12, 12))
         self.engine_btn.setProperty("class", "GlassButton")
         self.engine_btn.setStyleSheet("""
             font-size: 10px;
@@ -76,7 +78,8 @@ class SmoothWidget(QFrame):
 
     def _update_engine_ui(self):
         if is_rife_available():
-            self.engine_btn.setText("⚡ AI RIFE (Vulkan)")
+            self.engine_btn.setText(" AI RIFE (Vulkan)")
+            self.engine_btn.setIcon(get_svg_icon("zap", color="#22C55E", size=12))
             self.engine_btn.setStyleSheet("""
                 font-size: 10px;
                 font-weight: 700;
@@ -87,7 +90,8 @@ class SmoothWidget(QFrame):
                 background: rgba(34, 197, 94, 0.1);
             """)
         else:
-            self.engine_btn.setText("⚙️ FFmpeg MCI")
+            self.engine_btn.setText(" FFmpeg MCI")
+            self.engine_btn.setIcon(get_svg_icon("cpu", color="#A1A1AA", size=12))
             self.engine_btn.setStyleSheet("""
                 font-size: 10px;
                 font-weight: 700;
