@@ -20,6 +20,7 @@ from ui.preview_card import PreviewCard
 from ui.progress_widget import ProgressWidget
 from ui.history_view import HistoryModal
 from ui.trim_widget import TrimWidget
+from ui.crop_widget import CropWidget
 from ui.batch_dialog import BatchDialog
 from ui.settings_modal import SettingsModal
 
@@ -47,8 +48,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Aura Downloader")
         
         # Generous, well-spaced window dimensions to prevent any clipping/overlap
-        self.resize(760, 560)
-        self.setMinimumSize(660, 500)
+        self.resize(760, 610)
+        self.setMinimumSize(660, 520)
 
         # Frameless and translucent window flags
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
@@ -215,12 +216,21 @@ class MainWindow(QMainWindow):
         modes_layout.addStretch()
         content_layout.addWidget(modes_card)
 
-        # 4. Trimmer Widget
+        # 4. Trimmer & Crop Widgets
+        tools_layout = QVBoxLayout()
+        tools_layout.setSpacing(6)
+
         self.trim_widget = TrimWidget()
-        content_layout.addWidget(self.trim_widget)
+        tools_layout.addWidget(self.trim_widget)
+
+        self.crop_widget = CropWidget()
+        tools_layout.addWidget(self.crop_widget)
+
+        content_layout.addLayout(tools_layout)
 
         # 5. Preview Card (shows on metadata loaded)
         self.preview_card = PreviewCard()
+        self.preview_card.image_ready.connect(self._on_preview_image_ready)
         content_layout.addWidget(self.preview_card)
 
         # 6. Progress Widget (shows on download)
@@ -282,6 +292,19 @@ class MainWindow(QMainWindow):
             self.preview_card.clear()
             self.current_video_info = None
 
+    def _on_preview_image_ready(self, pixmap):
+        sw = 1920
+        sh = 1080
+        if self.current_video_info:
+            formats = self.current_video_info.get("available_res", [])
+            if formats and "4K" in formats[0]:
+                sw, sh = 3840, 2160
+            elif formats and "2K" in formats[0]:
+                sw, sh = 2560, 1440
+            elif formats and "720p" in formats[0] and len(formats) == 1:
+                sw, sh = 1280, 720
+        self.crop_widget.set_source_info(pixmap, width=sw, height=sh)
+
     def _fetch_metadata(self):
         url = self.url_input.text().strip()
         if not url:
@@ -312,11 +335,6 @@ class MainWindow(QMainWindow):
         self.download_btn.setEnabled(True)
         self._update_download_button_text()
 
-    def _on_metadata_error(self, err_msg: str):
-        self.download_btn.setEnabled(True)
-        self._update_download_button_text()
-        self.progress_widget.set_error(err_msg)
-
     def _set_mode(self, mode: str):
         self.current_mode = mode
         pill_map = [
@@ -330,6 +348,9 @@ class MainWindow(QMainWindow):
 
         self.res_combo.setVisible(mode in ["custom", "video_only"])
         self.audio_fmt_combo.setVisible(mode == "audio_only")
+
+        # Disable crop for audio_only
+        self.crop_widget.setVisible(mode != "audio_only")
 
         for pill, icon_name, p_mode in pill_map:
             if p_mode == mode:
@@ -377,7 +398,9 @@ class MainWindow(QMainWindow):
             'audio_q': '320',
             'trim_enabled': self.trim_widget.is_trim_enabled(),
             'trim_start': trim_start,
-            'trim_end': trim_end
+            'trim_end': trim_end,
+            'crop_enabled': self.crop_widget.is_crop_enabled(),
+            'crop_params': self.crop_widget.get_crop_params()
         }
 
         save_dir = settings.get("download_dir")
