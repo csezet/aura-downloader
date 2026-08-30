@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QPushButton, QWidget
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QIcon, QPixmap
 from assets.icons import get_svg_icon
 from ui.toggle_switch import ToggleSwitch
@@ -39,8 +39,10 @@ class CropWidget(QFrame):
         self.title_lbl.setStyleSheet("color: #EDEDED; font-size: 12px; font-weight: 700;")
         layout.addWidget(self.title_lbl)
 
-        # Edit Button
-        self.edit_btn = QPushButton(" 📐 НАСТРОИТЬ ОБЛАСТЬ ")
+        # Edit Button with sleek vector icon
+        self.edit_btn = QPushButton(" НАСТРОИТЬ ОБЛАСТЬ")
+        self.edit_btn.setIcon(get_svg_icon("crop", color="#EDEDED", size=13))
+        self.edit_btn.setIconSize(QSize(13, 13))
         self.edit_btn.setProperty("class", "GlassButton")
         self.edit_btn.setStyleSheet("""
             font-size: 11px;
