@@ -26,8 +26,8 @@ class CropCanvas(QWidget):
         super().__init__(parent)
         self.setMouseTracking(True)
         self.pixmap = None
-        self.aspect_ratio = None  # None = Free, 1.0 = 1:1, 9/16 = 9:16, etc.
-        self.crop_norm = QRectF(0.1, 0.1, 0.8, 0.8)  # Normalized (0.0 to 1.0)
+        self.aspect_ratio = None  # None = Free (arbitrary crop)
+        self.crop_norm = QRectF(0.0, 0.0, 1.0, 1.0)  # Starts with 100% full original frame
         self.active_handle = HANDLE_NONE
         self.drag_start_pos = None
         self.drag_start_rect = None
@@ -44,19 +44,17 @@ class CropCanvas(QWidget):
     def set_aspect_ratio(self, ratio: float):
         self.aspect_ratio = ratio
         if ratio is not None:
-            # Adjust current normalized crop to fit ratio
+            # Adjust current normalized crop to fit ratio centered
+            img_aspect = self.source_width / max(1, self.source_height)
+            norm_ratio = ratio / img_aspect
+
             cx = self.crop_norm.center().x()
             cy = self.crop_norm.center().y()
-            img_aspect = self.source_width / max(1, self.source_height)
-            
-            # target_w_norm / target_h_norm * img_aspect = ratio
-            # target_w_norm / target_h_norm = ratio / img_aspect
-            norm_ratio = ratio / img_aspect
 
             cur_w = self.crop_norm.width()
             cur_h = cur_w / norm_ratio
-            if cur_h > 0.95:
-                cur_h = 0.95
+            if cur_h > 1.0:
+                cur_h = 1.0
                 cur_w = cur_h * norm_ratio
 
             x = max(0.0, min(1.0 - cur_w, cx - cur_w / 2))
@@ -67,7 +65,7 @@ class CropCanvas(QWidget):
 
     def reset_crop(self):
         self.aspect_ratio = None
-        self.crop_norm = QRectF(0.05, 0.05, 0.9, 0.9)
+        self.crop_norm = QRectF(0.0, 0.0, 1.0, 1.0)  # Full original video frame
         self.update()
         self._notify_change()
 
@@ -78,14 +76,13 @@ class CropCanvas(QWidget):
         crop_y = int(round(self.source_height * self.crop_norm.y()))
 
         if self.aspect_ratio is not None:
-            # Snap to aspect ratio
             target_w = int(round(crop_h * self.aspect_ratio))
             if target_w <= self.source_width:
                 crop_w = target_w
             else:
                 crop_h = int(round(crop_w / self.aspect_ratio))
 
-        # Ensure even
+        # Ensure even pixel dimensions
         crop_w = max(2, crop_w - (crop_w % 2))
         crop_h = max(2, crop_h - (crop_h % 2))
         crop_x = crop_x - (crop_x % 2)
@@ -176,7 +173,6 @@ class CropCanvas(QWidget):
         crop_px = self._norm_to_pixel_rect(img_rect)
 
         if self.active_handle == HANDLE_NONE:
-            # Update cursor based on hover
             handle = self._hit_test(event.position(), crop_px)
             if handle in [HANDLE_TL, HANDLE_BR]:
                 self.setCursor(Qt.SizeFDiagCursor)
@@ -205,7 +201,7 @@ class CropCanvas(QWidget):
 
         else:
             left, top, right, bottom = r.left(), r.top(), r.right(), r.bottom()
-            min_size = 0.05
+            min_size = 0.03
 
             if self.active_handle in [HANDLE_TL, HANDLE_L, HANDLE_BL]:
                 left = max(0.0, min(right - min_size, left + dx_norm))
@@ -216,7 +212,7 @@ class CropCanvas(QWidget):
             if self.active_handle in [HANDLE_BL, HANDLE_B, HANDLE_BR]:
                 bottom = min(1.0, max(top + min_size, bottom + dy_norm))
 
-            # Aspect ratio constraint handling
+            # Ratio constraint only if a specific ratio preset is locked
             if self.aspect_ratio is not None:
                 img_aspect = self.source_width / max(1, self.source_height)
                 norm_ratio = self.aspect_ratio / img_aspect
@@ -316,8 +312,8 @@ class CropDialog(QDialog):
     def __init__(self, parent=None, pixmap: QPixmap = None, source_w: int = 1920, source_h: int = 1080, initial_params: dict = None):
         super().__init__(parent)
         self.setWindowTitle("Кадрирование видео")
-        self.resize(760, 580)
-        self.setMinimumSize(660, 500)
+        self.resize(820, 620)
+        self.setMinimumSize(720, 520)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
 
@@ -348,7 +344,7 @@ class CropDialog(QDialog):
         title.setStyleSheet("font-size: 13px; font-weight: 800; color: #FFFFFF; letter-spacing: 0.8px; background: transparent; border: none;")
         header.addWidget(title)
 
-        self.res_badge = QLabel("1920×1080 ➔ 1080×1080")
+        self.res_badge = QLabel(f"{source_w}×{source_h} ➔ {source_w}×{source_h}")
         self.res_badge.setStyleSheet("""
             background-color: rgba(255, 255, 255, 0.08);
             border: 1px solid rgba(255, 255, 255, 0.2);
@@ -411,9 +407,10 @@ class CropDialog(QDialog):
 
         preset_bar.addStretch()
 
-        reset_btn = QPushButton("↺ СБРОСИТЬ")
+        reset_btn = QPushButton("↺ ВЕСЬ КАДР")
         reset_btn.setProperty("class", "GlassButton")
         reset_btn.setStyleSheet("font-size: 11px; font-weight: 700; padding: 4px 10px;")
+        reset_btn.setToolTip("Сбросить выделение на весь исходный кадр")
         reset_btn.clicked.connect(self._reset)
         preset_bar.addWidget(reset_btn)
 
@@ -440,7 +437,7 @@ class CropDialog(QDialog):
         container_layout.addLayout(actions_layout)
         main_layout.addWidget(container)
 
-        # Load image & initial params
+        # Load image & initial params (Starts with Full Frame & Freeform crop!)
         self.canvas.set_source_image(pixmap, source_w=source_w, source_h=source_h)
         if initial_params and 'x_norm' in initial_params:
             self.canvas.crop_norm = QRectF(
@@ -452,7 +449,7 @@ class CropDialog(QDialog):
             self.canvas.update()
             self._on_crop_changed(self.canvas.get_crop_params())
         else:
-            self._set_preset(None, self.pill_free)
+            self._reset()
 
     def _set_preset(self, ratio: float, active_btn: QPushButton):
         for btn in [self.pill_free, self.pill_1_1, self.pill_9_16, self.pill_16_9, self.pill_4_5]:
@@ -473,8 +470,8 @@ class CropDialog(QDialog):
     def _on_crop_changed(self, params: dict):
         sw = params.get('source_w', 1920)
         sh = params.get('source_h', 1080)
-        cw = params.get('w', 1080)
-        ch = params.get('h', 1080)
+        cw = params.get('w', sw)
+        ch = params.get('h', sh)
         self.res_badge.setText(f"ИСХОДНЫЙ: {sw}×{sh}  ➔  КАДР: {cw}×{ch}")
 
     def _apply(self):
