@@ -123,6 +123,15 @@ class MetadataWorker(QThread):
 
                 platform = detect_platform(self.url)
 
+                width = info.get('width')
+                height = info.get('height')
+                if not width or not height:
+                    for f in reversed(formats):
+                        if f.get('width') and f.get('height'):
+                            width = f.get('width')
+                            height = f.get('height')
+                            break
+
                 result = {
                     'url': self.url,
                     'title': title,
@@ -132,7 +141,9 @@ class MetadataWorker(QThread):
                     'thumbnail': thumbnail,
                     'platform': platform,
                     'available_res': available_res,
-                    'has_video': has_video
+                    'has_video': has_video,
+                    'width': width or 1920,
+                    'height': height or 1080
                 }
                 self.info_ready.emit(result)
         except Exception as e:
