@@ -34,11 +34,24 @@ DWMSBT_MAINWINDOW = 2      # Mica
 DWMSBT_TRANSIENTWINDOW = 3  # Acrylic
 DWMSBT_TABBEDWINDOW = 4     # Tabbed
 
+GWL_STYLE = -16
+WS_MINIMIZEBOX = 0x00020000
+WS_SYSMENU = 0x00080000
+
+def enable_taskbar_minimize(hwnd: int):
+    try:
+        style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_STYLE)
+        ctypes.windll.user32.SetWindowLongW(hwnd, GWL_STYLE, style | WS_MINIMIZEBOX | WS_SYSMENU)
+    except Exception:
+        pass
+
 def apply_acrylic_effect(hwnd: int, gradient_color: int = 0x400A0D12):
     """
-    Applies real Acrylic frosted blur and native Windows 11 rounded corners.
+    Applies real Acrylic frosted blur, native Windows 11 rounded corners, and taskbar minimize support.
     """
     try:
+        enable_taskbar_minimize(hwnd)
+
         # 1. Dark Mode frame
         dark_mode = c_int(1)
         ctypes.windll.dwmapi.DwmSetWindowAttribute(
