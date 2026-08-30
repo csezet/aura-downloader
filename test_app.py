@@ -6,8 +6,11 @@ def test_imports():
     from core.settings import settings
     from core.history import history
     from core.downloader import format_bytes, format_seconds, detect_platform
+    from core.media_converter import crop_video, get_video_dimensions
     from assets.styles import get_stylesheet
     from ui.window_effects import apply_acrylic_effect
+    from ui.crop_dialog import CropCanvas, CropDialog
+    from ui.crop_widget import CropWidget
     print("Imports OK!")
 
 def test_downloader_utils():
@@ -19,22 +22,54 @@ def test_downloader_utils():
     assert detect_platform("https://www.instagram.com/reel/Cx123") == "Instagram"
     print("Downloader utils test passed!")
 
+def test_crop_canvas_and_dialog():
+    print("Testing Crop Canvas & Dialog calculations...")
+    from PySide6.QtWidgets import QApplication
+    from ui.crop_dialog import CropCanvas, CropDialog
+    from PySide6.QtGui import QPixmap
+    
+    app = QApplication.instance() or QApplication(sys.argv)
+    
+    canvas = CropCanvas()
+    dummy_pix = QPixmap(1920, 1080)
+    canvas.set_source_image(dummy_pix, 1920, 1080)
+    
+    # Test 1:1 Aspect ratio
+    canvas.set_aspect_ratio(1.0)
+    params = canvas.get_crop_params()
+    assert params['w'] == params['h']
+    assert params['w'] % 2 == 0
+    assert params['h'] % 2 == 0
+    assert params['x'] >= 0 and params['y'] >= 0
+    assert params['x'] + params['w'] <= 1920
+    assert params['y'] + params['h'] <= 1080
+    
+    # Test 9:16 Aspect ratio
+    canvas.set_aspect_ratio(9.0/16.0)
+    params916 = canvas.get_crop_params()
+    assert params916['w'] % 2 == 0
+    assert params916['h'] % 2 == 0
+    assert params916['w'] < params916['h']
+
+    print("Crop Canvas calculations test passed!")
+
 def test_ui_init():
     print("Testing UI initialization...")
     from PySide6.QtWidgets import QApplication
     from ui.main_window import MainWindow
     
-    app = QApplication.instance()
-    if not app:
-        app = QApplication(sys.argv)
+    app = QApplication.instance() or QApplication(sys.argv)
     
     icon_path = os.path.join(os.path.dirname(__file__), "assets", "icon.ico")
     window = MainWindow(icon_path=icon_path)
     assert window is not None
+    assert hasattr(window, "crop_widget")
+    assert window.crop_widget is not None
     print("UI initialization passed!")
 
 if __name__ == "__main__":
     test_imports()
     test_downloader_utils()
+    test_crop_canvas_and_dialog()
     test_ui_init()
     print("[ALL TESTS PASSED]")
