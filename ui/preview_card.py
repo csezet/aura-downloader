@@ -25,6 +25,8 @@ class ImageLoaderWorker(QThread):
 
 
 class PreviewCard(QFrame):
+    image_ready = Signal(QPixmap)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setProperty("class", "GlassCard")
@@ -33,6 +35,7 @@ class PreviewCard(QFrame):
         self.setVisible(False)
 
         self._image_worker = None
+        self._raw_pixmap = None
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
@@ -107,6 +110,8 @@ class PreviewCard(QFrame):
 
     def _on_image_loaded(self, pixmap: QPixmap):
         if not pixmap.isNull():
+            self._raw_pixmap = pixmap
+            self.image_ready.emit(pixmap)
             scaled = pixmap.scaled(115, 72, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
             target = QPixmap(115, 72)
             target.fill(Qt.transparent)
@@ -122,7 +127,11 @@ class PreviewCard(QFrame):
             self.thumb_label.setPixmap(target)
             self.thumb_label.setText("")
 
+    def get_pixmap(self) -> QPixmap:
+        return self._raw_pixmap
+
     def clear(self):
         self.setVisible(False)
+        self._raw_pixmap = None
         self.thumb_label.clear()
         self.thumb_label.setText("NO PREVIEW")
