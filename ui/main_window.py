@@ -335,6 +335,11 @@ class MainWindow(QMainWindow):
         self.download_btn.setEnabled(True)
         self._update_download_button_text()
 
+    def _on_metadata_error(self, err_msg: str):
+        self.download_btn.setEnabled(True)
+        self._update_download_button_text()
+        self.progress_widget.set_error(err_msg)
+
     def _set_mode(self, mode: str):
         self.current_mode = mode
         pill_map = [
