@@ -7,6 +7,7 @@ from PySide6.QtCore import QThread, Signal
 import yt_dlp
 from core.cookies_helper import get_cookies_config
 from core.media_converter import convert_to_gif, compress_to_target_size, crop_video
+from core.interpolator import interpolate_video
 
 def format_bytes(bytes_val):
     if bytes_val is None or bytes_val <= 0:
@@ -354,6 +355,25 @@ class DownloadWorker(QThread):
                         except Exception:
                             pass
                     final_path = cropped_path
+
+                # Smooth FPS post processing
+                smooth_enabled = self.options.get('smooth_enabled', False)
+                smooth_fps = self.options.get('smooth_fps', 60)
+                smooth_model = self.options.get('smooth_model', 'auto')
+                if smooth_enabled and mode not in ['audio_only', 'gif'] and os.path.exists(final_path):
+                    self.status_message.emit(f"AI Увеличение плавности ({smooth_fps} FPS)...")
+                    smooth_path = interpolate_video(
+                        final_path,
+                        target_fps=smooth_fps,
+                        model=smooth_model,
+                        status_callback=lambda msg: self.status_message.emit(msg.upper())
+                    )
+                    if smooth_path != final_path:
+                        try:
+                            os.remove(final_path)
+                        except Exception:
+                            pass
+                    final_path = smooth_path
 
                 file_size = os.path.getsize(final_path) if os.path.exists(final_path) else 0
                 title = info.get('title', Path(final_path).stem if final_path else 'Скачанный файл')
