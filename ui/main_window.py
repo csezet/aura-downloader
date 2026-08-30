@@ -21,6 +21,7 @@ from ui.progress_widget import ProgressWidget
 from ui.history_view import HistoryModal
 from ui.trim_widget import TrimWidget
 from ui.crop_widget import CropWidget
+from ui.smooth_widget import SmoothWidget
 from ui.batch_dialog import BatchDialog
 from ui.settings_modal import SettingsModal
 
@@ -48,8 +49,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Aura Downloader")
         
         # Generous, well-spaced window dimensions to prevent any clipping/overlap
-        self.resize(760, 610)
-        self.setMinimumSize(660, 520)
+        self.resize(760, 650)
+        self.setMinimumSize(660, 540)
 
         # Frameless and translucent window flags
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
@@ -216,7 +217,7 @@ class MainWindow(QMainWindow):
         modes_layout.addStretch()
         content_layout.addWidget(modes_card)
 
-        # 4. Trimmer & Crop Widgets
+        # 4. Trimmer, Crop & Smooth FPS Widgets
         tools_layout = QVBoxLayout()
         tools_layout.setSpacing(6)
 
@@ -225,6 +226,9 @@ class MainWindow(QMainWindow):
 
         self.crop_widget = CropWidget()
         tools_layout.addWidget(self.crop_widget)
+
+        self.smooth_widget = SmoothWidget()
+        tools_layout.addWidget(self.smooth_widget)
 
         content_layout.addLayout(tools_layout)
 
@@ -360,8 +364,9 @@ class MainWindow(QMainWindow):
         self.res_combo.setVisible(mode in ["custom", "video_only"])
         self.audio_fmt_combo.setVisible(mode == "audio_only")
 
-        # Disable crop for audio_only
+        # Disable crop & smooth for audio_only
         self.crop_widget.setVisible(mode != "audio_only")
+        self.smooth_widget.setVisible(mode not in ["audio_only", "gif"])
 
         for pill, icon_name, p_mode in pill_map:
             if p_mode == mode:
@@ -411,7 +416,10 @@ class MainWindow(QMainWindow):
             'trim_start': trim_start,
             'trim_end': trim_end,
             'crop_enabled': self.crop_widget.is_crop_enabled(),
-            'crop_params': self.crop_widget.get_crop_params()
+            'crop_params': self.crop_widget.get_crop_params(),
+            'smooth_enabled': self.smooth_widget.is_smooth_enabled(),
+            'smooth_fps': self.smooth_widget.get_target_fps(),
+            'smooth_model': self.smooth_widget.get_model()
         }
 
         save_dir = settings.get("download_dir")
