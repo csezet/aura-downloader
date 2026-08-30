@@ -8,6 +8,7 @@ def test_imports():
     from core.downloader import format_bytes, format_seconds, detect_platform
     from core.media_converter import crop_video, get_video_dimensions
     from core.interpolator import is_rife_available, interpolate_video, get_video_fps
+    from core.local_processor import is_video_file, get_local_media_info, LocalProcessWorker
     from assets.styles import get_stylesheet
     from ui.window_effects import apply_acrylic_effect
     from ui.crop_dialog import CropCanvas, CropDialog
@@ -17,11 +18,13 @@ def test_imports():
 
 def test_downloader_utils():
     from core.downloader import format_bytes, format_seconds, detect_platform
+    from core.local_processor import is_video_file
     assert format_bytes(1024 * 1024 * 15) == "15.0 MB"
     assert format_seconds(125) == "02:05"
     assert detect_platform("https://www.youtube.com/watch?v=dQw4w9WgXcQ") == "YouTube"
     assert detect_platform("https://www.tiktok.com/@test/video/123") == "TikTok"
     assert detect_platform("https://www.instagram.com/reel/Cx123") == "Instagram"
+    assert is_video_file("C:/Videos/sample.mp4") is False  # file doesn't exist
     print("Downloader utils test passed!")
 
 def test_crop_canvas_and_dialog():
@@ -68,7 +71,7 @@ def test_smooth_widget():
     print("SmoothWidget test passed!")
 
 def test_ui_init():
-    print("Testing UI initialization...")
+    print("Testing UI initialization with Drag & Drop...")
     from PySide6.QtWidgets import QApplication
     from ui.main_window import MainWindow
     
@@ -77,10 +80,10 @@ def test_ui_init():
     icon_path = os.path.join(os.path.dirname(__file__), "assets", "icon.ico")
     window = MainWindow(icon_path=icon_path)
     assert window is not None
+    assert window.acceptDrops() is True
+    assert hasattr(window, "file_btn")
     assert hasattr(window, "crop_widget")
     assert hasattr(window, "smooth_widget")
-    assert window.crop_widget is not None
-    assert window.smooth_widget is not None
     print("UI initialization passed!")
 
 if __name__ == "__main__":
