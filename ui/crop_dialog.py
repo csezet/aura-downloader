@@ -340,7 +340,7 @@ class CropDialog(QDialog):
         header = QHBoxLayout()
         header.setSpacing(10)
 
-        title = QLabel("✂️ КАДРИРОВАНИЕ ВИДЕО (CROP)")
+        title = QLabel("КАДРИРОВАНИЕ ВИДЕО (CROP)")
         title.setStyleSheet("font-size: 13px; font-weight: 800; color: #FFFFFF; letter-spacing: 0.8px; background: transparent; border: none;")
         header.addWidget(title)
 
