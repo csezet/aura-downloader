@@ -4,7 +4,7 @@ import tempfile
 import subprocess
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt, QPoint, QMimeData, QUrl
-from PySide6.QtGui import QMouseEvent, QDropEvent
+from PySide6.QtGui import QMouseEvent, QDropEvent, QPixmap, QColor
 from ui.main_window import MainWindow
 from ui.timeline_slider import TimelineRangeSlider, ms_to_time_str
 from ui.trim_dialog import TrimDialog
@@ -50,7 +50,6 @@ def run_simulation():
     window.dropEvent(QDropEvent(QPoint(100, 100), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier))
 
     assert window.cards_list.count() == 1
-    # Verify url_input is NOT set to [ 1 видео... ] and is clean
     assert window.url_input.text() == ""
     print("Video added and url_input remained clean!")
 
@@ -76,9 +75,43 @@ def run_simulation():
     assert window.cards_list.count() == 1
     print("Removing card via card close button ([X]) verified!")
 
-    print("\n--- 3. Test Multi-Cycle Settings Switching Across Multiple Videos ---")
-    window._load_local_files([v3])
+    print("\n--- 3. Test Online Video Card & Instant Crop Thumbnail Update ---")
+    online_info = {
+        'url': 'https://www.instagram.com/p/DcnB42Gjz-_/',
+        'direct_url': 'https://scontent-fra5-1.cdninstagram.com/test_stream.mp4',
+        'playable_url': 'https://scontent-fra5-1.cdninstagram.com/test_stream.mp4',
+        'title': 'Video by cindie.zhu',
+        'uploader': 'Cindy Zhu',
+        'duration': 63,
+        'duration_str': '01:03',
+        'thumbnail': None,
+        'platform': 'Instagram',
+        'width': 1080,
+        'height': 1920,
+    }
+    window.cards_list.add_video(online_info)
+    app.processEvents()
     assert window.cards_list.count() == 2
+
+    # Simulate async thumbnail download completion
+    test_pix = QPixmap(320, 240)
+    test_pix.fill(QColor("magenta"))
+    online_card = window.cards_list.cards[1]
+    online_card._on_image_loaded(test_pix)
+    app.processEvents()
+
+    assert window.crop_widget._preview_pixmap is not None
+    print("Crop widget received loaded thumbnail instantly!")
+
+    # Test TrimDialog with online stream URL
+    trim_dialog = TrimDialog(parent=None, video_source=online_info['playable_url'], duration_sec=63)
+    trim_dialog.show()
+    assert not trim_dialog.btn_play.icon().isNull()
+    trim_dialog.close()
+    print("TrimDialog with online playable stream URL verified!")
+
+    print("\n--- 4. Test Multi-Cycle Settings Switching Across Multiple Videos ---")
+    window._load_local_files([v3])
     card_a = window.cards_list.cards[0]
     card_b = window.cards_list.cards[1]
 
