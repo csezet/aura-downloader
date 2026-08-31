@@ -520,23 +520,13 @@ class MainWindow(QMainWindow):
 
     def _on_cards_list_changed(self, count: int):
         if count == 0:
-            if self.current_video_info is not None or self.url_input.text():
-                self._reset_all_state()
-        elif count == 1:
-            all_vids = self.cards_list.get_all_videos()
-            if all_vids:
-                self.url_input.blockSignals(True)
-                self.url_input.setText(all_vids[0].get('url', ''))
-                self.url_input.blockSignals(False)
-        else:
-            self.url_input.blockSignals(True)
-            self.url_input.setText(f"[ {count} видео в очереди ]")
-            self.url_input.blockSignals(False)
+            self.current_video_info = None
+            self.crop_widget.toggle.setChecked(False)
+            self.trim_widget.toggle.setChecked(False)
+            self.smooth_widget.toggle.setChecked(False)
         self._update_download_button_text()
 
     def _reset_all_state(self):
-        if self.current_video_info is None and self.cards_list.count() == 0 and not self.url_input.text():
-            return
         self.current_video_info = None
         self.url_input.blockSignals(True)
         self.url_input.clear()
@@ -548,16 +538,17 @@ class MainWindow(QMainWindow):
         self._update_download_button_text()
 
     def _on_url_text_changed(self, text: str):
-        if not text.strip():
-            self._reset_all_state()
-        elif is_video_file(text):
-            if not self.current_video_info or self.current_video_info.get('url') != text:
-                self._load_local_files([text])
+        if is_video_file(text):
+            self.url_input.clear()
+            self._load_local_files([text])
 
     def _fetch_metadata(self):
         url = self.url_input.text().strip()
         if not url:
             return
+
+        # Clear input field immediately upon pressing Enter/Paste
+        self.url_input.clear()
 
         if is_video_file(url):
             self._load_local_files([url])
@@ -712,12 +703,14 @@ class MainWindow(QMainWindow):
             self.download_worker.start()
             return
 
-        is_local = (self.current_video_info and self.current_video_info.get('is_local')) or is_video_file(url)
+        active_video = selected_queue[0] if selected_queue else self.current_video_info
+        target_url = (active_video.get('url') if active_video else None) or url
+        is_local = (active_video and active_video.get('is_local')) or is_video_file(target_url)
+
         if is_local:
-            target_url = self.current_video_info.get('url') if self.current_video_info else url
             self.download_worker = LocalProcessWorker(target_url, options, save_dir)
         else:
-            self.download_worker = DownloadWorker(url, options, save_dir)
+            self.download_worker = DownloadWorker(target_url, options, save_dir)
 
         self.download_worker.progress_updated.connect(self.progress_widget.update_progress)
         self.download_worker.download_completed.connect(self._on_download_success)
