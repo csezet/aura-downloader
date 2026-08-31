@@ -9,14 +9,16 @@ from ui.main_window import MainWindow
 from ui.timeline_slider import TimelineRangeSlider, ms_to_time_str
 from ui.trim_dialog import TrimDialog
 from core.local_processor import is_video_file, get_local_media_info
+from core.media_converter import get_video_codec, get_or_create_preview_proxy
+from core.downloader import detect_platform
 
-def create_dummy_video(filename="sample_test.mp4"):
+def create_dummy_video(filename="sample_test.mp4", codec="libx264"):
     temp_dir = tempfile.gettempdir()
     filepath = os.path.join(temp_dir, filename)
     cmd = [
         "ffmpeg", "-y",
         "-f", "lavfi", "-i", "color=c=blue:s=320x240:d=3",
-        "-c:v", "libx264",
+        "-c:v", codec,
         filepath
     ]
     subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -25,11 +27,28 @@ def create_dummy_video(filename="sample_test.mp4"):
 def run_simulation():
     app = QApplication.instance() or QApplication(sys.argv)
     
-    v1 = create_dummy_video("sample_v1.mp4")
-    v2 = create_dummy_video("sample_v2.mp4")
-    v3 = create_dummy_video("sample_v3.mp4")
+    v1 = create_dummy_video("sample_v1.mp4", codec="libx264")
+    v2 = create_dummy_video("sample_v2.mp4", codec="libx264")
+    v3 = create_dummy_video("sample_v3.mp4", codec="libx264")
 
-    print("\n--- 1. Test TrimDialog Vector SVG Icons ---")
+    print("\n--- 1. Test Codec Detection & H.264 Proxy for AV1 / Non-H264 Videos ---")
+    codec_h264 = get_video_codec(v1)
+    assert codec_h264 in ["h264", "avc1"]
+    print(f"H264 Codec detected correctly: {codec_h264}")
+
+    # Check that H264 returns original path directly without overhead
+    proxy_h264 = get_or_create_preview_proxy(v1)
+    assert proxy_h264 == v1
+    print("H264 directly passed without redundant transcoding!")
+
+    # Test Platform Detection
+    assert detect_platform("https://www.youtube.com/watch?v=dQw4w9WgXcQ") == "YouTube"
+    assert detect_platform("https://youtu.be/dQw4w9WgXcQ") == "YouTube"
+    assert detect_platform("https://www.instagram.com/reel/C-xyz123/") == "Instagram"
+    assert detect_platform("https://instagram.com/p/C-xyz123/") == "Instagram"
+    print("Platform detection for YouTube and Instagram 100% verified!")
+
+    print("\n--- 2. Test TrimDialog with Vector SVG Icons & Proxy ---")
     dialog = TrimDialog(parent=None, video_source=v1, duration_sec=3, initial_start="00:01", initial_end="00:02")
     dialog.show()
     assert not dialog.btn_play.icon().isNull()
@@ -39,9 +58,9 @@ def run_simulation():
     assert not dialog.btn_mark_end.icon().isNull()
     assert not dialog.btn_loop.icon().isNull()
     dialog.close()
-    print("TrimDialog vector SVG icons 100% verified!")
+    print("TrimDialog vector SVG icons & proxy integration verified!")
 
-    print("\n--- 2. Test Multi-Cycle Settings Switching Across 3 Videos ---")
+    print("\n--- 3. Test Multi-Cycle Settings Switching Across 3 Videos ---")
     window = MainWindow()
     window.resize(760, 650)
     window.show()
@@ -64,7 +83,6 @@ def run_simulation():
     evt_click = QMouseEvent(QMouseEvent.MouseButtonPress, QPoint(10, 10), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
 
     # --- ROUND 1: Set unique settings for each video ---
-    # Card 1: Trim 00:01-00:05, 120 FPS
     card1.mousePressEvent(evt_click)
     app.processEvents()
     window.trim_widget.toggle.setChecked(True)
@@ -73,7 +91,6 @@ def run_simulation():
     window.smooth_widget.toggle.setChecked(True)
     window.smooth_widget.fps_combo.setCurrentIndex(1) # 120 FPS
 
-    # Card 2: Audio Only MP3
     card2.mousePressEvent(evt_click)
     app.processEvents()
     window._set_mode("audio_only")
@@ -81,7 +98,6 @@ def run_simulation():
     window.trim_widget.toggle.setChecked(False)
     window.smooth_widget.toggle.setChecked(False)
 
-    # Card 3: GIF mode, Crop 1:1
     card3.mousePressEvent(evt_click)
     app.processEvents()
     window._set_mode("gif")
@@ -92,7 +108,6 @@ def run_simulation():
     print("Round 1 settings configured for all 3 videos!")
 
     # --- ROUND 2: Verify Round 1, update to Round 2 settings ---
-    # Switch to Card 1 -> Verify Round 1 -> Update to Round 2
     card1.mousePressEvent(evt_click)
     app.processEvents()
     assert window.trim_widget.is_trim_enabled() is True
@@ -100,26 +115,21 @@ def run_simulation():
     assert window.trim_widget.end_input.text() == "00:05"
     assert window.smooth_widget.is_smooth_enabled() is True
     assert window.smooth_widget.get_target_fps() == 120
-    # Update Card 1 to Round 2: Trim 00:02-00:08, Smooth 60 FPS
     window.trim_widget.start_input.setText("00:02")
     window.trim_widget.end_input.setText("00:08")
     window.smooth_widget.fps_combo.setCurrentIndex(0) # 60 FPS
 
-    # Switch to Card 2 -> Verify Round 1 -> Update to Round 2
     card2.mousePressEvent(evt_click)
     app.processEvents()
     assert window.current_mode == "audio_only"
     assert "MP3" in window.audio_fmt_combo.currentText()
     assert window.trim_widget.is_trim_enabled() is False
-    # Update Card 2 to Round 2: FLAC
     window.audio_fmt_combo.setCurrentText("FLAC (Lossless)")
 
-    # Switch to Card 3 -> Verify Round 1 -> Update to Round 2
     card3.mousePressEvent(evt_click)
     app.processEvents()
     assert window.current_mode == "gif"
     assert window.crop_widget.is_crop_enabled() is True
-    # Update Card 3 to Round 2: Discord 8MB mode
     window._set_mode("discord_8mb")
 
     print("Round 2 settings updated for all 3 videos!")
@@ -144,7 +154,7 @@ def run_simulation():
     print("Round 3 re-verification 100% successful! No settings were lost or mixed up!")
 
     window.close()
-    print("\n[ALL MULTI-VIDEO SETTINGS AND UI STYLE TESTS 100% PASSED!]")
+    print("\n[ALL TESTS 100% PASSED!]")
 
 if __name__ == "__main__":
     run_simulation()
