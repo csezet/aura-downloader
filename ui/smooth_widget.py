@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QComboBox, QPushButton, QWidget
+    QFrame, QHBoxLayout, QLabel, QComboBox, QPushButton, QWidget, QGraphicsOpacityEffect
 )
-from PySide6.QtCore import Qt, Signal, QThread, QSize
+from PySide6.QtCore import Qt, Signal, QThread, QSize, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QIcon
 from assets.icons import get_svg_icon
 from ui.toggle_switch import ToggleSwitch
@@ -44,12 +44,18 @@ class SmoothWidget(QFrame):
         self.title_lbl.setStyleSheet("color: #EDEDED; font-size: 12px; font-weight: 700;")
         layout.addWidget(self.title_lbl)
 
+        # Controls Container (Animated)
+        self.controls_container = QWidget()
+        ctrl_layout = QHBoxLayout(self.controls_container)
+        ctrl_layout.setContentsMargins(0, 0, 0, 0)
+        ctrl_layout.setSpacing(8)
+
         # FPS Selector
         self.fps_combo = QComboBox()
         self.fps_combo.addItems(["60 FPS (Плавное)", "120 FPS (Ультра)", "2x Удвоение"])
         self.fps_combo.setCurrentIndex(0)
         self.fps_combo.setEnabled(False)
-        layout.addWidget(self.fps_combo)
+        ctrl_layout.addWidget(self.fps_combo)
 
         # AI Engine Badge / Button with sleek SVG icon
         self.engine_btn = QPushButton(" AI RIFE (Vulkan)")
@@ -65,13 +71,22 @@ class SmoothWidget(QFrame):
         """)
         self.engine_btn.setEnabled(False)
         self.engine_btn.clicked.connect(self._toggle_engine)
-        layout.addWidget(self.engine_btn)
+        ctrl_layout.addWidget(self.engine_btn)
 
         # Status note
         self.status_lbl = QLabel("")
         self.status_lbl.setStyleSheet("color: #71717A; font-size: 10px; font-family: 'Consolas', monospace;")
-        layout.addWidget(self.status_lbl)
+        ctrl_layout.addWidget(self.status_lbl)
 
+        # Opacity Animation Effect
+        self.opacity_effect = QGraphicsOpacityEffect(self.controls_container)
+        self.opacity_effect.setOpacity(0.3)
+        self.controls_container.setGraphicsEffect(self.opacity_effect)
+        self.anim = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.anim.setDuration(220)
+        self.anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        layout.addWidget(self.controls_container)
         layout.addStretch()
 
         self._update_engine_ui()
@@ -103,6 +118,12 @@ class SmoothWidget(QFrame):
     def _on_toggled(self, checked: bool):
         self.fps_combo.setEnabled(checked)
         self.engine_btn.setEnabled(checked)
+
+        self.anim.stop()
+        self.anim.setStartValue(self.opacity_effect.opacity())
+        self.anim.setEndValue(1.0 if checked else 0.3)
+        self.anim.start()
+
         self.smooth_toggled.emit(checked)
 
     def _toggle_engine(self):
