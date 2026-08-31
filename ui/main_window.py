@@ -51,6 +51,7 @@ class DropOverlay(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setAcceptDrops(False)
         self.setStyleSheet("""
             DropOverlay {
                 background-color: rgba(10, 14, 20, 0.92);
@@ -159,6 +160,12 @@ class MainWindow(QMainWindow):
                     return
         event.ignore()
 
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
     def dragLeaveEvent(self, event):
         if hasattr(self, 'drop_overlay'):
             self.drop_overlay.hide_animated()
@@ -180,6 +187,7 @@ class MainWindow(QMainWindow):
     def _init_ui(self):
         self.central_container = QFrame(self)
         self.central_container.setObjectName("CentralWidget")
+        self.central_container.setAcceptDrops(True)
         self.setCentralWidget(self.central_container)
 
         shadow = QGraphicsDropShadowEffect(self)
@@ -435,25 +443,45 @@ class MainWindow(QMainWindow):
         if not file_paths:
             return
 
-        if len(file_paths) == 1:
-            self._load_single_local_file(file_paths[0])
+        clean_paths = []
+        for p in file_paths:
+            if isinstance(p, str):
+                c = p.strip().strip('"').strip("'")
+                if is_video_file(c):
+                    clean_paths.append(c)
+
+        if not clean_paths:
+            return
+
+        if len(clean_paths) == 1:
+            self._load_single_local_file(clean_paths[0])
             self.queue_widget.clear_all()
         else:
-            self.url_input.setText(f"[ {len(file_paths)} локальных видео в очереди ]")
             info_list = []
-            for path in file_paths:
+            for path in clean_paths:
                 info = get_local_media_info(path)
                 if info:
                     info_list.append(info)
 
             if info_list:
-                self.queue_widget.add_videos(info_list)
+                self.url_input.blockSignals(True)
+                self.url_input.setText(f"[ {len(info_list)} локальных видео в очереди ]")
+                self.url_input.blockSignals(False)
+
+                self.preview_card.clear()
                 self.preview_card.setVisible(False)
+                self.queue_widget.clear_all()
+                self.queue_widget.add_videos(info_list)
+                self.queue_widget.setVisible(True)
                 self.current_video_info = info_list[0]
                 self._update_download_button_text()
 
     def _load_single_local_file(self, file_path: str):
+        file_path = file_path.strip().strip('"').strip("'")
+        self.url_input.blockSignals(True)
         self.url_input.setText(file_path)
+        self.url_input.blockSignals(False)
+
         info = get_local_media_info(file_path)
         if info:
             self._on_metadata_ready(info)
