@@ -14,13 +14,14 @@ from PySide6.QtGui import QColor, QPixmap
 from core.settings import settings
 from core.history import history
 from core.downloader import MetadataWorker, DownloadWorker
-from core.local_processor import get_local_media_info, is_video_file, LocalProcessWorker
+from core.local_processor import get_local_media_info, is_video_file, LocalProcessWorker, LocalBatchProcessWorker
 from core.clipboard import ClipboardWatcher
 from assets.styles import get_stylesheet
 from assets.icons import get_svg_icon
 from ui.window_effects import apply_acrylic_effect
 from ui.title_bar import CustomTitleBar
 from ui.preview_card import PreviewCard
+from ui.queue_widget import VideoQueueWidget
 from ui.progress_widget import ProgressWidget
 from ui.history_view import HistoryModal
 from ui.trim_widget import TrimWidget
@@ -67,12 +68,12 @@ class DropOverlay(QFrame):
         icon_lbl.setStyleSheet("background: transparent; border: none;")
         layout.addWidget(icon_lbl)
 
-        title = QLabel("ОТПУСТИТЕ ФАЙЛ ДЛЯ ОБРАБОТКИ")
+        title = QLabel("ОТПУСТИТЕ ФАЙЛ(Ы) ДЛЯ ОБРАБОТКИ")
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet("color: #FFFFFF; font-size: 15px; font-weight: 800; letter-spacing: 1px; background: transparent; border: none;")
         layout.addWidget(title)
 
-        subtitle = QLabel("MP4 • MOV • MKV • WEBM • AVI • FLV • WMV")
+        subtitle = QLabel("ПОДДЕРЖИВАЕТСЯ ПЕРЕТАСКИВАНИЕ СРАЗУ НЕСКОЛЬКИХ ВИДЕО")
         subtitle.setAlignment(Qt.AlignCenter)
         subtitle.setStyleSheet("color: #A1A1AA; font-size: 11px; font-weight: 700; font-family: 'Consolas', monospace; background: transparent; border: none;")
         layout.addWidget(subtitle)
@@ -111,11 +112,9 @@ class MainWindow(QMainWindow):
         self.icon_path = icon_path
         self.setWindowTitle("Aura Downloader")
         
-        # Generous, well-spaced window dimensions to prevent any clipping/overlap
         self.resize(760, 650)
         self.setMinimumSize(660, 540)
 
-        # Frameless and translucent window flags
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAcceptDrops(True)
@@ -169,12 +168,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'drop_overlay'):
             self.drop_overlay.hide_animated()
         if event.mimeData().hasUrls():
-            for url in event.mimeData().urls():
-                file_path = url.toLocalFile()
-                if is_video_file(file_path):
-                    event.acceptProposedAction()
-                    self._load_local_file(file_path)
-                    return
+            video_files = [url.toLocalFile() for url in event.mimeData().urls() if is_video_file(url.toLocalFile())]
+            if video_files:
+                event.acceptProposedAction()
+                self._load_local_files(video_files)
 
     def _apply_theme(self):
         opacity = settings.get("glass_opacity", 0.45)
@@ -195,7 +192,7 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # 1. Custom Title Bar (Clean, NO //)
+        # 1. Custom Title Bar
         self.title_bar = CustomTitleBar(self, title="A U R A   D O W N L O A D E R", icon_path=self.icon_path)
         main_layout.addWidget(self.title_bar)
 
@@ -211,7 +208,7 @@ class MainWindow(QMainWindow):
 
         self.url_input = QLineEdit()
         self.url_input.setObjectName("UrlInput")
-        self.url_input.setPlaceholderText("https://... или перетащите видеофайл с ПК (Drag & Drop)")
+        self.url_input.setPlaceholderText("https://... или перетащите видеофайлы (Drag & Drop)")
         self.url_input.setClearButtonEnabled(True)
         self.url_input.textChanged.connect(self._on_url_text_changed)
         self.url_input.returnPressed.connect(self._fetch_metadata)
@@ -225,11 +222,11 @@ class MainWindow(QMainWindow):
         self._h_paste = HoverIconFilter(self.paste_btn, "paste", 15)
         input_bar.addWidget(self.paste_btn)
 
-        self.file_btn = QPushButton(" ФАЙЛ")
+        self.file_btn = QPushButton(" ФАЙЛЫ")
         self.file_btn.setIcon(get_svg_icon("file", color="#EDEDED", size=15))
         self.file_btn.setIconSize(QSize(15, 15))
         self.file_btn.setProperty("class", "GlassButton")
-        self.file_btn.setToolTip("Выбрать локальное видео с компьютера для обработки")
+        self.file_btn.setToolTip("Выбрать одно или несколько видео с ПК")
         self.file_btn.clicked.connect(self._open_file_dialog)
         self._h_file = HoverIconFilter(self.file_btn, "file", 15)
         input_bar.addWidget(self.file_btn)
@@ -348,21 +345,34 @@ class MainWindow(QMainWindow):
 
         content_layout.addLayout(tools_layout)
 
-        # 5. Preview Card (shows on metadata loaded)
+        # 5. Media Container (Preview Card & Multi-Video Queue List)
+        self.media_container = QWidget()
+        media_layout = QVBoxLayout(self.media_container)
+        media_layout.setContentsMargins(0, 0, 0, 0)
+        media_layout.setSpacing(6)
+
         self.preview_card = PreviewCard()
         self.preview_card.image_ready.connect(self._on_preview_image_ready)
         self.preview_card.close_requested.connect(self._clear_loaded_video)
-        content_layout.addWidget(self.preview_card)
+        media_layout.addWidget(self.preview_card)
 
-        # 6. Progress Widget (shows on download / processing)
+        self.queue_widget = VideoQueueWidget()
+        self.queue_widget.queue_changed.connect(self._on_queue_changed)
+        self.queue_widget.active_video_selected.connect(self._on_queue_item_selected)
+        self.queue_widget.add_more_requested.connect(self._open_file_dialog)
+        media_layout.addWidget(self.queue_widget)
+
+        content_layout.addWidget(self.media_container)
+
+        # 6. Progress Widget
         self.progress_widget = ProgressWidget()
         self.progress_widget.cancelled.connect(self._cancel_download)
         content_layout.addWidget(self.progress_widget)
 
-        # Elastic Stretch pushes Download Button & Footer to the bottom by default!
+        # Elastic Stretch pushes Action Button & Footer down cleanly without gaps between cards!
         content_layout.addStretch(1)
 
-        # 7. Main Action Button (Anchored at the bottom!)
+        # 7. Main Action Button
         self.download_btn = QPushButton("  СКАЧАТЬ В ЛУЧШЕМ КАЧЕСТВЕ (MP4)")
         self.download_btn.setIcon(get_svg_icon("download", color="#000000", size=18))
         self.download_btn.setIconSize(QSize(18, 18))
@@ -372,7 +382,7 @@ class MainWindow(QMainWindow):
         self.download_btn.clicked.connect(self._start_download)
         content_layout.addWidget(self.download_btn)
 
-        # 8. Footer (Anchored at the very bottom!)
+        # 8. Footer
         footer_layout = QHBoxLayout()
         footer_layout.setContentsMargins(2, 0, 2, 0)
 
@@ -412,16 +422,37 @@ class MainWindow(QMainWindow):
             self._fetch_metadata()
 
     def _open_file_dialog(self):
-        file_path, _ = QFileDialog.getOpenFileName(
+        file_paths, _ = QFileDialog.getOpenFileNames(
             self,
             "Выберите видео для обработки",
             "",
             "Видео файлы (*.mp4 *.mov *.mkv *.webm *.avi *.flv *.wmv *.m4v *.ts);;Все файлы (*.*)"
         )
-        if file_path:
-            self._load_local_file(file_path)
+        if file_paths:
+            self._load_local_files(file_paths)
 
-    def _load_local_file(self, file_path: str):
+    def _load_local_files(self, file_paths: list[str]):
+        if not file_paths:
+            return
+
+        if len(file_paths) == 1:
+            self._load_single_local_file(file_paths[0])
+            self.queue_widget.clear_all()
+        else:
+            self.url_input.setText(f"[ {len(file_paths)} локальных видео в очереди ]")
+            info_list = []
+            for path in file_paths:
+                info = get_local_media_info(path)
+                if info:
+                    info_list.append(info)
+
+            if info_list:
+                self.queue_widget.add_videos(info_list)
+                self.preview_card.setVisible(False)
+                self.current_video_info = info_list[0]
+                self._update_download_button_text()
+
+    def _load_single_local_file(self, file_path: str):
         self.url_input.setText(file_path)
         info = get_local_media_info(file_path)
         if info:
@@ -430,11 +461,32 @@ class MainWindow(QMainWindow):
                 pix = QPixmap(info['thumbnail'])
                 self.preview_card._on_image_loaded(pix)
             self.preview_card.setVisible(True)
+            self.queue_widget.setVisible(False)
             self._update_download_button_text()
+
+    def _on_queue_changed(self, count: int):
+        if count == 0:
+            self.current_video_info = None
+            self.url_input.clear()
+            self.preview_card.clear()
+        elif count == 1:
+            info = self.queue_widget.get_all_videos()[0]
+            self._load_single_local_file(info.get('url'))
+        self._update_download_button_text()
+
+    def _on_queue_item_selected(self, info: dict):
+        self.current_video_info = info
+        self.preview_card.set_data(info)
+        w = info.get("width", 1920)
+        h = info.get("height", 1080)
+        self.crop_widget.set_source_info(self.preview_card.get_pixmap(), width=w, height=h)
+        if info.get("duration"):
+            self.trim_widget.set_duration_hint(info["duration"])
 
     def _clear_loaded_video(self):
         self.url_input.clear()
         self.preview_card.clear()
+        self.queue_widget.clear_all()
         self.current_video_info = None
         self.crop_widget.toggle.setChecked(False)
         self.trim_widget.toggle.setChecked(False)
@@ -443,12 +495,10 @@ class MainWindow(QMainWindow):
 
     def _on_url_text_changed(self, text: str):
         if not text.strip():
-            self.preview_card.clear()
-            self.current_video_info = None
-            self._update_download_button_text()
+            self._clear_loaded_video()
         elif is_video_file(text):
             if not self.current_video_info or self.current_video_info.get('url') != text:
-                self._load_local_file(text)
+                self._load_single_local_file(text)
 
     def _on_preview_image_ready(self, pixmap):
         sw = 1920
@@ -471,7 +521,7 @@ class MainWindow(QMainWindow):
             return
 
         if is_video_file(url):
-            self._load_local_file(url)
+            self._load_single_local_file(url)
             return
 
         if self.metadata_worker and self.metadata_worker.isRunning():
@@ -488,6 +538,7 @@ class MainWindow(QMainWindow):
     def _on_metadata_ready(self, info: dict):
         self.current_video_info = info
         self.preview_card.set_data(info)
+        self.queue_widget.setVisible(False)
         
         w = info.get("width", 1920)
         h = info.get("height", 1080)
@@ -522,7 +573,6 @@ class MainWindow(QMainWindow):
         self.res_combo.setVisible(mode in ["custom", "video_only"])
         self.audio_fmt_combo.setVisible(mode == "audio_only")
 
-        # Disable crop & smooth for audio_only
         self.crop_widget.setVisible(mode != "audio_only")
         self.smooth_widget.setVisible(mode not in ["audio_only", "gif"])
 
@@ -539,7 +589,23 @@ class MainWindow(QMainWindow):
         self._update_download_button_text()
 
     def _update_download_button_text(self):
-        is_local = self.current_video_info and self.current_video_info.get('is_local')
+        q_count = len(self.queue_widget.get_selected_videos()) if self.queue_widget.isVisible() else 0
+        is_local = (self.current_video_info and self.current_video_info.get('is_local')) or q_count > 0
+
+        if q_count > 1:
+            self.download_btn.setIcon(get_svg_icon("zap", color="#000000", size=18))
+            if self.current_mode in ["best", "custom"]:
+                self.download_btn.setText(f"  ОБРАБОТАТЬ ВСЕ ВИДЕО ({q_count})")
+            elif self.current_mode == "audio_only":
+                fmt = self.audio_fmt_combo.currentText().split()[0]
+                self.download_btn.setText(f"  ИЗВЛЕЧЬ АУДИО [{fmt}] ({q_count} ВИДЕО)")
+            elif self.current_mode == "gif":
+                self.download_btn.setText(f"  КОНВЕРТИРОВАТЬ В GIF ({q_count} ВИДЕО)")
+            elif self.current_mode == "discord_8mb":
+                self.download_btn.setText(f"  СЖАТЬ ДЛЯ DISCORD ({q_count} ВИДЕО)")
+            elif self.current_mode == "video_only":
+                self.download_btn.setText(f"  УДАЛИТЬ ЗВУК ({q_count} ВИДЕО)")
+            return
 
         if is_local:
             self.download_btn.setIcon(get_svg_icon("zap", color="#000000", size=18))
@@ -574,7 +640,9 @@ class MainWindow(QMainWindow):
 
     def _start_download(self):
         url = self.url_input.text().strip()
-        if not url:
+        selected_queue = self.queue_widget.get_selected_videos() if self.queue_widget.isVisible() else []
+
+        if not url and not selected_queue:
             return
 
         if self.download_worker and self.download_worker.isRunning():
@@ -601,9 +669,21 @@ class MainWindow(QMainWindow):
         self.progress_widget.start_progress()
         self.download_btn.setEnabled(False)
 
+        if len(selected_queue) > 1:
+            paths = [v.get('url') for v in selected_queue]
+            self.download_worker = LocalBatchProcessWorker(paths, options, save_dir)
+            self.download_worker.progress_updated.connect(self.progress_widget.update_progress)
+            self.download_worker.item_completed.connect(self._on_queue_item_completed)
+            self.download_worker.batch_completed.connect(self._on_batch_success)
+            self.download_worker.download_error.connect(self._on_download_fail)
+            self.download_worker.status_message.connect(lambda msg: self.progress_widget.status_label.setText(msg.upper()))
+            self.download_worker.start()
+            return
+
         is_local = (self.current_video_info and self.current_video_info.get('is_local')) or is_video_file(url)
         if is_local:
-            self.download_worker = LocalProcessWorker(url, options, save_dir)
+            target_url = self.current_video_info.get('url') if self.current_video_info else url
+            self.download_worker = LocalProcessWorker(target_url, options, save_dir)
         else:
             self.download_worker = DownloadWorker(url, options, save_dir)
 
@@ -612,6 +692,24 @@ class MainWindow(QMainWindow):
         self.download_worker.download_error.connect(self._on_download_fail)
         self.download_worker.status_message.connect(lambda msg: self.progress_widget.status_label.setText(msg.upper()))
         self.download_worker.start()
+
+    def _on_queue_item_completed(self, result: dict):
+        fmt_title = result.get('mode', 'MP4').upper()
+        history.add_entry(
+            title=result.get('title'),
+            url=result.get('url'),
+            file_path=result.get('file_path'),
+            format_type=fmt_title,
+            size_bytes=result.get('file_size', 0),
+            thumbnail=result.get('thumbnail')
+        )
+
+    def _on_batch_success(self, results: list):
+        self.download_btn.setEnabled(True)
+        self._update_download_button_text()
+        last_res = results[-1] if results else {'file_path': settings.get("download_dir"), 'file_size_str': f"{len(results)} файлов"}
+        last_res['mode'] = f"Пакет ({len(results)} шт)"
+        self.progress_widget.complete(last_res)
 
     def _on_download_success(self, result: dict):
         self.download_btn.setEnabled(True)
