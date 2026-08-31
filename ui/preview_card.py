@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QVBoxLayout, QLabel, QSizePolicy
+    QFrame, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QSizePolicy
 )
 from PySide6.QtCore import Qt, QThread, Signal, QByteArray
 from PySide6.QtGui import QPixmap, QImage, QPainter, QPainterPath
@@ -26,6 +26,7 @@ class ImageLoaderWorker(QThread):
 
 class PreviewCard(QFrame):
     image_ready = Signal(QPixmap)
+    close_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -89,7 +90,37 @@ class PreviewCard(QFrame):
         info_layout.addWidget(self.author_label)
 
         info_layout.addStretch()
-        layout.addLayout(info_layout)
+        layout.addLayout(info_layout, stretch=1)
+
+        # Right Action: Close / Remove button
+        right_layout = QVBoxLayout()
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.close_btn = QPushButton("✕")
+        self.close_btn.setObjectName("TitleButton")
+        self.close_btn.setFixedSize(26, 26)
+        self.close_btn.setCursor(Qt.PointingHandCursor)
+        self.close_btn.setStyleSheet("""
+            QPushButton#TitleButton {
+                color: #71717A;
+                font-size: 11px;
+                font-weight: 800;
+                background: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 6px;
+            }
+            QPushButton#TitleButton:hover {
+                color: #FFFFFF;
+                background: rgba(239, 68, 68, 0.35);
+                border: 1px solid rgba(239, 68, 68, 0.6);
+            }
+        """)
+        self.close_btn.setToolTip("Убрать видео из программы")
+        self.close_btn.clicked.connect(self.close_requested.emit)
+        right_layout.addWidget(self.close_btn, alignment=Qt.AlignTop | Qt.AlignRight)
+        right_layout.addStretch()
+
+        layout.addLayout(right_layout)
 
     def set_data(self, data: dict):
         self.title_label.setText(data.get("title", "Без названия"))
@@ -100,11 +131,13 @@ class PreviewCard(QFrame):
         self.thumb_label.setText("LOADING...")
         thumb_url = data.get("thumbnail")
         if thumb_url:
+            if self._image_worker and self._image_worker.isRunning():
+                self._image_worker.terminate()
             self._image_worker = ImageLoaderWorker(thumb_url)
             self._image_worker.image_loaded.connect(self._on_image_loaded)
             self._image_worker.start()
         else:
-            self.thumb_label.setText("NO PREVIEW")
+            self.thumb_label.setText("NO IMAGE")
 
         self.setVisible(True)
 
