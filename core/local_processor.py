@@ -308,10 +308,10 @@ class LocalBatchProcessWorker(QThread):
     download_error = Signal(str)
     status_message = Signal(str)
 
-    def __init__(self, file_paths: list[str], options: dict, save_dir: str):
+    def __init__(self, items: list, fallback_options: dict, save_dir: str):
         super().__init__()
-        self.file_paths = [p.strip().strip('"').strip("'") for p in file_paths]
-        self.options = options
+        self.items = items
+        self.fallback_options = fallback_options
         self.save_dir = save_dir
         self.is_cancelled = False
 
@@ -320,11 +320,21 @@ class LocalBatchProcessWorker(QThread):
 
     def run(self):
         results = []
-        total = len(self.file_paths)
+        total = len(self.items)
         try:
-            for idx, path in enumerate(self.file_paths):
+            for idx, item in enumerate(self.items):
                 if self.is_cancelled:
                     break
+
+                if isinstance(item, dict):
+                    path = (item.get('url') or item.get('file_path', '')).strip().strip('"').strip("'")
+                    opts = item.get('options') or self.fallback_options
+                elif isinstance(item, tuple):
+                    path = item[0].strip().strip('"').strip("'")
+                    opts = item[1] or self.fallback_options
+                else:
+                    path = str(item).strip().strip('"').strip("'")
+                    opts = self.fallback_options
 
                 self.status_message.emit(f"[{idx+1}/{total}] ОБРАБОТКА: {Path(path).name}")
                 base_pct = (idx / total) * 100.0
@@ -339,7 +349,7 @@ class LocalBatchProcessWorker(QThread):
 
                 res = process_single_local_file(
                     path,
-                    self.options,
+                    opts,
                     self.save_dir,
                     status_cb=lambda msg: self.status_message.emit(f"[{idx+1}/{total}] {msg}"),
                     is_cancelled_cb=lambda: self.is_cancelled
