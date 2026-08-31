@@ -321,6 +321,18 @@ class MainWindow(QMainWindow):
         self.smooth_widget = SmoothWidget()
         tools_layout.addWidget(self.smooth_widget)
 
+        # Real-time auto-save options to active video card
+        self._is_restoring_ui = False
+        self.trim_widget.trim_toggled.connect(lambda _: self._auto_save_active_options())
+        self.trim_widget.start_input.textChanged.connect(lambda _: self._auto_save_active_options())
+        self.trim_widget.end_input.textChanged.connect(lambda _: self._auto_save_active_options())
+        self.crop_widget.crop_toggled.connect(lambda _: self._auto_save_active_options())
+        self.crop_widget.crop_changed.connect(lambda _: self._auto_save_active_options())
+        self.smooth_widget.smooth_toggled.connect(lambda _: self._auto_save_active_options())
+        self.smooth_widget.fps_combo.currentIndexChanged.connect(lambda _: self._auto_save_active_options())
+        self.res_combo.currentIndexChanged.connect(lambda _: self._auto_save_active_options())
+        self.audio_fmt_combo.currentIndexChanged.connect(lambda _: self._auto_save_active_options())
+
         content_layout.addLayout(tools_layout)
 
         # 5. Full Video Cards List (Supports duplicate videos, smooth wheel scrolling without scrollbars)
@@ -417,6 +429,7 @@ class MainWindow(QMainWindow):
     def _save_current_ui_to_video_info(self):
         if not self.current_video_info:
             return
+        item_id = self.current_video_info.get('item_id')
         trim_start, trim_end = self.trim_widget.get_trim_range()
         opts = {
             'mode': self.current_mode,
@@ -433,7 +446,15 @@ class MainWindow(QMainWindow):
             'smooth_model': self.smooth_widget.get_model()
         }
         self.current_video_info['options'] = opts
-        self.cards_list.save_active_options(opts)
+        if item_id:
+            self.cards_list.save_card_options(item_id, opts)
+        else:
+            self.cards_list.save_active_options(opts)
+
+    def _auto_save_active_options(self):
+        if getattr(self, '_is_restoring_ui', False):
+            return
+        self._save_current_ui_to_video_info()
 
     def _restore_ui_from_video_info(self, info: dict):
         opts = info.get('options')
@@ -482,17 +503,20 @@ class MainWindow(QMainWindow):
             self.smooth_widget.fps_combo.setCurrentIndex(2)
 
     def _on_active_video_changed(self, info: dict, pixmap: QPixmap):
-        self._save_current_ui_to_video_info()
-        self.current_video_info = info
-        w = info.get("width", 1920)
-        h = info.get("height", 1080)
-        self.crop_widget.set_source_info(pixmap, width=w, height=h)
-        self.trim_widget.set_source_video(info.get('url'), info.get('duration', 60))
-        if info.get("available_res"):
-            self.res_combo.clear()
-            self.res_combo.addItems(info["available_res"])
-        self._restore_ui_from_video_info(info)
-        self._update_download_button_text()
+        self._is_restoring_ui = True
+        try:
+            self.current_video_info = info
+            w = info.get("width", 1920)
+            h = info.get("height", 1080)
+            self.crop_widget.set_source_info(pixmap, width=w, height=h)
+            self.trim_widget.set_source_video(info.get('url'), info.get('duration', 60))
+            if info.get("available_res"):
+                self.res_combo.clear()
+                self.res_combo.addItems(info["available_res"])
+            self._restore_ui_from_video_info(info)
+            self._update_download_button_text()
+        finally:
+            self._is_restoring_ui = False
 
     def _on_cards_list_changed(self, count: int):
         if count == 0:
@@ -588,6 +612,7 @@ class MainWindow(QMainWindow):
             pill.style().polish(pill)
 
         self._update_download_button_text()
+        self._auto_save_active_options()
 
     def _update_download_button_text(self):
         selected_vids = self.cards_list.get_selected_videos()
