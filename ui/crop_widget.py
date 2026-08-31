@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QPushButton, QWidget
+    QFrame, QHBoxLayout, QLabel, QPushButton, QWidget, QSizePolicy
 )
 from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QIcon, QPixmap
@@ -39,8 +39,9 @@ class CropWidget(QFrame):
         self.title_lbl.setStyleSheet("color: #EDEDED; font-size: 12px; font-weight: 700;")
         layout.addWidget(self.title_lbl)
 
-        # Controls Container
+        # Controls Container (Fixed size, tightly packed on the left)
         self.controls_container = QWidget()
+        self.controls_container.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
         ctrl_layout = QHBoxLayout(self.controls_container)
         ctrl_layout.setContentsMargins(0, 0, 0, 0)
         ctrl_layout.setSpacing(8)
@@ -57,6 +58,18 @@ class CropWidget(QFrame):
                 padding: 3px 10px;
                 color: #EDEDED;
                 border-radius: 6px;
+                background-color: rgba(255, 255, 255, 0.06);
+                border: 1px solid rgba(255, 255, 255, 0.16);
+            }
+            QPushButton:hover {
+                color: #FFFFFF;
+                background-color: rgba(255, 255, 255, 0.16);
+                border: 1px solid rgba(255, 255, 255, 0.40);
+            }
+            QPushButton:pressed {
+                color: #FFFFFF;
+                background-color: rgba(255, 255, 255, 0.24);
+                border: 1px solid rgba(255, 255, 255, 0.60);
             }
             QPushButton:disabled {
                 color: #52525B;
@@ -84,7 +97,7 @@ class CropWidget(QFrame):
         ctrl_layout.addWidget(self.status_tag)
 
         layout.addWidget(self.controls_container)
-        layout.addStretch()
+        layout.addStretch(1)
 
     def set_source_info(self, pixmap: QPixmap = None, width: int = 1920, height: int = 1080):
         self._preview_pixmap = pixmap
@@ -93,7 +106,7 @@ class CropWidget(QFrame):
 
     def _on_toggled(self, checked: bool):
         self.edit_btn.setEnabled(checked)
-        self.edit_btn.setIcon(get_svg_icon("crop", color="#EDEDED" if checked else "#52525B", size=13))
+        self.edit_btn.setIcon(get_svg_icon("crop", color="#FFFFFF" if checked else "#52525B", size=13))
         self.status_tag.setVisible(checked and self._crop_params is not None)
         self.crop_toggled.emit(checked)
         if checked and self._crop_params is None:
@@ -113,11 +126,11 @@ class CropWidget(QFrame):
             h = self._crop_params.get('h', self._source_h)
             self.status_tag.setText(f"{w}×{h}")
             self.status_tag.setVisible(True)
-            if not self.toggle.isChecked():
-                self.toggle.setChecked(True)
 
     def is_crop_enabled(self) -> bool:
-        return self.toggle.isChecked() and self._crop_params is not None
+        return self.toggle.isChecked()
 
     def get_crop_params(self) -> dict:
+        if not self.is_crop_enabled():
+            return None
         return self._crop_params
