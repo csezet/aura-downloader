@@ -36,6 +36,7 @@ class VideoCardWidget(QFrame):
         super().__init__(parent)
         self.data = data
         self.item_id = item_id
+        self.item_options = dict(data.get('options', {}))
         self._raw_pixmap = None
         self._image_worker = None
         self._is_selected = False
@@ -134,6 +135,13 @@ class VideoCardWidget(QFrame):
 
         # Load Thumbnail
         self._load_thumb(data.get("thumbnail"))
+
+    def set_options(self, opts: dict):
+        if opts:
+            self.item_options = dict(opts)
+
+    def get_options(self) -> dict:
+        return dict(self.item_options)
 
     def _update_style(self, selected: bool):
         self._is_selected = selected
@@ -325,7 +333,20 @@ class VideoCardsListWidget(QWidget):
         self.active_id = item_id
         card = self._get_card(item_id)
         if card:
-            self.active_video_changed.emit(card.data, card.get_pixmap())
+            # Attach live options before emitting
+            payload = dict(card.data)
+            payload['options'] = card.get_options()
+            payload['item_id'] = item_id
+            self.active_video_changed.emit(payload, card.get_pixmap())
+
+    def save_active_options(self, opts: dict):
+        card = self.get_active_card()
+        if card and opts:
+            card.set_options(opts)
+
+    def get_active_options(self) -> dict:
+        card = self.get_active_card()
+        return card.get_options() if card else {}
 
     def _get_card(self, item_id: str) -> VideoCardWidget:
         for c in self.cards:
@@ -372,12 +393,14 @@ class VideoCardsListWidget(QWidget):
         self.list_changed.emit(0)
 
     def get_all_videos(self) -> list[dict]:
-        return [c.data for c in self.cards]
+        return [{**c.data, 'options': c.get_options(), 'item_id': c.item_id} for c in self.cards]
 
     def get_selected_videos(self) -> list[dict]:
-        sel = [c.data for c in self.cards if c.is_selected()]
-        # If none selected, fallback to active or all
-        return sel if sel else ([self.get_active_card().data] if self.get_active_card() else [])
+        sel = [{**c.data, 'options': c.get_options(), 'item_id': c.item_id} for c in self.cards if c.is_selected()]
+        if sel:
+            return sel
+        active = self.get_active_card()
+        return [{**active.data, 'options': active.get_options(), 'item_id': active.item_id}] if active else []
 
     def get_active_card(self) -> VideoCardWidget:
         for c in self.cards:
