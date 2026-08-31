@@ -88,6 +88,7 @@ class MainWindow(QMainWindow):
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls() or event.mimeData().hasText():
             event.acceptProposedAction()
+            self.drop_hint_bar.setVisible(True)
         else:
             event.ignore()
 
@@ -98,9 +99,11 @@ class MainWindow(QMainWindow):
             event.ignore()
 
     def dragLeaveEvent(self, event):
+        self.drop_hint_bar.setVisible(False)
         event.accept()
 
     def dropEvent(self, event):
+        self.drop_hint_bar.setVisible(False)
         files = []
         if event.mimeData().hasUrls():
             for u in event.mimeData().urls():
@@ -148,6 +151,28 @@ class MainWindow(QMainWindow):
         content_layout = QVBoxLayout(content_widget)
         content_layout.setContentsMargins(18, 14, 18, 16)
         content_layout.setSpacing(10)
+
+        # Drop Hint Indicator Bar (Shows while dragging files over)
+        self.drop_hint_bar = QFrame()
+        self.drop_hint_bar.setStyleSheet("""
+            QFrame {
+                background: rgba(255, 255, 255, 0.12);
+                border: 2px dashed #FFFFFF;
+                border-radius: 8px;
+            }
+        """)
+        self.drop_hint_bar.setFixedHeight(38)
+        self.drop_hint_bar.setVisible(False)
+        dh_layout = QHBoxLayout(self.drop_hint_bar)
+        dh_layout.setContentsMargins(10, 0, 10, 0)
+        dh_icon = QLabel()
+        dh_icon.setPixmap(get_svg_icon("upload", color="#FFFFFF", size=18).pixmap(18, 18))
+        dh_layout.addWidget(dh_icon)
+        dh_lbl = QLabel("ОТПУСТИТЕ ФАЙЛЫ ДЛЯ ДОБАВЛЕНИЯ В AURA STUDIO")
+        dh_lbl.setStyleSheet("color: #FFFFFF; font-size: 11px; font-weight: 800; letter-spacing: 1px;")
+        dh_layout.addWidget(dh_lbl)
+        dh_layout.addStretch()
+        content_layout.addWidget(self.drop_hint_bar)
 
         # 2. Upper Input Bar
         input_bar = QHBoxLayout()
@@ -406,9 +431,7 @@ class MainWindow(QMainWindow):
 
                 self.preview_card.set_data(info_list[0])
                 self.preview_card.setVisible(True)
-                self.queue_widget.clear_all()
-                self.queue_widget.add_videos(info_list)
-                self.queue_widget.setVisible(True)
+                self.queue_widget.set_videos(info_list)
                 self.current_video_info = info_list[0]
                 self._update_download_button_text()
 
@@ -424,7 +447,6 @@ class MainWindow(QMainWindow):
             self.preview_card.set_data(info)
             self.preview_card.setVisible(True)
             self.queue_widget.clear_all()
-            self.queue_widget.setVisible(False)
             
             w = info.get("width", 1920)
             h = info.get("height", 1080)
@@ -434,13 +456,6 @@ class MainWindow(QMainWindow):
             self._update_download_button_text()
 
     def _on_queue_changed(self, count: int):
-        if count == 0:
-            self.current_video_info = None
-            self.url_input.clear()
-            self.preview_card.clear()
-        elif count == 1:
-            info = self.queue_widget.get_all_videos()[0]
-            self._load_single_local_file(info.get('url'))
         self._update_download_button_text()
 
     def _on_queue_item_selected(self, info: dict):
