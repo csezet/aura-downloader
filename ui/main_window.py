@@ -199,6 +199,7 @@ class MainWindow(QMainWindow):
         self.url_input = QLineEdit()
         self.url_input.setObjectName("UrlInput")
         self.url_input.setPlaceholderText("https://... или перетащите видеофайл с ПК (Drag & Drop)")
+        self.url_input.setClearButtonEnabled(True)
         self.url_input.textChanged.connect(self._on_url_text_changed)
         self.url_input.returnPressed.connect(self._fetch_metadata)
         input_bar.addWidget(self.url_input, stretch=1)
@@ -337,6 +338,7 @@ class MainWindow(QMainWindow):
         # 5. Preview Card (shows on metadata loaded)
         self.preview_card = PreviewCard()
         self.preview_card.image_ready.connect(self._on_preview_image_ready)
+        self.preview_card.close_requested.connect(self._clear_loaded_video)
         content_layout.addWidget(self.preview_card)
 
         # 6. Progress Widget (shows on download / processing)
@@ -416,6 +418,15 @@ class MainWindow(QMainWindow):
                 self.preview_card._on_image_loaded(pix)
             self.preview_card.setVisible(True)
             self._update_download_button_text()
+
+    def _clear_loaded_video(self):
+        self.url_input.clear()
+        self.preview_card.clear()
+        self.current_video_info = None
+        self.crop_widget.toggle.setChecked(False)
+        self.trim_widget.toggle.setChecked(False)
+        self.smooth_widget.toggle.setChecked(False)
+        self._update_download_button_text()
 
     def _on_url_text_changed(self, text: str):
         if not text.strip():
