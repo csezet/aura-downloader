@@ -47,6 +47,50 @@ class HoverIconFilter(QWidget):
         return super().eventFilter(obj, event)
 
 
+class DropOverlay(QFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setAcceptDrops(False)
+        self.setStyleSheet("""
+            DropOverlay {
+                background-color: rgba(10, 14, 20, 0.92);
+                border: 2px dashed rgba(255, 255, 255, 0.85);
+                border-radius: 12px;
+            }
+        """)
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignCenter)
+        layout.setSpacing(12)
+
+        icon_lbl = QLabel()
+        icon_lbl.setPixmap(get_svg_icon("upload", color="#FFFFFF", size=48).pixmap(48, 48))
+        icon_lbl.setAlignment(Qt.AlignCenter)
+        icon_lbl.setStyleSheet("background: transparent; border: none;")
+        layout.addWidget(icon_lbl)
+
+        title = QLabel("ОТПУСТИТЕ ФАЙЛЫ ДЛЯ ОБРАБОТКИ")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("color: #FFFFFF; font-size: 15px; font-weight: 800; letter-spacing: 1px; background: transparent; border: none;")
+        layout.addWidget(title)
+
+        subtitle = QLabel("MP4 • MOV • MKV • WEBM • AVI • ПОДДЕРЖКА ПАЧКИ ВИДЕО")
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setStyleSheet("color: #A1A1AA; font-size: 11px; font-weight: 700; font-family: 'Consolas', monospace; background: transparent; border: none;")
+        layout.addWidget(subtitle)
+
+        self.setVisible(False)
+
+    def show_overlay(self):
+        if self.parent():
+            self.resize(self.parent().size())
+            self.raise_()
+        self.setVisible(True)
+
+    def hide_overlay(self):
+        self.setVisible(False)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, icon_path=None):
         super().__init__()
@@ -85,10 +129,15 @@ class MainWindow(QMainWindow):
                 pass
         return super().nativeEvent(eventType, message)
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'drop_overlay') and self.drop_overlay.isVisible():
+            self.drop_overlay.resize(self.central_container.size())
+
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls() or event.mimeData().hasText():
             event.acceptProposedAction()
-            self.drop_hint_bar.setVisible(True)
+            self.drop_overlay.show_overlay()
         else:
             event.ignore()
 
@@ -99,11 +148,11 @@ class MainWindow(QMainWindow):
             event.ignore()
 
     def dragLeaveEvent(self, event):
-        self.drop_hint_bar.setVisible(False)
+        self.drop_overlay.hide_overlay()
         event.accept()
 
     def dropEvent(self, event):
-        self.drop_hint_bar.setVisible(False)
+        self.drop_overlay.hide_overlay()
         files = []
         if event.mimeData().hasUrls():
             for u in event.mimeData().urls():
@@ -151,28 +200,6 @@ class MainWindow(QMainWindow):
         content_layout = QVBoxLayout(content_widget)
         content_layout.setContentsMargins(18, 14, 18, 16)
         content_layout.setSpacing(10)
-
-        # Drop Hint Indicator Bar (Shows while dragging files over)
-        self.drop_hint_bar = QFrame()
-        self.drop_hint_bar.setStyleSheet("""
-            QFrame {
-                background: rgba(255, 255, 255, 0.12);
-                border: 2px dashed #FFFFFF;
-                border-radius: 8px;
-            }
-        """)
-        self.drop_hint_bar.setFixedHeight(38)
-        self.drop_hint_bar.setVisible(False)
-        dh_layout = QHBoxLayout(self.drop_hint_bar)
-        dh_layout.setContentsMargins(10, 0, 10, 0)
-        dh_icon = QLabel()
-        dh_icon.setPixmap(get_svg_icon("upload", color="#FFFFFF", size=18).pixmap(18, 18))
-        dh_layout.addWidget(dh_icon)
-        dh_lbl = QLabel("ОТПУСТИТЕ ФАЙЛЫ ДЛЯ ДОБАВЛЕНИЯ В AURA STUDIO")
-        dh_lbl.setStyleSheet("color: #FFFFFF; font-size: 11px; font-weight: 800; letter-spacing: 1px;")
-        dh_layout.addWidget(dh_lbl)
-        dh_layout.addStretch()
-        content_layout.addWidget(self.drop_hint_bar)
 
         # 2. Upper Input Bar
         input_bar = QHBoxLayout()
@@ -374,6 +401,9 @@ class MainWindow(QMainWindow):
         content_layout.addLayout(footer_layout)
         main_layout.addWidget(content_widget)
 
+        # 9. Full-Window Animated Drop Overlay
+        self.drop_overlay = DropOverlay(self.central_container)
+
     def _setup_clipboard(self):
         self.clipboard_watcher = ClipboardWatcher(self)
         self.clipboard_watcher.url_detected.connect(self._on_clipboard_url)
@@ -429,10 +459,19 @@ class MainWindow(QMainWindow):
                 self.url_input.setText(f"[ {len(info_list)} локальных видео в очереди ]")
                 self.url_input.blockSignals(False)
 
+                self.current_video_info = info_list[0]
                 self.preview_card.set_data(info_list[0])
                 self.preview_card.setVisible(True)
+
                 self.queue_widget.set_videos(info_list)
-                self.current_video_info = info_list[0]
+                self.queue_widget.setVisible(True)
+
+                w = info_list[0].get("width", 1920)
+                h = info_list[0].get("height", 1080)
+                self.crop_widget.set_source_info(self.preview_card.get_pixmap(), width=w, height=h)
+                if info_list[0].get("duration"):
+                    self.trim_widget.set_duration_hint(info_list[0]["duration"])
+
                 self._update_download_button_text()
 
     def _load_single_local_file(self, file_path: str):
@@ -456,16 +495,21 @@ class MainWindow(QMainWindow):
             self._update_download_button_text()
 
     def _on_queue_changed(self, count: int):
+        if count == 0:
+            if not self.current_video_info or self.current_video_info.get('is_local'):
+                pass
         self._update_download_button_text()
 
     def _on_queue_item_selected(self, info: dict):
         self.current_video_info = info
         self.preview_card.set_data(info)
+        self.preview_card.setVisible(True)
         w = info.get("width", 1920)
         h = info.get("height", 1080)
         self.crop_widget.set_source_info(self.preview_card.get_pixmap(), width=w, height=h)
         if info.get("duration"):
             self.trim_widget.set_duration_hint(info["duration"])
+        self._update_download_button_text()
 
     def _clear_loaded_video(self):
         self.url_input.clear()
