@@ -153,8 +153,25 @@ class MetadataWorker(QThread):
                             height = f.get('height')
                             break
 
+                # Extract playable direct stream URL for instant in-app player preview
+                direct_url = info.get('url')
+                if not direct_url and formats:
+                    for f in reversed(formats):
+                        if f.get('url') and f.get('ext') == 'mp4' and f.get('vcodec') != 'none' and f.get('acodec') != 'none':
+                            direct_url = f.get('url')
+                            break
+                    if not direct_url:
+                        for f in reversed(formats):
+                            if f.get('url') and f.get('ext') == 'mp4' and f.get('vcodec') != 'none':
+                                direct_url = f.get('url')
+                                break
+                    if not direct_url and formats:
+                        direct_url = formats[-1].get('url')
+
                 result = {
                     'url': self.url,
+                    'direct_url': direct_url,
+                    'playable_url': direct_url or self.url,
                     'title': title,
                     'uploader': uploader,
                     'duration': duration,
