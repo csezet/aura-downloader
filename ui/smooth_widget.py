@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QComboBox, QPushButton, QWidget
+    QFrame, QHBoxLayout, QLabel, QComboBox, QPushButton, QWidget, QSizePolicy
 )
 from PySide6.QtCore import Qt, Signal, QThread, QSize
 from PySide6.QtGui import QIcon
@@ -44,8 +44,9 @@ class SmoothWidget(QFrame):
         self.title_lbl.setStyleSheet("color: #EDEDED; font-size: 12px; font-weight: 700;")
         layout.addWidget(self.title_lbl)
 
-        # Controls Container
+        # Controls Container (Fixed size, tightly packed on the left)
         self.controls_container = QWidget()
+        self.controls_container.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
         ctrl_layout = QHBoxLayout(self.controls_container)
         ctrl_layout.setContentsMargins(0, 0, 0, 0)
         ctrl_layout.setSpacing(8)
@@ -81,6 +82,13 @@ class SmoothWidget(QFrame):
                 padding: 3px 8px;
                 border-radius: 6px;
                 color: #A1A1AA;
+                background-color: rgba(255, 255, 255, 0.06);
+                border: 1px solid rgba(255, 255, 255, 0.16);
+            }
+            QPushButton:hover {
+                color: #FFFFFF;
+                background-color: rgba(255, 255, 255, 0.16);
+                border: 1px solid rgba(255, 255, 255, 0.40);
             }
             QPushButton:disabled {
                 color: #52525B;
@@ -98,7 +106,7 @@ class SmoothWidget(QFrame):
         ctrl_layout.addWidget(self.status_lbl)
 
         layout.addWidget(self.controls_container)
-        layout.addStretch()
+        layout.addStretch(1)
 
         self._update_engine_ui()
 
@@ -109,47 +117,67 @@ class SmoothWidget(QFrame):
             self.engine_btn.setIcon(get_svg_icon("zap", color="#22C55E" if checked else "#52525B", size=12))
             if checked:
                 self.engine_btn.setStyleSheet("""
-                    font-size: 10px;
-                    font-weight: 700;
-                    padding: 3px 8px;
-                    border-radius: 6px;
-                    color: #22C55E;
-                    border: 1px solid rgba(34, 197, 94, 0.3);
-                    background: rgba(34, 197, 94, 0.1);
+                    QPushButton {
+                        font-size: 10px;
+                        font-weight: 700;
+                        padding: 3px 8px;
+                        border-radius: 6px;
+                        color: #22C55E;
+                        border: 1px solid rgba(34, 197, 94, 0.4);
+                        background: rgba(34, 197, 94, 0.1);
+                    }
+                    QPushButton:hover {
+                        color: #4ADE80;
+                        border: 1px solid rgba(34, 197, 94, 0.7);
+                        background: rgba(34, 197, 94, 0.18);
+                    }
                 """)
             else:
                 self.engine_btn.setStyleSheet("""
-                    font-size: 10px;
-                    font-weight: 700;
-                    padding: 3px 8px;
-                    border-radius: 6px;
-                    color: #52525B;
-                    border: 1px solid rgba(255, 255, 255, 0.05);
-                    background: rgba(0, 0, 0, 0.2);
+                    QPushButton {
+                        font-size: 10px;
+                        font-weight: 700;
+                        padding: 3px 8px;
+                        border-radius: 6px;
+                        color: #52525B;
+                        border: 1px solid rgba(255, 255, 255, 0.05);
+                        background: rgba(0, 0, 0, 0.2);
+                    }
                 """)
+            self.status_lbl.setText("Готов к ускорению")
         else:
-            self.engine_btn.setText(" FFmpeg MCI")
-            self.engine_btn.setIcon(get_svg_icon("cpu", color="#EDEDED" if checked else "#52525B", size=12))
+            self.engine_btn.setText(" СКАЧАТЬ RIFE AI")
+            self.engine_btn.setIcon(get_svg_icon("download", color="#3B82F6" if checked else "#52525B", size=12))
             if checked:
                 self.engine_btn.setStyleSheet("""
-                    font-size: 10px;
-                    font-weight: 700;
-                    padding: 3px 8px;
-                    border-radius: 6px;
-                    color: #EDEDED;
-                    border: 1px solid rgba(255, 255, 255, 0.2);
-                    background: rgba(255, 255, 255, 0.08);
+                    QPushButton {
+                        font-size: 10px;
+                        font-weight: 700;
+                        padding: 3px 8px;
+                        border-radius: 6px;
+                        color: #60A5FA;
+                        border: 1px solid rgba(59, 130, 246, 0.4);
+                        background: rgba(59, 130, 246, 0.1);
+                    }
+                    QPushButton:hover {
+                        color: #93C5FD;
+                        border: 1px solid rgba(59, 130, 246, 0.7);
+                        background: rgba(59, 130, 246, 0.18);
+                    }
                 """)
             else:
                 self.engine_btn.setStyleSheet("""
-                    font-size: 10px;
-                    font-weight: 700;
-                    padding: 3px 8px;
-                    border-radius: 6px;
-                    color: #52525B;
-                    border: 1px solid rgba(255, 255, 255, 0.05);
-                    background: rgba(0, 0, 0, 0.2);
+                    QPushButton {
+                        font-size: 10px;
+                        font-weight: 700;
+                        padding: 3px 8px;
+                        border-radius: 6px;
+                        color: #52525B;
+                        border: 1px solid rgba(255, 255, 255, 0.05);
+                        background: rgba(0, 0, 0, 0.2);
+                    }
                 """)
+            self.status_lbl.setText("Требуется ~40 МБ")
 
     def _on_toggled(self, checked: bool):
         self.fps_combo.setEnabled(checked)
@@ -159,20 +187,19 @@ class SmoothWidget(QFrame):
 
     def _toggle_engine(self):
         if not is_rife_available():
-            if self._dl_thread and self._dl_thread.isRunning():
-                return
-            self.status_lbl.setText("Загрузка RIFE...")
-            self._dl_thread = RifeDownloaderThread()
-            self._dl_thread.status_updated.connect(self.status_lbl.setText)
-            self._dl_thread.download_finished.connect(self._on_rife_download_done)
-            self._dl_thread.start()
+            self._start_download()
 
-    def _on_rife_download_done(self, success: bool):
+    def _start_download(self):
+        self.engine_btn.setEnabled(False)
+        self.engine_btn.setText(" ЗАГРУЗКА...")
+        self._dl_thread = RifeDownloaderThread()
+        self._dl_thread.status_updated.connect(lambda s: self.status_lbl.setText(s))
+        self._dl_thread.download_finished.connect(self._on_download_finished)
+        self._dl_thread.start()
+
+    def _on_download_finished(self, success: bool):
+        self.engine_btn.setEnabled(True)
         self._update_engine_ui()
-        if success:
-            self.status_lbl.setText("RIFE готов!")
-        else:
-            self.status_lbl.setText("Используется FFmpeg")
 
     def is_smooth_enabled(self) -> bool:
         return self.toggle.isChecked()
@@ -183,7 +210,8 @@ class SmoothWidget(QFrame):
             return 60
         elif idx == 1:
             return 120
-        return 60
+        else:
+            return 0  # 2x multiplier
 
     def get_model(self) -> str:
-        return "rife" if is_rife_available() else "ffmpeg"
+        return "rife-v4.6"
