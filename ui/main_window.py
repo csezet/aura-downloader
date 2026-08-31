@@ -1,5 +1,7 @@
 import os
 import subprocess
+import ctypes
+from ctypes import wintypes
 from pathlib import Path
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
@@ -131,6 +133,17 @@ class MainWindow(QMainWindow):
         super().showEvent(event)
         hwnd = int(self.winId())
         apply_acrylic_effect(hwnd)
+
+    def nativeEvent(self, eventType, message):
+        if eventType in (b"windows_generic_MSG", "windows_generic_MSG"):
+            try:
+                msg = wintypes.MSG.from_address(int(message))
+                # WM_NCCALCSIZE = 0x0083
+                if msg.message == 0x0083 and msg.wParam == 1:
+                    return True, 0
+            except Exception:
+                pass
+        return super().nativeEvent(eventType, message)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
