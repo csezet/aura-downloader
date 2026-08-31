@@ -9,6 +9,7 @@ from ui.crop_dialog import CropDialog
 
 class CropWidget(QFrame):
     crop_toggled = Signal(bool)
+    crop_changed = Signal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -109,8 +110,6 @@ class CropWidget(QFrame):
         self.edit_btn.setIcon(get_svg_icon("crop", color="#FFFFFF" if checked else "#52525B", size=13))
         self.status_tag.setVisible(checked and self._crop_params is not None)
         self.crop_toggled.emit(checked)
-        if checked and self._crop_params is None:
-            self._open_crop_dialog()
 
     def _open_crop_dialog(self):
         dialog = CropDialog(
@@ -126,6 +125,7 @@ class CropWidget(QFrame):
             h = self._crop_params.get('h', self._source_h)
             self.status_tag.setText(f"{w}×{h}")
             self.status_tag.setVisible(True)
+            self.crop_changed.emit(self._crop_params)
 
     def is_crop_enabled(self) -> bool:
         return self.toggle.isChecked()
