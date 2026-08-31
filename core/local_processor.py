@@ -85,7 +85,7 @@ def get_local_media_info(file_path: str) -> dict:
         'is_local': True,
         'title': Path(file_path).name,
         'uploader': f"Локальное видео ({width}×{height}, {int(round(fps))} FPS)",
-        'duration': int(duration),
+        'duration': duration,
         'duration_str': format_seconds(duration) if duration else "--:--",
         'thumbnail': thumb_path,
         'platform': 'Local Video',
