@@ -359,6 +359,7 @@ class MainWindow(QMainWindow):
         self.queue_widget.queue_changed.connect(self._on_queue_changed)
         self.queue_widget.active_video_selected.connect(self._on_queue_item_selected)
         self.queue_widget.add_more_requested.connect(self._open_file_dialog)
+        self.queue_widget.clear_all_requested.connect(self._reset_all_state)
         media_layout.addWidget(self.queue_widget)
 
         content_layout.addWidget(self.media_container)
@@ -444,35 +445,50 @@ class MainWindow(QMainWindow):
         if not clean_paths:
             return
 
-        if len(clean_paths) == 1:
-            self._load_single_local_file(clean_paths[0])
-            self.queue_widget.clear_all()
+        # If we already have a local video loaded, ensure it is in the queue
+        if self.current_video_info and self.current_video_info.get('is_local'):
+            if self.queue_widget.count() == 0:
+                self.queue_widget.add_video(self.current_video_info)
+
+        new_info = None
+        for path in clean_paths:
+            info = get_local_media_info(path)
+            if info:
+                self.queue_widget.add_video(info)
+                new_info = info
+
+        total_vids = self.queue_widget.get_all_videos()
+        if len(total_vids) == 0:
+            if len(clean_paths) == 1:
+                self._load_single_local_file(clean_paths[0])
+            return
+
+        if len(total_vids) == 1:
+            self.current_video_info = total_vids[0]
+            self.preview_card.set_data(total_vids[0])
+            self.preview_card.setVisible(True)
+            self.queue_widget.setVisible(False)
+            self.url_input.blockSignals(True)
+            self.url_input.setText(total_vids[0].get('url', ''))
+            self.url_input.blockSignals(False)
         else:
-            info_list = []
-            for path in clean_paths:
-                info = get_local_media_info(path)
-                if info:
-                    info_list.append(info)
+            active_item = new_info or total_vids[-1]
+            self.current_video_info = active_item
+            self.preview_card.set_data(active_item)
+            self.preview_card.setVisible(True)
+            self.queue_widget.set_active_video(active_item.get('url'))
+            self.queue_widget.setVisible(True)
+            self.url_input.blockSignals(True)
+            self.url_input.setText(f"[ {len(total_vids)} локальных видео в очереди ]")
+            self.url_input.blockSignals(False)
 
-            if info_list:
-                self.url_input.blockSignals(True)
-                self.url_input.setText(f"[ {len(info_list)} локальных видео в очереди ]")
-                self.url_input.blockSignals(False)
+        w = self.current_video_info.get("width", 1920)
+        h = self.current_video_info.get("height", 1080)
+        self.crop_widget.set_source_info(self.preview_card.get_pixmap(), width=w, height=h)
+        if self.current_video_info.get("duration"):
+            self.trim_widget.set_duration_hint(self.current_video_info["duration"])
 
-                self.current_video_info = info_list[0]
-                self.preview_card.set_data(info_list[0])
-                self.preview_card.setVisible(True)
-
-                self.queue_widget.set_videos(info_list)
-                self.queue_widget.setVisible(True)
-
-                w = info_list[0].get("width", 1920)
-                h = info_list[0].get("height", 1080)
-                self.crop_widget.set_source_info(self.preview_card.get_pixmap(), width=w, height=h)
-                if info_list[0].get("duration"):
-                    self.trim_widget.set_duration_hint(info_list[0]["duration"])
-
-                self._update_download_button_text()
+        self._update_download_button_text()
 
     def _load_single_local_file(self, file_path: str):
         file_path = file_path.strip().strip('"').strip("'")
@@ -496,8 +512,18 @@ class MainWindow(QMainWindow):
 
     def _on_queue_changed(self, count: int):
         if count == 0:
-            if not self.current_video_info or self.current_video_info.get('is_local'):
-                pass
+            if self.current_video_info is not None:
+                self._reset_all_state()
+        elif count == 1:
+            rem = self.queue_widget.get_all_videos()
+            if rem:
+                self.current_video_info = rem[0]
+                self.preview_card.set_data(rem[0])
+                self.preview_card.setVisible(True)
+                self.queue_widget.setVisible(False)
+                self.url_input.blockSignals(True)
+                self.url_input.setText(rem[0].get('url', ''))
+                self.url_input.blockSignals(False)
         self._update_download_button_text()
 
     def _on_queue_item_selected(self, info: dict):
@@ -512,10 +538,38 @@ class MainWindow(QMainWindow):
         self._update_download_button_text()
 
     def _clear_loaded_video(self):
+        if self.queue_widget.count() > 1:
+            active_url = self.current_video_info.get('url') if self.current_video_info else ''
+            self.queue_widget.remove_video(active_url)
+            rem = self.queue_widget.get_all_videos()
+            if len(rem) == 1:
+                self.current_video_info = rem[0]
+                self.preview_card.set_data(rem[0])
+                self.preview_card.setVisible(True)
+                self.queue_widget.setVisible(False)
+                self.url_input.blockSignals(True)
+                self.url_input.setText(rem[0].get('url', ''))
+                self.url_input.blockSignals(False)
+                self._update_download_button_text()
+            elif len(rem) > 1:
+                self.url_input.blockSignals(True)
+                self.url_input.setText(f"[ {len(rem)} локальных видео в очереди ]")
+                self.url_input.blockSignals(False)
+                self._update_download_button_text()
+            else:
+                self._reset_all_state()
+        else:
+            self._reset_all_state()
+
+    def _reset_all_state(self):
+        if self.current_video_info is None and self.queue_widget.count() == 0 and not self.preview_card.isVisible():
+            return
+        self.current_video_info = None
+        self.url_input.blockSignals(True)
         self.url_input.clear()
+        self.url_input.blockSignals(False)
         self.preview_card.clear()
         self.queue_widget.clear_all()
-        self.current_video_info = None
         self.crop_widget.toggle.setChecked(False)
         self.trim_widget.toggle.setChecked(False)
         self.smooth_widget.toggle.setChecked(False)
@@ -523,10 +577,10 @@ class MainWindow(QMainWindow):
 
     def _on_url_text_changed(self, text: str):
         if not text.strip():
-            self._clear_loaded_video()
+            self._reset_all_state()
         elif is_video_file(text):
             if not self.current_video_info or self.current_video_info.get('url') != text:
-                self._load_single_local_file(text)
+                self._load_local_files([text])
 
     def _on_preview_image_ready(self, pixmap):
         sw = 1920
@@ -549,7 +603,7 @@ class MainWindow(QMainWindow):
             return
 
         if is_video_file(url):
-            self._load_single_local_file(url)
+            self._load_local_files([url])
             return
 
         if self.metadata_worker and self.metadata_worker.isRunning():
@@ -620,6 +674,11 @@ class MainWindow(QMainWindow):
         q_count = len(self.queue_widget.get_selected_videos()) if self.queue_widget.isVisible() else 0
         is_local = (self.current_video_info and self.current_video_info.get('is_local')) or q_count > 0
 
+        if not self.current_video_info and q_count == 0:
+            self.download_btn.setIcon(get_svg_icon("download", color="#000000", size=18))
+            self.download_btn.setText("  СКАЧАТЬ В ЛУЧШЕМ КАЧЕСТВЕ (MP4)")
+            return
+
         if q_count > 1:
             self.download_btn.setIcon(get_svg_icon("zap", color="#000000", size=18))
             if self.current_mode in ["best", "custom"]:
@@ -670,7 +729,7 @@ class MainWindow(QMainWindow):
         url = self.url_input.text().strip()
         selected_queue = self.queue_widget.get_selected_videos() if self.queue_widget.isVisible() else []
 
-        if not url and not selected_queue:
+        if not url and not selected_queue and not self.current_video_info:
             return
 
         if self.download_worker and self.download_worker.isRunning():
