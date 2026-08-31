@@ -145,10 +145,11 @@ class TrimWidget(QFrame):
         self._duration_sec = duration_sec
         self.set_duration_hint(duration_sec)
 
-    def set_duration_hint(self, duration_sec: int):
+    def set_duration_hint(self, duration_sec: float):
         if duration_sec > 0:
             self._duration_sec = duration_sec
-            m, s = divmod(int(duration_sec), 60)
+            sec = int(round(duration_sec))
+            m, s = divmod(sec, 60)
             h, m = divmod(m, 60)
             if h > 0:
                 self.end_input.setText(f"{h:02d}:{m:02d}:{s:02d}")
