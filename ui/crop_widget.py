@@ -102,6 +102,11 @@ class CropWidget(QFrame):
 
     def set_source_info(self, pixmap: QPixmap = None, width: int = 1920, height: int = 1080):
         self._preview_pixmap = pixmap
+        if pixmap and not pixmap.isNull():
+            pix_is_portrait = pixmap.height() > pixmap.width()
+            source_is_portrait = height > width
+            if pix_is_portrait != source_is_portrait:
+                width, height = height, width
         self._source_w = width if width > 0 else 1920
         self._source_h = height if height > 0 else 1080
 
