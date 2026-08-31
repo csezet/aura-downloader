@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QLineEdit, QWidget
+    QFrame, QHBoxLayout, QLabel, QLineEdit, QWidget, QSizePolicy
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QIcon
@@ -33,8 +33,9 @@ class TrimWidget(QFrame):
         self.title_lbl.setStyleSheet("color: #EDEDED; font-size: 12px; font-weight: 700;")
         layout.addWidget(self.title_lbl)
 
-        # Controls Container
+        # Controls Container (Fixed size, tightly packed on the left)
         self.controls_container = QWidget()
+        self.controls_container.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
         ctrl_layout = QHBoxLayout(self.controls_container)
         ctrl_layout.setContentsMargins(0, 0, 0, 0)
         ctrl_layout.setSpacing(8)
@@ -98,7 +99,7 @@ class TrimWidget(QFrame):
         ctrl_layout.addWidget(self.end_input)
 
         layout.addWidget(self.controls_container)
-        layout.addStretch()
+        layout.addStretch(1)
 
     def _on_toggled(self, checked: bool):
         self.start_input.setEnabled(checked)
