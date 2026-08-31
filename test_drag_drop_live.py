@@ -8,16 +8,17 @@ from PySide6.QtGui import QMouseEvent, QDropEvent, QPixmap, QColor
 from ui.main_window import MainWindow
 from ui.timeline_slider import TimelineRangeSlider, ms_to_time_str
 from ui.trim_dialog import TrimDialog
+from ui.crop_dialog import CropDialog
 from core.local_processor import is_video_file, get_local_media_info
-from core.media_converter import get_video_codec, get_or_create_preview_proxy
+from core.media_converter import get_video_codec, get_or_create_preview_proxy, get_video_dimensions
 from core.downloader import detect_platform
 
-def create_dummy_video(filename="sample_test.mp4", codec="libx264"):
+def create_dummy_video(filename="sample_test.mp4", codec="libx264", size="320x240"):
     temp_dir = tempfile.gettempdir()
     filepath = os.path.join(temp_dir, filename)
     cmd = [
         "ffmpeg", "-y",
-        "-f", "lavfi", "-i", "color=c=blue:s=320x240:d=3",
+        "-f", "lavfi", "-i", f"color=c=blue:s={size}:d=3",
         "-c:v", codec,
         filepath
     ]
@@ -27,9 +28,9 @@ def create_dummy_video(filename="sample_test.mp4", codec="libx264"):
 def run_simulation():
     app = QApplication.instance() or QApplication(sys.argv)
     
-    v1 = create_dummy_video("sample_v1.mp4", codec="libx264")
-    v2 = create_dummy_video("sample_v2.mp4", codec="libx264")
-    v3 = create_dummy_video("sample_v3.mp4", codec="libx264")
+    v1 = create_dummy_video("sample_v1.mp4", codec="libx264", size="320x240")
+    v2 = create_dummy_video("sample_v2.mp4", codec="libx264", size="320x240")
+    v3 = create_dummy_video("sample_v3.mp4", codec="libx264", size="320x240")
 
     print("\n--- 1. Test Codec Detection & Platform Detection ---")
     codec_h264 = get_video_codec(v1)
@@ -143,6 +144,21 @@ def run_simulation():
     assert window.current_mode == "audio_only"
     assert "FLAC" in window.audio_fmt_combo.currentText()
     print("Multi-video independent settings 100% verified!")
+
+    print("\n--- 5. Test 9:16 Portrait Video Dimensions & Crop Aspect Ratio ---")
+    v_portrait = create_dummy_video("sample_portrait.mp4", codec="libx264", size="240x320")
+    dims = get_video_dimensions(v_portrait)
+    assert dims == (240, 320), f"Expected (240, 320), got {dims}"
+
+    portrait_pixmap = QPixmap(240, 320)
+    portrait_pixmap.fill(QColor("cyan"))
+
+    crop_dlg = CropDialog(parent=None, pixmap=portrait_pixmap, source_w=1920, source_h=1080)
+    assert crop_dlg.source_w == 1080
+    assert crop_dlg.source_h == 1920
+    assert crop_dlg.canvas.source_width == 1080
+    assert crop_dlg.canvas.source_height == 1920
+    print("CropDialog automatically synchronized 9:16 portrait orientation (Passed!)")
 
     window.close()
     print("\n[ALL TESTS 100% PASSED!]")
