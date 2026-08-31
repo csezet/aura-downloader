@@ -1,9 +1,9 @@
 import os
 from PySide6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFrame, QSizePolicy, QLineEdit
+    QFrame, QSizePolicy
 )
-from PySide6.QtCore import Qt, QUrl, QTime, QTimer, Signal, QSize
+from PySide6.QtCore import Qt, QUrl, Signal, QSize
 from PySide6.QtGui import QIcon, QColor, QFont
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
@@ -40,7 +40,7 @@ class TrimDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Визуальная вырезка отрезка видео")
         self.resize(880, 680)
-        self.setMinimumSize(740, 560)
+        self.setMinimumSize(760, 560)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
 
@@ -51,6 +51,7 @@ class TrimDialog(QDialog):
         if self.end_ms <= self.start_ms:
             self.end_ms = self.duration_ms
 
+        self.current_pos_ms = self.start_ms
         self.is_looping = True
         self._drag_pos = None
         self.applied_range = None
@@ -62,9 +63,11 @@ class TrimDialog(QDialog):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(10, 10, 10, 10)
 
+        # Main Dialog Container with explicit ID to prevent inner child border inheritance
         container = QFrame()
+        container.setObjectName("TrimDialogContainer")
         container.setStyleSheet("""
-            QFrame {
+            QFrame#TrimDialogContainer {
                 background-color: #10141B;
                 border: 1px solid rgba(255, 255, 255, 0.20);
                 border-radius: 12px;
@@ -74,16 +77,18 @@ class TrimDialog(QDialog):
         c_layout.setContentsMargins(16, 12, 16, 16)
         c_layout.setSpacing(10)
 
-        # 1. Custom Title Bar
+        # 1. Title Bar (Clean, no boxes around icon/text)
         title_layout = QHBoxLayout()
         title_layout.setContentsMargins(0, 0, 0, 0)
+        title_layout.setSpacing(8)
 
         icon_lbl = QLabel()
         icon_lbl.setPixmap(get_svg_icon("scissors", color="#FFFFFF", size=18).pixmap(18, 18))
+        icon_lbl.setStyleSheet("background: transparent; border: none;")
         title_layout.addWidget(icon_lbl)
 
         title_lbl = QLabel("ВИЗУАЛЬНАЯ ВЫРЕЗКА ОТРЕЗКА ВИДЕО")
-        title_lbl.setStyleSheet("color: #FFFFFF; font-size: 13px; font-weight: 800; letter-spacing: 1px;")
+        title_lbl.setStyleSheet("color: #FFFFFF; font-size: 13px; font-weight: 800; letter-spacing: 1px; background: transparent; border: none;")
         title_layout.addWidget(title_lbl)
 
         title_layout.addStretch()
@@ -91,6 +96,21 @@ class TrimDialog(QDialog):
         close_btn = QPushButton("✕")
         close_btn.setObjectName("TitleButton")
         close_btn.setFixedSize(28, 28)
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setStyleSheet("""
+            QPushButton#TitleButton {
+                background: transparent;
+                border: none;
+                color: #A1A1AA;
+                font-size: 14px;
+                font-weight: bold;
+                border-radius: 6px;
+            }
+            QPushButton#TitleButton:hover {
+                background: rgba(239, 68, 68, 0.4);
+                color: #FFFFFF;
+            }
+        """)
         close_btn.clicked.connect(self.reject)
         title_layout.addWidget(close_btn)
 
@@ -98,8 +118,9 @@ class TrimDialog(QDialog):
 
         # 2. Video Player View Area
         self.video_container = QFrame()
+        self.video_container.setObjectName("VideoBox")
         self.video_container.setStyleSheet("""
-            QFrame {
+            QFrame#VideoBox {
                 background-color: #000000;
                 border: 1px solid rgba(255, 255, 255, 0.12);
                 border-radius: 8px;
@@ -118,23 +139,39 @@ class TrimDialog(QDialog):
         play_bar = QHBoxLayout()
         play_bar.setSpacing(8)
 
+        # Jump to Start
+        self.btn_jump_start = QPushButton("⏮ К НАЧАЛУ")
+        self.btn_jump_start.setProperty("class", "GlassButton")
+        self.btn_jump_start.setCursor(Qt.PointingHandCursor)
+        self.btn_jump_start.clicked.connect(lambda: self._seek_to_ms(self.start_ms))
+        play_bar.addWidget(self.btn_jump_start)
+
         # Step Back
         self.btn_step_back = QPushButton(" -0.1s")
         self.btn_step_back.setProperty("class", "GlassButton")
+        self.btn_step_back.setCursor(Qt.PointingHandCursor)
         self.btn_step_back.clicked.connect(lambda: self._seek_relative(-100))
         play_bar.addWidget(self.btn_step_back)
 
-        # Play / Pause
-        self.btn_play = QPushButton(" ▶ ВОСПРОИЗВЕДЕНИЕ")
-        self.btn_play.setIcon(get_svg_icon("sparkles", color="#000000", size=14))
-        self.btn_play.setObjectName("PrimaryButton")
+        # Play / Pause (Solid white button, never clips text)
+        self.btn_play = QPushButton(" ▶ Воспроизведение")
+        self.btn_play.setCursor(Qt.PointingHandCursor)
         self.btn_play.setStyleSheet("""
-            QPushButton#PrimaryButton {
+            QPushButton {
                 background-color: #FFFFFF;
                 color: #000000;
+                font-size: 12px;
                 font-weight: 800;
-                padding: 6px 16px;
+                padding: 6px 18px;
                 border-radius: 6px;
+                border: none;
+                min-width: 130px;
+            }
+            QPushButton:hover {
+                background-color: #E4E4E7;
+            }
+            QPushButton:pressed {
+                background-color: #A1A1AA;
             }
         """)
         self.btn_play.clicked.connect(self._toggle_playback)
@@ -143,29 +180,16 @@ class TrimDialog(QDialog):
         # Step Forward
         self.btn_step_fwd = QPushButton(" +0.1s")
         self.btn_step_fwd.setProperty("class", "GlassButton")
+        self.btn_step_fwd.setCursor(Qt.PointingHandCursor)
         self.btn_step_fwd.clicked.connect(lambda: self._seek_relative(100))
         play_bar.addWidget(self.btn_step_fwd)
-
-        # Jump to Start
-        self.btn_jump_start = QPushButton("⏮ К НАЧАЛУ")
-        self.btn_jump_start.setProperty("class", "GlassButton")
-        self.btn_jump_start.clicked.connect(lambda: self._seek_to_ms(self.start_ms))
-        play_bar.addWidget(self.btn_jump_start)
 
         # Jump to End
         self.btn_jump_end = QPushButton("⏭ К КОНЦУ")
         self.btn_jump_end.setProperty("class", "GlassButton")
+        self.btn_jump_end.setCursor(Qt.PointingHandCursor)
         self.btn_jump_end.clicked.connect(lambda: self._seek_to_ms(self.end_ms))
         play_bar.addWidget(self.btn_jump_end)
-
-        # Loop Trim Section Toggle
-        self.btn_loop = QPushButton(" 🔁 ЗАЦИКЛИТЬ ОТРЕЗОК")
-        self.btn_loop.setProperty("class", "GlassButton")
-        self.btn_loop.setCheckable(True)
-        self.btn_loop.setChecked(True)
-        self.btn_loop.toggled.connect(self._on_loop_toggled)
-        self._update_loop_btn_style()
-        play_bar.addWidget(self.btn_loop)
 
         play_bar.addStretch()
 
@@ -193,21 +217,32 @@ class TrimDialog(QDialog):
         self.timeline_slider.seek_requested.connect(self._on_slider_seek)
         c_layout.addWidget(self.timeline_slider)
 
-        # 5. Quick Marker Buttons & Precise Time Info
+        # 5. Quick Marker Buttons, Loop Toggle & Precise Time Info
         info_bar = QHBoxLayout()
-        info_bar.setSpacing(10)
+        info_bar.setSpacing(8)
 
         btn_mark_start = QPushButton("⚑ СДЕЛАТЬ НАЧАЛОМ")
         btn_mark_start.setProperty("class", "GlassButton")
+        btn_mark_start.setCursor(Qt.PointingHandCursor)
         btn_mark_start.setToolTip("Установить текущий кадр видео как точку начала")
         btn_mark_start.clicked.connect(self._set_current_as_start)
         info_bar.addWidget(btn_mark_start)
 
         btn_mark_end = QPushButton("🏁 СДЕЛАТЬ КОНЦОМ")
         btn_mark_end.setProperty("class", "GlassButton")
+        btn_mark_end.setCursor(Qt.PointingHandCursor)
         btn_mark_end.setToolTip("Установить текущий кадр видео как точку конца")
         btn_mark_end.clicked.connect(self._set_current_as_end)
         info_bar.addWidget(btn_mark_end)
+
+        # Loop Trim Section Toggle
+        self.btn_loop = QPushButton(" 🔁 ЗАЦИКЛИТЬ ОТРЕЗОК")
+        self.btn_loop.setCursor(Qt.PointingHandCursor)
+        self.btn_loop.setCheckable(True)
+        self.btn_loop.setChecked(True)
+        self.btn_loop.toggled.connect(self._on_loop_toggled)
+        self._update_loop_btn_style()
+        info_bar.addWidget(self.btn_loop)
 
         info_bar.addStretch()
 
@@ -242,12 +277,14 @@ class TrimDialog(QDialog):
 
         reset_btn = QPushButton("↺ СБРОСИТЬ (НА ВСЕ ВИДЕО)")
         reset_btn.setProperty("class", "GlassButton")
+        reset_btn.setCursor(Qt.PointingHandCursor)
         reset_btn.setStyleSheet("font-size: 11px; font-weight: 700; padding: 6px 14px;")
         reset_btn.clicked.connect(self._reset_to_full)
         actions_layout.addWidget(reset_btn)
 
         cancel_btn = QPushButton("✕ ОТМЕНА")
         cancel_btn.setProperty("class", "GlassButton")
+        cancel_btn.setCursor(Qt.PointingHandCursor)
         cancel_btn.setStyleSheet("font-size: 11px; font-weight: 700; padding: 6px 14px;")
         cancel_btn.clicked.connect(self.reject)
         actions_layout.addWidget(cancel_btn)
@@ -256,7 +293,20 @@ class TrimDialog(QDialog):
 
         apply_btn = QPushButton("✓ ПРИМЕНИТЬ ОТРЕЗОК")
         apply_btn.setObjectName("PrimaryButton")
-        apply_btn.setStyleSheet("font-size: 12px; font-weight: 800; padding: 7px 20px; border-radius: 6px;")
+        apply_btn.setCursor(Qt.PointingHandCursor)
+        apply_btn.setStyleSheet("""
+            QPushButton#PrimaryButton {
+                background-color: #FFFFFF;
+                color: #000000;
+                font-size: 12px;
+                font-weight: 800;
+                padding: 7px 20px;
+                border-radius: 6px;
+            }
+            QPushButton#PrimaryButton:hover {
+                background-color: #E4E4E7;
+            }
+        """)
         apply_btn.clicked.connect(self._apply)
         actions_layout.addWidget(apply_btn)
 
@@ -287,6 +337,7 @@ class TrimDialog(QDialog):
             self._update_badges()
 
     def _on_player_position_changed(self, pos_ms: int):
+        self.current_pos_ms = pos_ms
         self.timeline_slider.set_current_position(pos_ms)
         self.time_lbl.setText(f"{ms_to_fmt(pos_ms)} / {ms_to_fmt(self.duration_ms)}")
 
@@ -297,12 +348,12 @@ class TrimDialog(QDialog):
     def _toggle_playback(self):
         if self.player.playbackState() == QMediaPlayer.PlayingState:
             self.player.pause()
-            self.btn_play.setText(" ▶ ВОСПРОИЗВЕДЕНИЕ")
+            self.btn_play.setText(" ▶ Воспроизведение")
         else:
-            if self.player.position() >= self.end_ms or self.player.position() < self.start_ms:
-                self.player.setPosition(self.start_ms)
+            if self.current_pos_ms >= self.end_ms or self.current_pos_ms < self.start_ms:
+                self._seek_to_ms(self.start_ms)
             self.player.play()
-            self.btn_play.setText(" ⏸ ПАУЗА")
+            self.btn_play.setText(" ⏸ Пауза")
 
     def _seek_to_ms(self, pos_ms: int):
         pos_ms = max(0, min(self.duration_ms, pos_ms))
@@ -352,13 +403,35 @@ class TrimDialog(QDialog):
     def _update_loop_btn_style(self):
         if self.btn_loop.isChecked():
             self.btn_loop.setStyleSheet("""
-                background-color: rgba(34, 197, 94, 0.2);
-                border: 1px solid rgba(34, 197, 94, 0.6);
-                color: #4ADE80;
-                font-weight: 700;
+                QPushButton {
+                    background-color: rgba(34, 197, 94, 0.16);
+                    border: 1px solid rgba(34, 197, 94, 0.6);
+                    color: #4ADE80;
+                    font-size: 11px;
+                    font-weight: 700;
+                    padding: 4px 10px;
+                    border-radius: 6px;
+                }
+                QPushButton:hover {
+                    background-color: rgba(34, 197, 94, 0.25);
+                }
             """)
         else:
-            self.btn_loop.setStyleSheet("")
+            self.btn_loop.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(255, 255, 255, 0.05);
+                    border: 1px solid rgba(255, 255, 255, 0.14);
+                    color: #A1A1AA;
+                    font-size: 11px;
+                    font-weight: 700;
+                    padding: 4px 10px;
+                    border-radius: 6px;
+                }
+                QPushButton:hover {
+                    background-color: rgba(255, 255, 255, 0.12);
+                    color: #FFFFFF;
+                }
+            """)
 
     def _reset_to_full(self):
         self.start_ms = 0
