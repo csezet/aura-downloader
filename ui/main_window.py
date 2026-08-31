@@ -6,9 +6,9 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
     QPushButton, QLabel, QComboBox, QFrame, QApplication, QGraphicsDropShadowEffect,
-    QGraphicsOpacityEffect, QSizePolicy, QFileDialog
+    QSizePolicy, QFileDialog
 )
-from PySide6.QtCore import Qt, QSize, QEvent, QPropertyAnimation
+from PySide6.QtCore import Qt, QSize, QEvent
 from PySide6.QtGui import QColor, QPixmap
 
 from core.settings import settings
@@ -45,66 +45,6 @@ class HoverIconFilter(QWidget):
             elif event.type() == QEvent.Leave:
                 self.button.setIcon(get_svg_icon(self.icon_name, color="#EDEDED", size=self.size))
         return super().eventFilter(obj, event)
-
-
-class DropOverlay(QFrame):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self.setAcceptDrops(False)
-        self.setStyleSheet("""
-            DropOverlay {
-                background-color: rgba(10, 14, 20, 0.92);
-                border: 2px dashed rgba(255, 255, 255, 0.85);
-                border-radius: 12px;
-            }
-        """)
-        layout = QVBoxLayout(self)
-        layout.setAlignment(Qt.AlignCenter)
-        layout.setSpacing(12)
-
-        icon_lbl = QLabel()
-        icon_lbl.setPixmap(get_svg_icon("upload", color="#FFFFFF", size=44).pixmap(44, 44))
-        icon_lbl.setAlignment(Qt.AlignCenter)
-        icon_lbl.setStyleSheet("background: transparent; border: none;")
-        layout.addWidget(icon_lbl)
-
-        title = QLabel("ОТПУСТИТЕ ФАЙЛ(Ы) ДЛЯ ОБРАБОТКИ")
-        title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("color: #FFFFFF; font-size: 15px; font-weight: 800; letter-spacing: 1px; background: transparent; border: none;")
-        layout.addWidget(title)
-
-        subtitle = QLabel("ПОДДЕРЖИВАЕТСЯ ПЕРЕТАСКИВАНИЕ СРАЗУ НЕСКОЛЬКИХ ВИДЕО")
-        subtitle.setAlignment(Qt.AlignCenter)
-        subtitle.setStyleSheet("color: #A1A1AA; font-size: 11px; font-weight: 700; font-family: 'Consolas', monospace; background: transparent; border: none;")
-        layout.addWidget(subtitle)
-
-        self.opacity_effect = QGraphicsOpacityEffect(self)
-        self.setGraphicsEffect(self.opacity_effect)
-        self.anim = QPropertyAnimation(self.opacity_effect, b"opacity")
-        self.anim.setDuration(160)
-        self.setVisible(False)
-
-    def show_animated(self):
-        if self.parent():
-            self.resize(self.parent().size())
-            self.raise_()
-        self.setVisible(True)
-        self.anim.stop()
-        self.anim.setStartValue(0.0)
-        self.anim.setEndValue(1.0)
-        self.anim.start()
-
-    def hide_animated(self):
-        self.anim.stop()
-        self.anim.setStartValue(1.0)
-        self.anim.setEndValue(0.0)
-        self.anim.finished.connect(self._on_hide_done)
-        self.anim.start()
-
-    def _on_hide_done(self):
-        if self.opacity_effect.opacity() <= 0.05:
-            self.setVisible(False)
 
 
 class MainWindow(QMainWindow):
@@ -145,40 +85,52 @@ class MainWindow(QMainWindow):
                 pass
         return super().nativeEvent(eventType, message)
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if hasattr(self, 'drop_overlay') and self.drop_overlay.isVisible():
-            self.drop_overlay.resize(self.central_container.size())
-
     def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            for url in event.mimeData().urls():
-                file_path = url.toLocalFile()
-                if is_video_file(file_path):
-                    event.acceptProposedAction()
-                    self.drop_overlay.show_animated()
-                    return
-        event.ignore()
+        if event.mimeData().hasUrls() or event.mimeData().hasText():
+            event.acceptProposedAction()
+            self.central_container.setStyleSheet(get_stylesheet(settings.get("glass_opacity", 0.45)) + """
+                #CentralWidget {
+                    border: 2px dashed rgba(255, 255, 255, 0.85);
+                }
+            """)
+        else:
+            event.ignore()
 
     def dragMoveEvent(self, event):
-        if event.mimeData().hasUrls():
+        if event.mimeData().hasUrls() or event.mimeData().hasText():
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dragLeaveEvent(self, event):
-        if hasattr(self, 'drop_overlay'):
-            self.drop_overlay.hide_animated()
+        self._apply_theme()
         event.accept()
 
     def dropEvent(self, event):
-        if hasattr(self, 'drop_overlay'):
-            self.drop_overlay.hide_animated()
+        self._apply_theme()
+        files = []
         if event.mimeData().hasUrls():
-            video_files = [url.toLocalFile() for url in event.mimeData().urls() if is_video_file(url.toLocalFile())]
-            if video_files:
-                event.acceptProposedAction()
-                self._load_local_files(video_files)
+            for u in event.mimeData().urls():
+                p = u.toLocalFile()
+                if not p and u.toString().startswith("file:///"):
+                    p = u.toString()[8:]
+                if p:
+                    files.append(p)
+        elif event.mimeData().hasText():
+            for line in event.mimeData().text().splitlines():
+                line = line.strip().strip('"').strip("'")
+                if os.path.exists(line):
+                    files.append(line)
+
+        valid_videos = [f for f in files if is_video_file(f)]
+        if valid_videos:
+            event.acceptProposedAction()
+            self._load_local_files(valid_videos)
+        elif files:
+            first = files[0]
+            if first.startswith("http"):
+                self.url_input.setText(first)
+                self._fetch_metadata()
 
     def _apply_theme(self):
         opacity = settings.get("glass_opacity", 0.45)
@@ -377,7 +329,7 @@ class MainWindow(QMainWindow):
         self.progress_widget.cancelled.connect(self._cancel_download)
         content_layout.addWidget(self.progress_widget)
 
-        # Elastic Stretch pushes Action Button & Footer down cleanly without gaps between cards!
+        # Elastic Stretch pushes Action Button & Footer down cleanly
         content_layout.addStretch(1)
 
         # 7. Main Action Button
@@ -409,9 +361,6 @@ class MainWindow(QMainWindow):
 
         content_layout.addLayout(footer_layout)
         main_layout.addWidget(content_widget)
-
-        # 9. Animated Drop Overlay
-        self.drop_overlay = DropOverlay(self.central_container)
 
     def _setup_clipboard(self):
         self.clipboard_watcher = ClipboardWatcher(self)
@@ -468,8 +417,8 @@ class MainWindow(QMainWindow):
                 self.url_input.setText(f"[ {len(info_list)} локальных видео в очереди ]")
                 self.url_input.blockSignals(False)
 
-                self.preview_card.clear()
-                self.preview_card.setVisible(False)
+                self.preview_card.set_data(info_list[0])
+                self.preview_card.setVisible(True)
                 self.queue_widget.clear_all()
                 self.queue_widget.add_videos(info_list)
                 self.queue_widget.setVisible(True)
@@ -484,12 +433,17 @@ class MainWindow(QMainWindow):
 
         info = get_local_media_info(file_path)
         if info:
-            self._on_metadata_ready(info)
-            if info.get('thumbnail') and os.path.exists(info['thumbnail']):
-                pix = QPixmap(info['thumbnail'])
-                self.preview_card._on_image_loaded(pix)
+            self.current_video_info = info
+            self.preview_card.set_data(info)
             self.preview_card.setVisible(True)
+            self.queue_widget.clear_all()
             self.queue_widget.setVisible(False)
+            
+            w = info.get("width", 1920)
+            h = info.get("height", 1080)
+            self.crop_widget.set_source_info(self.preview_card.get_pixmap(), width=w, height=h)
+            if info.get("duration"):
+                self.trim_widget.set_duration_hint(info["duration"])
             self._update_download_button_text()
 
     def _on_queue_changed(self, count: int):
