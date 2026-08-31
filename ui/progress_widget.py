@@ -1,9 +1,9 @@
 import os
 import subprocess
 from PySide6.QtWidgets import (
-    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy
+    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QGraphicsOpacityEffect
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve
 from ui.animations import SmoothProgressBar
 
 class ProgressWidget(QFrame):
@@ -76,61 +76,66 @@ class ProgressWidget(QFrame):
 
         layout.addLayout(bottom_layout)
 
+        # Opacity Animation
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+        self.anim_opacity = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.anim_opacity.setDuration(240)
+        self.anim_opacity.setEasingCurve(QEasingCurve.OutCubic)
+
     def start_progress(self, message="⚡ СКАЧИВАНИЕ..."):
         self.progress_bar.setValue(0)
         self.percent_label.setText("0.0%")
         self.status_label.setText(message)
-        self.status_label.setStyleSheet("font-size: 11px; font-weight: 800; color: #FFFFFF;")
-        self.metrics_label.setText("SPEED: -- MB/S // SIZE: 0 B / 0 B // ETA: --:--")
-        self.cancel_btn.setText("✕ ОТМЕНА")
+        self.metrics_label.setText("ПОДГОТОВКА...")
         self.cancel_btn.setVisible(True)
         self.open_file_btn.setVisible(False)
         self.open_dir_btn.setVisible(False)
-        self._current_file_path = None
+        
         self.setVisible(True)
+        self.anim_opacity.stop()
+        self.anim_opacity.setStartValue(0.0)
+        self.anim_opacity.setEndValue(1.0)
+        self.anim_opacity.start()
 
     def update_progress(self, data: dict):
-        percent = data.get("percent", 0.0)
-        self.progress_bar.setSmoothValue(percent)
+        percent = data.get('percent', 0.0)
+        self.progress_bar.setValue(int(percent))
         self.percent_label.setText(f"{percent:.1f}%")
 
-        speed = data.get("speed_str", "-- MB/S").upper()
-        downloaded = data.get("downloaded_str", "0 B")
-        total = data.get("total_str", "...")
-        eta = data.get("eta_str", "--:--")
-        status = data.get("status")
+        speed = data.get('speed_str', '-- MB/s')
+        downloaded = data.get('downloaded_str', '0 B')
+        total = data.get('total_str', '0 B')
+        eta = data.get('eta_str', '--:--')
 
-        if status == "processing":
-            self.status_label.setText("⚙ ОБРАБОТКА ПОТОКОВ (FFMPEG)...")
-        else:
-            self.status_label.setText("⚡ СКАЧИВАНИЕ...")
-
-        self.metrics_label.setText(f"{speed} // {downloaded} OF {total} // ETA {eta}")
+        self.metrics_label.setText(f"SPEED: {speed} // {downloaded} / {total} // ETA: {eta}")
 
     def complete(self, result: dict):
-        self.progress_bar.setSmoothValue(100)
+        self.progress_bar.setValue(100)
         self.percent_label.setText("100%")
-        self.status_label.setText("✓ ЗАВЕРШЕНО УСПЕШНО")
-        self.status_label.setStyleSheet("font-size: 11px; font-weight: 800; color: #10B981;")
-        
-        file_size_str = result.get("file_size_str", "")
-        self.metrics_label.setText(f"ИТОГОВЫЙ РАЗМЕР: {file_size_str}")
-        self._current_file_path = result.get("file_path")
+        self.status_label.setText("ГОТОВО!")
+        self.metrics_label.setText(f"ФАЙЛ СОХРАНЕН // {result.get('file_size_str', '')}")
 
+        self._current_file_path = result.get('file_path')
         self.cancel_btn.setVisible(False)
         self.open_file_btn.setVisible(True)
         self.open_dir_btn.setVisible(True)
 
-    def set_error(self, message: str):
-        self.status_label.setText("✕ ОШИБКА ЗАГРУЗКИ")
-        self.status_label.setStyleSheet("font-size: 11px; font-weight: 800; color: #EF4444;")
-        self.metrics_label.setText(message[:70] + ("..." if len(message) > 70 else ""))
-        self.cancel_btn.setText("ЗАКРЫТЬ")
-        self.cancel_btn.setVisible(True)
-        self.setVisible(True)
+    def set_error(self, err_msg: str):
+        self.status_label.setText("ОШИБКА")
+        self.metrics_label.setText(err_msg[:60])
+        self.cancel_btn.setText("✕ ЗАКРЫТЬ")
 
     def hide_progress(self):
-        self.setVisible(False)
+        self.anim_opacity.stop()
+        self.anim_opacity.setStartValue(self.opacity_effect.opacity())
+        self.anim_opacity.setEndValue(0.0)
+        self.anim_opacity.finished.connect(self._on_hide_done)
+        self.anim_opacity.start()
+
+    def _on_hide_done(self):
+        if self.opacity_effect.opacity() <= 0.05:
+            self.setVisible(False)
 
     def _open_file(self):
         if self._current_file_path and os.path.exists(self._current_file_path):
@@ -138,8 +143,5 @@ class ProgressWidget(QFrame):
 
     def _open_dir(self):
         if self._current_file_path and os.path.exists(self._current_file_path):
-            subprocess.run(['explorer', '/select,', os.path.normpath(self._current_file_path)])
-        elif self._current_file_path:
-            folder = os.path.dirname(self._current_file_path)
-            if os.path.exists(folder):
-                os.startfile(folder)
+            dir_path = os.path.dirname(self._current_file_path)
+            os.startfile(dir_path)
