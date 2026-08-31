@@ -64,6 +64,23 @@ def detect_platform(url):
     return "Web Video"
 
 
+DEFAULT_HTTP_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8',
+    'Sec-Fetch-Mode': 'navigate',
+}
+
+DEFAULT_EXTRACTOR_ARGS = {
+    'youtube': {
+        'player_client': ['android', 'web', 'ios'],
+    },
+    'instagram': {
+        'include_reels': True,
+    }
+}
+
+
 class MetadataWorker(QThread):
     info_ready = Signal(dict)
     info_error = Signal(str)
@@ -79,6 +96,9 @@ class MetadataWorker(QThread):
             'extract_flat': False,
             'skip_download': True,
             'ignoreerrors': False,
+            'geo_bypass': True,
+            'http_headers': DEFAULT_HTTP_HEADERS,
+            'extractor_args': DEFAULT_EXTRACTOR_ARGS,
         }
         cookies = get_cookies_config()
         if cookies:
@@ -153,8 +173,10 @@ class MetadataWorker(QThread):
                 err_msg = "Неподдерживаемая ссылка или ресурс недоступен."
             elif "Private video" in err_msg:
                 err_msg = "Приватное видео (включите Cookies браузера в настройках)."
-            elif "Sign in" in err_msg:
+            elif "Sign in" in err_msg or "login" in err_msg.lower():
                 err_msg = "Требуется авторизация (включите Cookies браузера в настройках)."
+            elif "rate-limit" in err_msg.lower() or "429" in err_msg:
+                err_msg = "Ограничение частоты запросов. Попробуйте через минуту или включите Cookies."
             self.info_error.emit(err_msg)
 
 
@@ -240,6 +262,9 @@ class DownloadWorker(QThread):
                 'ignoreerrors': False,
                 'windowsfilenames': True,
                 'overwrites': True,
+                'geo_bypass': True,
+                'http_headers': DEFAULT_HTTP_HEADERS,
+                'extractor_args': DEFAULT_EXTRACTOR_ARGS,
             }
 
             cookies = get_cookies_config()
@@ -274,31 +299,32 @@ class DownloadWorker(QThread):
                 if target_res:
                     height_match = re.search(r'(\d+)p', target_res)
                     h = height_match.group(1) if height_match else '1080'
-                    ydl_opts['format'] = f'bestvideo[height<={h}]/bestvideo'
+                    ydl_opts['format'] = f'bestvideo[height<={h}][vcodec^=avc1]/bestvideo[height<={h}][ext=mp4]/bestvideo[height<={h}]/bestvideo'
                 else:
-                    ydl_opts['format'] = 'bestvideo'
+                    ydl_opts['format'] = 'bestvideo[vcodec^=avc1]/bestvideo[ext=mp4]/bestvideo'
             elif mode == 'custom' and target_res:
                 height_match = re.search(r'(\d+)p', target_res)
                 h = height_match.group(1) if height_match else '1080'
                 ydl_opts.update({
-                    'format': f'bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={h}]+bestaudio/best[height<={h}]/best',
+                    'format': f'bestvideo[height<={h}][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={h}]+bestaudio/best[height<={h}]/best',
                     'merge_output_format': 'mp4',
                     'postprocessors': [{'key': 'FFmpegMetadata', 'add_metadata': True}]
                 })
             elif mode == 'gif':
                 ydl_opts.update({
-                    'format': 'bestvideo[height<=720]/best',
+                    'format': 'bestvideo[height<=720][vcodec^=avc1]/bestvideo[height<=720]/best',
                     'merge_output_format': 'mp4',
                 })
             elif mode == 'discord_8mb' or mode == 'telegram_50mb':
                 ydl_opts.update({
-                    'format': 'bestvideo+bestaudio/best',
+                    'format': 'bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',
                     'merge_output_format': 'mp4',
                     'postprocessors': [{'key': 'FFmpegMetadata', 'add_metadata': True}]
                 })
             else:
+                # Default "Best" MP4 with H.264 priority for universal compatibility
                 ydl_opts.update({
-                    'format': 'bestvideo+bestaudio/best',
+                    'format': 'bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc]+bestaudio/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',
                     'merge_output_format': 'mp4',
                     'postprocessors': [{'key': 'FFmpegMetadata', 'add_metadata': True}]
                 })
