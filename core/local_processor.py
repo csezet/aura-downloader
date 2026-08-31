@@ -21,27 +21,43 @@ def get_startupinfo():
 def is_video_file(file_path: str) -> bool:
     if not file_path or not isinstance(file_path, str):
         return False
-    clean = file_path.strip().strip('"').strip("'")
+    clean = file_path.strip().strip('"').strip("'").strip()
     if not os.path.isfile(clean):
         return False
     ext = os.path.splitext(clean)[1].lower()
     return ext in VIDEO_EXTENSIONS
 
 def get_local_media_info(file_path: str) -> dict:
-    file_path = file_path.strip().strip('"').strip("'")
+    if not file_path:
+        return None
+    file_path = file_path.strip().strip('"').strip("'").strip()
     if not os.path.exists(file_path):
         return None
 
     try:
-        duration = get_video_duration(file_path)
-        width, height = get_video_dimensions(file_path)
-        fps = get_video_fps(file_path)
-        size = os.path.getsize(file_path)
+        duration = get_video_duration(file_path) or 0
+    except Exception:
+        duration = 0
 
-        # Generate thumbnail frame
+    try:
+        width, height = get_video_dimensions(file_path)
+    except Exception:
+        width, height = 1920, 1080
+
+    try:
+        fps = get_video_fps(file_path) or 30.0
+    except Exception:
+        fps = 30.0
+
+    try:
+        size = os.path.getsize(file_path)
+    except Exception:
+        size = 0
+
+    thumb_path = None
+    try:
         temp_dir = tempfile.gettempdir()
         thumb_path = os.path.join(temp_dir, f"aura_thumb_{abs(hash(file_path))}.jpg")
-        
         seek_sec = "00:00:00.5" if duration > 1 else "00:00:00"
         cmd = [
             "ffmpeg", "-y",
@@ -58,28 +74,29 @@ def get_local_media_info(file_path: str) -> dict:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE
         )
+        if not os.path.exists(thumb_path):
+            thumb_path = None
+    except Exception:
+        thumb_path = None
 
-        return {
-            'url': file_path,
-            'file_path': file_path,
-            'is_local': True,
-            'title': Path(file_path).name,
-            'uploader': f"Локальное видео ({width}×{height}, {int(round(fps))} FPS)",
-            'duration': int(duration),
-            'duration_str': format_seconds(duration) if duration else "--:--",
-            'thumbnail': thumb_path if os.path.exists(thumb_path) else None,
-            'platform': 'Local Video',
-            'available_res': [f"{width}x{height}"],
-            'has_video': True,
-            'width': width,
-            'height': height,
-            'fps': fps,
-            'file_size': size,
-            'file_size_str': format_bytes(size)
-        }
-    except Exception as e:
-        print(f"Error getting local media info: {e}")
-        return None
+    return {
+        'url': file_path,
+        'file_path': file_path,
+        'is_local': True,
+        'title': Path(file_path).name,
+        'uploader': f"Локальное видео ({width}×{height}, {int(round(fps))} FPS)",
+        'duration': int(duration),
+        'duration_str': format_seconds(duration) if duration else "--:--",
+        'thumbnail': thumb_path,
+        'platform': 'Local Video',
+        'available_res': [f"{width}x{height}"],
+        'has_video': True,
+        'width': width,
+        'height': height,
+        'fps': fps,
+        'file_size': size,
+        'file_size_str': format_bytes(size)
+    }
 
 
 def process_single_local_file(file_path: str, options: dict, save_dir: str, status_cb=None, progress_cb=None, is_cancelled_cb=None) -> dict:
