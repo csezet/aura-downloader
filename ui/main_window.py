@@ -5,7 +5,7 @@ from ctypes import wintypes
 from pathlib import Path
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
-    QPushButton, QLabel, QComboBox, QFrame, QApplication, QGraphicsDropShadowEffect,
+    QPushButton, QLabel, QComboBox, QFrame, QApplication,
     QSizePolicy, QFileDialog
 )
 from PySide6.QtCore import Qt, QSize, QEvent
@@ -88,11 +88,6 @@ class MainWindow(QMainWindow):
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls() or event.mimeData().hasText():
             event.acceptProposedAction()
-            self.central_container.setStyleSheet(get_stylesheet(settings.get("glass_opacity", 0.45)) + """
-                #CentralWidget {
-                    border: 2px dashed rgba(255, 255, 255, 0.85);
-                }
-            """)
         else:
             event.ignore()
 
@@ -103,11 +98,9 @@ class MainWindow(QMainWindow):
             event.ignore()
 
     def dragLeaveEvent(self, event):
-        self._apply_theme()
         event.accept()
 
     def dropEvent(self, event):
-        self._apply_theme()
         files = []
         if event.mimeData().hasUrls():
             for u in event.mimeData().urls():
@@ -141,12 +134,6 @@ class MainWindow(QMainWindow):
         self.central_container.setObjectName("CentralWidget")
         self.central_container.setAcceptDrops(True)
         self.setCentralWidget(self.central_container)
-
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(24)
-        shadow.setColor(QColor(0, 0, 0, 160))
-        shadow.setOffset(0, 6)
-        self.central_container.setGraphicsEffect(shadow)
 
         main_layout = QVBoxLayout(self.central_container)
         main_layout.setContentsMargins(0, 0, 0, 0)
