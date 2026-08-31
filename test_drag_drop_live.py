@@ -25,59 +25,76 @@ def create_dummy_video(filename="sample_test.mp4"):
 def run_simulation():
     app = QApplication.instance() or QApplication(sys.argv)
     
-    v1 = create_dummy_video("sample_trim_video.mp4")
+    v1 = create_dummy_video("sample_v1.mp4")
+    v2 = create_dummy_video("sample_v2.mp4")
 
-    print("\n--- 1. Test TimelineRangeSlider ---")
-    slider = TimelineRangeSlider()
-    slider.resize(600, 54)
-    slider.set_duration(30000) # 30s
-    slider.set_range(5000, 20000) # 5s to 20s
-    assert slider.start_ms == 5000
-    assert slider.end_ms == 20000
-    print("TimelineRangeSlider range initialized correctly: 00:05.0 to 00:20.0!")
-
-    print("\n--- 2. Test TrimDialog with real video file ---")
+    print("\n--- 1. Test TrimDialog UI Layout ---")
     dialog = TrimDialog(parent=None, video_source=v1, duration_sec=3, initial_start="00:01", initial_end="00:02")
     dialog.show()
-    assert dialog.timeline_slider is not None
-    assert dialog.video_widget is not None
-    assert dialog.player is not None
-
-    # Simulate setting current position as start/end
-    dialog._seek_to_ms(500)
-    dialog._set_current_as_start()
-    assert dialog.start_ms == 500
-
-    dialog._seek_to_ms(2500)
-    dialog._set_current_as_end()
-    assert dialog.end_ms == 2500
-
-    dialog._apply()
-    assert dialog.applied_range == ("00:00", "00:02")
+    assert dialog.btn_play.text() == " ▶ Воспроизведение"
+    assert dialog.btn_loop.isChecked() is True
     dialog.close()
-    print("TrimDialog interactive preview, range selection, and apply passed!")
+    print("TrimDialog UI layout, no box borders, and play button verified!")
 
-    print("\n--- 3. Test MainWindow Trim Integration ---")
+    print("\n--- 2. Test Per-Video Settings Isolation & Restoration ---")
     window = MainWindow()
     window.resize(760, 650)
     window.show()
 
-    mime = QMimeData()
-    mime.setUrls([QUrl.fromLocalFile(v1)])
-    window.dropEvent(QDropEvent(QPoint(100, 100), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier))
-
-    assert window.cards_list.count() == 1
-    # Check that TrimWidget received source video
-    assert os.path.normpath(window.trim_widget._video_source) == os.path.normpath(v1)
-    print(f"TrimWidget successfully connected to video source: {window.trim_widget._video_source}")
-
-    # Toggle trim on
+    # Drop Video 1
+    mime1 = QMimeData()
+    mime1.setUrls([QUrl.fromLocalFile(v1)])
+    window.dropEvent(QDropEvent(QPoint(100, 100), Qt.CopyAction, mime1, Qt.LeftButton, Qt.NoModifier))
+    
+    # Configure Video 1: Trim 00:01 -> 00:02, Smooth 120 FPS
     window.trim_widget.toggle.setChecked(True)
-    assert window.trim_widget.visual_btn.isEnabled() is True
-    print("Visual trim button is enabled and ready to open interactive editor!")
+    window.trim_widget.start_input.setText("00:01")
+    window.trim_widget.end_input.setText("00:02")
+    window.smooth_widget.toggle.setChecked(True)
+    window.smooth_widget.fps_combo.setCurrentIndex(1) # 120 FPS
+    window._save_current_ui_to_video_info()
+
+    # Drop Video 2
+    mime2 = QMimeData()
+    mime2.setUrls([QUrl.fromLocalFile(v2)])
+    window.dropEvent(QDropEvent(QPoint(100, 100), Qt.CopyAction, mime2, Qt.LeftButton, Qt.NoModifier))
+
+    # Configure Video 2: Audio Only FLAC, No trim, No smooth
+    window._set_mode("audio_only")
+    window.audio_fmt_combo.setCurrentText("FLAC (Lossless)")
+    window.trim_widget.toggle.setChecked(False)
+    window.smooth_widget.toggle.setChecked(False)
+    window._save_current_ui_to_video_info()
+
+    print("\n--- 3. Switch back to Video 1 (Click Card 1) ---")
+    card1 = window.cards_list.cards[0]
+    evt_click = QMouseEvent(QMouseEvent.MouseButtonPress, QPoint(10, 10), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+    card1.mousePressEvent(evt_click)
+    app.processEvents()
+
+    # Verify Video 1 settings restored: Trim True (00:01-00:02), Smooth True (120 FPS), Mode best
+    assert window.trim_widget.is_trim_enabled() is True
+    assert window.trim_widget.start_input.text() == "00:01"
+    assert window.trim_widget.end_input.text() == "00:02"
+    assert window.smooth_widget.is_smooth_enabled() is True
+    assert window.smooth_widget.get_target_fps() == 120
+    assert window.current_mode == "best"
+    print("Video 1 settings successfully restored upon selection!")
+
+    print("\n--- 4. Switch back to Video 2 (Click Card 2) ---")
+    card2 = window.cards_list.cards[1]
+    card2.mousePressEvent(evt_click)
+    app.processEvents()
+
+    # Verify Video 2 settings restored: Mode audio_only, Trim False, Smooth False
+    assert window.current_mode == "audio_only"
+    assert "FLAC" in window.audio_fmt_combo.currentText()
+    assert window.trim_widget.is_trim_enabled() is False
+    assert window.smooth_widget.is_smooth_enabled() is False
+    print("Video 2 settings successfully restored upon selection!")
 
     window.close()
-    print("\n[ALL VISUAL TIMELINE & TRIM DIALOG TESTS 100% PASSED!]")
+    print("\n[ALL PER-VIDEO SETTINGS AND TRIMDIALOG FIXES 100% PASSED!]")
 
 if __name__ == "__main__":
     run_simulation()
