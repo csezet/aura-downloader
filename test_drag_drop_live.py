@@ -13,12 +13,12 @@ from core.local_processor import is_video_file, get_local_media_info
 from core.media_converter import get_video_codec, get_or_create_preview_proxy, get_video_dimensions
 from core.downloader import detect_platform
 
-def create_dummy_video(filename="sample_test.mp4", codec="libx264", size="320x240"):
+def create_dummy_video(filename="sample_test.mp4", codec="libx264", size="320x240", duration="3"):
     temp_dir = tempfile.gettempdir()
     filepath = os.path.join(temp_dir, filename)
     cmd = [
         "ffmpeg", "-y",
-        "-f", "lavfi", "-i", f"color=c=blue:s={size}:d=3",
+        "-f", "lavfi", "-i", f"color=c=blue:s={size}:d={duration}",
         "-c:v", codec,
         filepath
     ]
@@ -159,6 +159,22 @@ def run_simulation():
     assert crop_dlg.canvas.source_width == 1080
     assert crop_dlg.canvas.source_height == 1920
     print("CropDialog automatically synchronized 9:16 portrait orientation (Passed!)")
+
+    print("\n--- 6. Test Short Video (1.35s) Trim Slider & End-of-Media Seeking ---")
+    v_short = create_dummy_video("sample_short.mp4", codec="libx264", size="320x240", duration="1.35")
+    info_short = get_local_media_info(v_short)
+    assert abs(info_short['duration'] - 1.35) < 0.2
+
+    trim_dlg_short = TrimDialog(parent=None, video_source=v_short, duration_sec=info_short['duration'])
+    trim_dlg_short.show()
+    app.processEvents()
+
+    # Seek to very end
+    trim_dlg_short._seek_to_ms(int(info_short['duration'] * 1000))
+    app.processEvents()
+    assert trim_dlg_short.current_pos_ms <= trim_dlg_short.duration_ms
+    trim_dlg_short.close()
+    print("Short video (1.35s) full timeline sync and safe end seek verified!")
 
     window.close()
     print("\n[ALL TESTS 100% PASSED!]")
