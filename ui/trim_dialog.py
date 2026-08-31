@@ -10,6 +10,7 @@ from PySide6.QtMultimediaWidgets import QVideoWidget
 
 from assets.icons import get_svg_icon
 from ui.timeline_slider import TimelineRangeSlider, ms_to_time_str
+from core.media_converter import get_or_create_preview_proxy
 
 def parse_time_to_ms(time_str: str) -> int:
     if not time_str:
@@ -336,11 +337,21 @@ class TrimDialog(QDialog):
 
         self.player.positionChanged.connect(self._on_player_position_changed)
         self.player.durationChanged.connect(self._on_player_duration_changed)
+        self.player.errorOccurred.connect(self._on_player_error)
 
         if self.video_source and os.path.exists(self.video_source):
-            self.player.setSource(QUrl.fromLocalFile(self.video_source))
+            playable = get_or_create_preview_proxy(self.video_source)
+            self.player.setSource(QUrl.fromLocalFile(playable))
             self.player.pause()
             self._seek_to_ms(self.start_ms)
+
+    def _on_player_error(self, error, error_string):
+        if self.video_source and os.path.exists(self.video_source):
+            proxy = get_or_create_preview_proxy(self.video_source)
+            if proxy != self.video_source and os.path.exists(proxy):
+                self.player.setSource(QUrl.fromLocalFile(proxy))
+                self.player.pause()
+                self._seek_to_ms(self.current_pos_ms)
 
     def _on_player_duration_changed(self, dur_ms: int):
         if dur_ms > 0:
