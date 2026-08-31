@@ -17,9 +17,9 @@ class VideoQueueItem(QFrame):
     def __init__(self, data: dict, parent=None):
         super().__init__(parent)
         self.data = data
-        self.setProperty("class", "GlassCard")
         self.setFixedHeight(54)
         self.setCursor(Qt.PointingHandCursor)
+        self.set_active(False)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
@@ -87,6 +87,28 @@ class VideoQueueItem(QFrame):
         self.remove_btn.clicked.connect(lambda: self.removed.emit(self.data.get('url', '')))
         layout.addWidget(self.remove_btn)
 
+    def set_active(self, active: bool):
+        if active:
+            self.setStyleSheet("""
+                VideoQueueItem {
+                    background-color: rgba(255, 255, 255, 0.14);
+                    border: 1.5px solid rgba(255, 255, 255, 0.6);
+                    border-radius: 8px;
+                }
+            """)
+        else:
+            self.setStyleSheet("""
+                VideoQueueItem {
+                    background-color: rgba(255, 255, 255, 0.04);
+                    border: 1px solid rgba(255, 255, 255, 0.12);
+                    border-radius: 8px;
+                }
+                VideoQueueItem:hover {
+                    background-color: rgba(255, 255, 255, 0.08);
+                    border: 1px solid rgba(255, 255, 255, 0.25);
+                }
+            """)
+
     def _load_thumbnail(self, thumb_path: str):
         if thumb_path and os.path.exists(thumb_path):
             pix = QPixmap(thumb_path)
@@ -125,6 +147,7 @@ class VideoQueueWidget(QFrame):
         super().__init__(parent)
         self.items: list[dict] = []
         self.item_widgets: list[VideoQueueItem] = []
+        self.active_url = None
 
         self.setProperty("class", "GlassCard")
         self.setVisible(False)
@@ -198,14 +221,26 @@ class VideoQueueWidget(QFrame):
                 self.items.append(info)
                 item_w = VideoQueueItem(info, self.scroll_content)
                 item_w.removed.connect(self.remove_video)
-                item_w.selected_for_preview.connect(self.active_video_selected.emit)
+                item_w.selected_for_preview.connect(self._on_item_clicked)
                 item_w.toggled_selection.connect(self._update_header)
                 self.item_widgets.append(item_w)
                 self.scroll_layout.addWidget(item_w)
 
+        if self.items:
+            self.set_active_video(self.items[0].get('url'))
+
         self._update_header()
         self.setVisible(len(self.items) > 0)
         self.queue_changed.emit(len(self.items))
+
+    def _on_item_clicked(self, info: dict):
+        self.set_active_video(info.get('url'))
+        self.active_video_selected.emit(info)
+
+    def set_active_video(self, url: str):
+        self.active_url = url
+        for w in self.item_widgets:
+            w.set_active(w.data.get('url') == url)
 
     def add_video(self, info: dict):
         if not info:
@@ -218,7 +253,7 @@ class VideoQueueWidget(QFrame):
         self.items.append(info)
         item_w = VideoQueueItem(info, self.scroll_content)
         item_w.removed.connect(self.remove_video)
-        item_w.selected_for_preview.connect(self.active_video_selected.emit)
+        item_w.selected_for_preview.connect(self._on_item_clicked)
         item_w.toggled_selection.connect(self._update_header)
         
         self.item_widgets.append(item_w)
@@ -243,6 +278,12 @@ class VideoQueueWidget(QFrame):
         self._update_header()
         if len(self.items) == 0:
             self.setVisible(False)
+            self.active_url = None
+        else:
+            if self.active_url == url:
+                self.set_active_video(self.items[0].get('url'))
+                self.active_video_selected.emit(self.items[0])
+
         self.queue_changed.emit(len(self.items))
 
     def clear_all(self):
@@ -250,6 +291,7 @@ class VideoQueueWidget(QFrame):
             w.deleteLater()
         self.items.clear()
         self.item_widgets.clear()
+        self.active_url = None
         self.setVisible(False)
         self.queue_changed.emit(0)
 
