@@ -63,7 +63,7 @@ class TrimDialog(QDialog):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(10, 10, 10, 10)
 
-        # Main Dialog Container with explicit ID to prevent inner child border inheritance
+        # Main Dialog Container with explicit ID
         container = QFrame()
         container.setObjectName("TrimDialogContainer")
         container.setStyleSheet("""
@@ -77,7 +77,7 @@ class TrimDialog(QDialog):
         c_layout.setContentsMargins(16, 12, 16, 16)
         c_layout.setSpacing(10)
 
-        # 1. Title Bar (Clean, no boxes around icon/text)
+        # 1. Title Bar
         title_layout = QHBoxLayout()
         title_layout.setContentsMargins(0, 0, 0, 0)
         title_layout.setSpacing(8)
@@ -93,7 +93,8 @@ class TrimDialog(QDialog):
 
         title_layout.addStretch()
 
-        close_btn = QPushButton("✕")
+        close_btn = QPushButton()
+        close_btn.setIcon(get_svg_icon("x", color="#A1A1AA", size=16))
         close_btn.setObjectName("TitleButton")
         close_btn.setFixedSize(28, 28)
         close_btn.setCursor(Qt.PointingHandCursor)
@@ -101,14 +102,10 @@ class TrimDialog(QDialog):
             QPushButton#TitleButton {
                 background: transparent;
                 border: none;
-                color: #A1A1AA;
-                font-size: 14px;
-                font-weight: bold;
                 border-radius: 6px;
             }
             QPushButton#TitleButton:hover {
                 background: rgba(239, 68, 68, 0.4);
-                color: #FFFFFF;
             }
         """)
         close_btn.clicked.connect(self.reject)
@@ -140,21 +137,25 @@ class TrimDialog(QDialog):
         play_bar.setSpacing(8)
 
         # Jump to Start
-        self.btn_jump_start = QPushButton("⏮ К НАЧАЛУ")
+        self.btn_jump_start = QPushButton(" НАЧАЛО")
+        self.btn_jump_start.setIcon(get_svg_icon("skip-back", color="#FFFFFF", size=13))
+        self.btn_jump_start.setIconSize(QSize(13, 13))
         self.btn_jump_start.setProperty("class", "GlassButton")
         self.btn_jump_start.setCursor(Qt.PointingHandCursor)
         self.btn_jump_start.clicked.connect(lambda: self._seek_to_ms(self.start_ms))
         play_bar.addWidget(self.btn_jump_start)
 
         # Step Back
-        self.btn_step_back = QPushButton(" -0.1s")
+        self.btn_step_back = QPushButton("-0.1s")
         self.btn_step_back.setProperty("class", "GlassButton")
         self.btn_step_back.setCursor(Qt.PointingHandCursor)
         self.btn_step_back.clicked.connect(lambda: self._seek_relative(-100))
         play_bar.addWidget(self.btn_step_back)
 
-        # Play / Pause (Solid white button, never clips text)
-        self.btn_play = QPushButton(" ▶ Воспроизведение")
+        # Play / Pause
+        self.btn_play = QPushButton(" ВОСПРОИЗВЕДЕНИЕ")
+        self.btn_play.setIcon(get_svg_icon("play", color="#000000", size=13))
+        self.btn_play.setIconSize(QSize(13, 13))
         self.btn_play.setCursor(Qt.PointingHandCursor)
         self.btn_play.setStyleSheet("""
             QPushButton {
@@ -162,10 +163,10 @@ class TrimDialog(QDialog):
                 color: #000000;
                 font-size: 12px;
                 font-weight: 800;
-                padding: 6px 18px;
+                padding: 6px 16px;
                 border-radius: 6px;
                 border: none;
-                min-width: 130px;
+                min-width: 140px;
             }
             QPushButton:hover {
                 background-color: #E4E4E7;
@@ -178,14 +179,16 @@ class TrimDialog(QDialog):
         play_bar.addWidget(self.btn_play)
 
         # Step Forward
-        self.btn_step_fwd = QPushButton(" +0.1s")
+        self.btn_step_fwd = QPushButton("+0.1s")
         self.btn_step_fwd.setProperty("class", "GlassButton")
         self.btn_step_fwd.setCursor(Qt.PointingHandCursor)
         self.btn_step_fwd.clicked.connect(lambda: self._seek_relative(100))
         play_bar.addWidget(self.btn_step_fwd)
 
         # Jump to End
-        self.btn_jump_end = QPushButton("⏭ К КОНЦУ")
+        self.btn_jump_end = QPushButton(" КОНЕЦ")
+        self.btn_jump_end.setIcon(get_svg_icon("skip-forward", color="#FFFFFF", size=13))
+        self.btn_jump_end.setIconSize(QSize(13, 13))
         self.btn_jump_end.setProperty("class", "GlassButton")
         self.btn_jump_end.setCursor(Qt.PointingHandCursor)
         self.btn_jump_end.clicked.connect(lambda: self._seek_to_ms(self.end_ms))
@@ -221,22 +224,28 @@ class TrimDialog(QDialog):
         info_bar = QHBoxLayout()
         info_bar.setSpacing(8)
 
-        btn_mark_start = QPushButton("⚑ СДЕЛАТЬ НАЧАЛОМ")
-        btn_mark_start.setProperty("class", "GlassButton")
-        btn_mark_start.setCursor(Qt.PointingHandCursor)
-        btn_mark_start.setToolTip("Установить текущий кадр видео как точку начала")
-        btn_mark_start.clicked.connect(self._set_current_as_start)
-        info_bar.addWidget(btn_mark_start)
+        self.btn_mark_start = QPushButton(" СДЕЛАТЬ НАЧАЛОМ")
+        self.btn_mark_start.setIcon(get_svg_icon("flag", color="#FFFFFF", size=13))
+        self.btn_mark_start.setIconSize(QSize(13, 13))
+        self.btn_mark_start.setProperty("class", "GlassButton")
+        self.btn_mark_start.setCursor(Qt.PointingHandCursor)
+        self.btn_mark_start.setToolTip("Установить текущий кадр видео как точку начала")
+        self.btn_mark_start.clicked.connect(self._set_current_as_start)
+        info_bar.addWidget(self.btn_mark_start)
 
-        btn_mark_end = QPushButton("🏁 СДЕЛАТЬ КОНЦОМ")
-        btn_mark_end.setProperty("class", "GlassButton")
-        btn_mark_end.setCursor(Qt.PointingHandCursor)
-        btn_mark_end.setToolTip("Установить текущий кадр видео как точку конца")
-        btn_mark_end.clicked.connect(self._set_current_as_end)
-        info_bar.addWidget(btn_mark_end)
+        self.btn_mark_end = QPushButton(" СДЕЛАТЬ КОНЦОМ")
+        self.btn_mark_end.setIcon(get_svg_icon("flag-end", color="#FFFFFF", size=13))
+        self.btn_mark_end.setIconSize(QSize(13, 13))
+        self.btn_mark_end.setProperty("class", "GlassButton")
+        self.btn_mark_end.setCursor(Qt.PointingHandCursor)
+        self.btn_mark_end.setToolTip("Установить текущий кадр видео как точку конца")
+        self.btn_mark_end.clicked.connect(self._set_current_as_end)
+        info_bar.addWidget(self.btn_mark_end)
 
         # Loop Trim Section Toggle
-        self.btn_loop = QPushButton(" 🔁 ЗАЦИКЛИТЬ ОТРЕЗОК")
+        self.btn_loop = QPushButton(" ЗАЦИКЛИТЬ ОТРЕЗОК")
+        self.btn_loop.setIcon(get_svg_icon("repeat", color="#4ADE80", size=13))
+        self.btn_loop.setIconSize(QSize(13, 13))
         self.btn_loop.setCursor(Qt.PointingHandCursor)
         self.btn_loop.setCheckable(True)
         self.btn_loop.setChecked(True)
@@ -275,14 +284,18 @@ class TrimDialog(QDialog):
         actions_layout.setContentsMargins(0, 4, 0, 0)
         actions_layout.setSpacing(10)
 
-        reset_btn = QPushButton("↺ СБРОСИТЬ (НА ВСЕ ВИДЕО)")
+        reset_btn = QPushButton(" СБРОСИТЬ (НА ВСЕ ВИДЕО)")
+        reset_btn.setIcon(get_svg_icon("rotate-ccw", color="#FFFFFF", size=13))
+        reset_btn.setIconSize(QSize(13, 13))
         reset_btn.setProperty("class", "GlassButton")
         reset_btn.setCursor(Qt.PointingHandCursor)
         reset_btn.setStyleSheet("font-size: 11px; font-weight: 700; padding: 6px 14px;")
         reset_btn.clicked.connect(self._reset_to_full)
         actions_layout.addWidget(reset_btn)
 
-        cancel_btn = QPushButton("✕ ОТМЕНА")
+        cancel_btn = QPushButton(" ОТМЕНА")
+        cancel_btn.setIcon(get_svg_icon("x", color="#FFFFFF", size=13))
+        cancel_btn.setIconSize(QSize(13, 13))
         cancel_btn.setProperty("class", "GlassButton")
         cancel_btn.setCursor(Qt.PointingHandCursor)
         cancel_btn.setStyleSheet("font-size: 11px; font-weight: 700; padding: 6px 14px;")
@@ -291,7 +304,9 @@ class TrimDialog(QDialog):
 
         actions_layout.addStretch()
 
-        apply_btn = QPushButton("✓ ПРИМЕНИТЬ ОТРЕЗОК")
+        apply_btn = QPushButton(" ПРИМЕНИТЬ ОТРЕЗОК")
+        apply_btn.setIcon(get_svg_icon("check", color="#000000", size=15))
+        apply_btn.setIconSize(QSize(15, 15))
         apply_btn.setObjectName("PrimaryButton")
         apply_btn.setCursor(Qt.PointingHandCursor)
         apply_btn.setStyleSheet("""
@@ -348,12 +363,14 @@ class TrimDialog(QDialog):
     def _toggle_playback(self):
         if self.player.playbackState() == QMediaPlayer.PlayingState:
             self.player.pause()
-            self.btn_play.setText(" ▶ Воспроизведение")
+            self.btn_play.setText(" ВОСПРОИЗВЕДЕНИЕ")
+            self.btn_play.setIcon(get_svg_icon("play", color="#000000", size=13))
         else:
             if self.current_pos_ms >= self.end_ms or self.current_pos_ms < self.start_ms:
                 self._seek_to_ms(self.start_ms)
             self.player.play()
-            self.btn_play.setText(" ⏸ Пауза")
+            self.btn_play.setText(" ПАУЗА")
+            self.btn_play.setIcon(get_svg_icon("pause", color="#000000", size=13))
 
     def _seek_to_ms(self, pos_ms: int):
         pos_ms = max(0, min(self.duration_ms, pos_ms))
@@ -402,6 +419,7 @@ class TrimDialog(QDialog):
 
     def _update_loop_btn_style(self):
         if self.btn_loop.isChecked():
+            self.btn_loop.setIcon(get_svg_icon("repeat", color="#4ADE80", size=13))
             self.btn_loop.setStyleSheet("""
                 QPushButton {
                     background-color: rgba(34, 197, 94, 0.16);
@@ -417,6 +435,7 @@ class TrimDialog(QDialog):
                 }
             """)
         else:
+            self.btn_loop.setIcon(get_svg_icon("repeat", color="#A1A1AA", size=13))
             self.btn_loop.setStyleSheet("""
                 QPushButton {
                     background-color: rgba(255, 255, 255, 0.05);
