@@ -224,6 +224,7 @@ class VideoCardsListWidget(QWidget):
         self.last_clicked_id: str = None
 
         self.setStyleSheet("background: transparent; border: none;")
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -234,6 +235,7 @@ class VideoCardsListWidget(QWidget):
         self.scroll.setWidgetResizable(True)
         self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.scroll.setStyleSheet("""
             QScrollArea {
                 border: none;
@@ -250,6 +252,7 @@ class VideoCardsListWidget(QWidget):
         self.scroll_layout = QVBoxLayout(self.scroll_content)
         self.scroll_layout.setContentsMargins(0, 0, 0, 0)
         self.scroll_layout.setSpacing(8)
+        self.scroll_layout.setAlignment(Qt.AlignTop)
         self.scroll.setWidget(self.scroll_content)
 
         main_layout.addWidget(self.scroll)
@@ -262,13 +265,12 @@ class VideoCardsListWidget(QWidget):
             self.setFixedHeight(0)
         elif c == 1:
             self.setVisible(True)
-            self.setFixedHeight(102)
-        elif c == 2:
-            self.setVisible(True)
-            self.setFixedHeight(212)
+            self.setMinimumHeight(102)
+            self.setMaximumHeight(102)
         else:
             self.setVisible(True)
-            self.setFixedHeight(212)
+            self.setMinimumHeight(102)
+            self.setMaximumHeight(16777215)  # Dynamically fills entire fullscreen height!
 
     def add_video(self, info: dict) -> str:
         item_id = uuid.uuid4().hex
