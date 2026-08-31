@@ -197,3 +197,77 @@ def crop_video(input_path: str, crop_params: dict, output_path: str = None) -> s
     except Exception as e:
         print(f"Video crop error: {e}")
         return input_path
+
+
+def get_video_codec(input_path: str) -> str:
+    if not input_path or not os.path.exists(input_path):
+        return ""
+    try:
+        cmd = [
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=codec_name",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            input_path
+        ]
+        res = subprocess.run(
+            cmd,
+            startupinfo=get_startupinfo(),
+            creationflags=CREATE_NO_WINDOW,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True
+        )
+        return res.stdout.strip().lower()
+    except Exception:
+        return ""
+
+
+def get_or_create_preview_proxy(input_path: str) -> str:
+    """
+    Ensures the video is playable in Qt Multimedia without D3D11 hardware acceleration failures.
+    If the video is already h264/avc1/mp4v, returns input_path.
+    If it's av1, vp9, hevc, etc. or exotic format, creates a fast lightweight H.264 proxy.
+    """
+    if not input_path or not os.path.exists(input_path):
+        return input_path
+
+    codec = get_video_codec(input_path)
+    if codec in ['h264', 'avc1', 'mp4v', 'mjpeg']:
+        return input_path
+
+    try:
+        import tempfile
+        import hashlib
+        file_hash = hashlib.md5(input_path.encode('utf-8')).hexdigest()[:12]
+        proxy_path = os.path.join(tempfile.gettempdir(), f"aura_proxy_{file_hash}.mp4")
+        if os.path.exists(proxy_path) and os.path.getsize(proxy_path) > 0:
+            return proxy_path
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", input_path,
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-crf", "26",
+            "-tune", "fastdecode",
+            "-vf", "scale='min(1280,iw)':-2",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            proxy_path
+        ]
+        subprocess.run(
+            cmd,
+            startupinfo=get_startupinfo(),
+            creationflags=CREATE_NO_WINDOW,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True
+        )
+        if os.path.exists(proxy_path) and os.path.getsize(proxy_path) > 0:
+            return proxy_path
+    except Exception as e:
+        print(f"Proxy creation error: {e}")
+
+    return input_path
