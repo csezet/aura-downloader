@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QPushButton, QWidget, QGraphicsOpacityEffect
+    QFrame, QHBoxLayout, QLabel, QPushButton, QWidget
 )
-from PySide6.QtCore import Qt, Signal, QSize, QPropertyAnimation, QEasingCurve
+from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QIcon, QPixmap
 from assets.icons import get_svg_icon
 from ui.toggle_switch import ToggleSwitch
@@ -39,7 +39,7 @@ class CropWidget(QFrame):
         self.title_lbl.setStyleSheet("color: #EDEDED; font-size: 12px; font-weight: 700;")
         layout.addWidget(self.title_lbl)
 
-        # Controls Container (Animated)
+        # Controls Container
         self.controls_container = QWidget()
         ctrl_layout = QHBoxLayout(self.controls_container)
         ctrl_layout.setContentsMargins(0, 0, 0, 0)
@@ -47,15 +47,22 @@ class CropWidget(QFrame):
 
         # Edit Button with sleek vector icon
         self.edit_btn = QPushButton(" НАСТРОИТЬ ОБЛАСТЬ")
-        self.edit_btn.setIcon(get_svg_icon("crop", color="#EDEDED", size=13))
+        self.edit_btn.setIcon(get_svg_icon("crop", color="#52525B", size=13))
         self.edit_btn.setIconSize(QSize(13, 13))
         self.edit_btn.setProperty("class", "GlassButton")
         self.edit_btn.setStyleSheet("""
-            font-size: 11px;
-            font-weight: 700;
-            padding: 3px 10px;
-            color: #EDEDED;
-            border-radius: 6px;
+            QPushButton {
+                font-size: 11px;
+                font-weight: 700;
+                padding: 3px 10px;
+                color: #EDEDED;
+                border-radius: 6px;
+            }
+            QPushButton:disabled {
+                color: #52525B;
+                border: 1px solid rgba(255, 255, 255, 0.05);
+                background: rgba(0, 0, 0, 0.2);
+            }
         """)
         self.edit_btn.setEnabled(False)
         self.edit_btn.clicked.connect(self._open_crop_dialog)
@@ -76,14 +83,6 @@ class CropWidget(QFrame):
         self.status_tag.setVisible(False)
         ctrl_layout.addWidget(self.status_tag)
 
-        # Opacity Animation Effect
-        self.opacity_effect = QGraphicsOpacityEffect(self.controls_container)
-        self.opacity_effect.setOpacity(0.3)
-        self.controls_container.setGraphicsEffect(self.opacity_effect)
-        self.anim = QPropertyAnimation(self.opacity_effect, b"opacity")
-        self.anim.setDuration(220)
-        self.anim.setEasingCurve(QEasingCurve.OutCubic)
-
         layout.addWidget(self.controls_container)
         layout.addStretch()
 
@@ -94,13 +93,8 @@ class CropWidget(QFrame):
 
     def _on_toggled(self, checked: bool):
         self.edit_btn.setEnabled(checked)
+        self.edit_btn.setIcon(get_svg_icon("crop", color="#EDEDED" if checked else "#52525B", size=13))
         self.status_tag.setVisible(checked and self._crop_params is not None)
-        
-        self.anim.stop()
-        self.anim.setStartValue(self.opacity_effect.opacity())
-        self.anim.setEndValue(1.0 if checked else 0.3)
-        self.anim.start()
-
         self.crop_toggled.emit(checked)
         if checked and self._crop_params is None:
             self._open_crop_dialog()
