@@ -142,6 +142,7 @@ class VideoQueueWidget(QFrame):
     queue_changed = Signal(int)  # emits total count
     active_video_selected = Signal(dict)
     add_more_requested = Signal()
+    clear_all_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -179,7 +180,7 @@ class VideoQueueWidget(QFrame):
         self.clear_all_btn = QPushButton(" ✕ ОЧИСТИТЬ")
         self.clear_all_btn.setProperty("class", "GlassButton")
         self.clear_all_btn.setStyleSheet("font-size: 10px; font-weight: 700; padding: 2px 8px; color: #EF4444;")
-        self.clear_all_btn.clicked.connect(self.clear_all)
+        self.clear_all_btn.clicked.connect(self._on_clear_btn_clicked)
         header.addWidget(self.clear_all_btn)
 
         main_layout.addLayout(header)
@@ -214,6 +215,9 @@ class VideoQueueWidget(QFrame):
 
         main_layout.addWidget(self.scroll)
 
+    def _on_clear_btn_clicked(self):
+        self.clear_all_requested.emit()
+
     def set_videos(self, info_list: list[dict]):
         self.clear_all()
         for info in info_list:
@@ -230,7 +234,7 @@ class VideoQueueWidget(QFrame):
             self.set_active_video(self.items[0].get('url'))
 
         self._update_header()
-        self.setVisible(len(self.items) > 0)
+        self.setVisible(len(self.items) > 1)
         self.queue_changed.emit(len(self.items))
 
     def _on_item_clicked(self, info: dict):
@@ -248,6 +252,7 @@ class VideoQueueWidget(QFrame):
         url = info.get('url')
         for it in self.items:
             if it.get('url') == url:
+                self.set_active_video(url)
                 return
 
         self.items.append(info)
@@ -259,8 +264,9 @@ class VideoQueueWidget(QFrame):
         self.item_widgets.append(item_w)
         self.scroll_layout.addWidget(item_w)
 
+        self.set_active_video(url)
         self._update_header()
-        self.setVisible(True)
+        self.setVisible(len(self.items) > 1)
         self.queue_changed.emit(len(self.items))
 
     def remove_video(self, url: str):
@@ -280,9 +286,11 @@ class VideoQueueWidget(QFrame):
             self.setVisible(False)
             self.active_url = None
         else:
+            self.setVisible(len(self.items) > 1)
             if self.active_url == url:
-                self.set_active_video(self.items[0].get('url'))
-                self.active_video_selected.emit(self.items[0])
+                new_idx = min(found_idx, len(self.items) - 1)
+                self.set_active_video(self.items[new_idx].get('url'))
+                self.active_video_selected.emit(self.items[new_idx])
 
         self.queue_changed.emit(len(self.items))
 
