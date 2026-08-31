@@ -46,10 +46,10 @@ class TrimDialog(QDialog):
         self.setAttribute(Qt.WA_TranslucentBackground, True)
 
         self.video_source = video_source
-        self.duration_ms = int(max(1.0, duration_sec) * 1000)
+        self.duration_ms = max(100, int(round((float(duration_sec) if duration_sec else 60.0) * 1000.0)))
         self.start_ms = parse_time_to_ms(initial_start)
         self.end_ms = parse_time_to_ms(initial_end) if initial_end else self.duration_ms
-        if self.end_ms <= self.start_ms:
+        if self.end_ms <= self.start_ms or self.end_ms > self.duration_ms:
             self.end_ms = self.duration_ms
 
         self.current_pos_ms = self.start_ms
@@ -360,21 +360,25 @@ class TrimDialog(QDialog):
 
     def _on_player_duration_changed(self, dur_ms: int):
         if dur_ms > 0:
+            was_full = (self.end_ms >= self.duration_ms or self.end_ms == 0)
             self.duration_ms = dur_ms
             self.timeline_slider.set_duration(dur_ms)
-            if self.end_ms > dur_ms or self.end_ms == 0:
+            if was_full:
                 self.end_ms = dur_ms
+            else:
+                self.end_ms = min(self.end_ms, dur_ms)
             self.timeline_slider.set_range(self.start_ms, self.end_ms)
             self._update_badges()
+            self.time_lbl.setText(f"{ms_to_fmt(self.current_pos_ms)} / {ms_to_fmt(self.duration_ms)}")
 
     def _on_player_position_changed(self, pos_ms: int):
         self.current_pos_ms = pos_ms
         self.timeline_slider.set_current_position(pos_ms)
         self.time_lbl.setText(f"{ms_to_fmt(pos_ms)} / {ms_to_fmt(self.duration_ms)}")
 
-        # Loop check within trimmed range
-        if self.is_looping and pos_ms >= self.end_ms and self.player.playbackState() == QMediaPlayer.PlayingState:
-            self.player.setPosition(self.start_ms)
+        # Loop check within trimmed range (or when reaching end)
+        if self.is_looping and pos_ms >= (self.end_ms - 50) and self.player.playbackState() == QMediaPlayer.PlayingState:
+            self._seek_to_ms(self.start_ms)
 
     def _toggle_playback(self):
         if self.player.playbackState() == QMediaPlayer.PlayingState:
@@ -382,7 +386,7 @@ class TrimDialog(QDialog):
             self.btn_play.setText(" ВОСПРОИЗВЕДЕНИЕ")
             self.btn_play.setIcon(get_svg_icon("play", color="#000000", size=13))
         else:
-            if self.current_pos_ms >= self.end_ms or self.current_pos_ms < self.start_ms:
+            if self.current_pos_ms >= (self.end_ms - 50) or self.current_pos_ms < self.start_ms:
                 self._seek_to_ms(self.start_ms)
             self.player.play()
             self.btn_play.setText(" ПАУЗА")
@@ -391,7 +395,10 @@ class TrimDialog(QDialog):
     def _seek_to_ms(self, pos_ms: int):
         pos_ms = max(0, min(self.duration_ms, pos_ms))
         self.current_pos_ms = pos_ms
-        self.player.setPosition(pos_ms)
+        # Keep last frame rendered on screen without flushing to black at EOF
+        safe_max = max(0, self.duration_ms - 40) if self.duration_ms > 100 else self.duration_ms
+        player_pos = min(pos_ms, safe_max)
+        self.player.setPosition(player_pos)
         self.timeline_slider.set_current_position(pos_ms)
         self.time_lbl.setText(f"{ms_to_fmt(pos_ms)} / {ms_to_fmt(self.duration_ms)}")
 
@@ -400,9 +407,7 @@ class TrimDialog(QDialog):
         self._seek_to_ms(cur + delta_ms)
 
     def _on_slider_seek(self, pos_ms: int):
-        self.current_pos_ms = pos_ms
-        self.player.setPosition(pos_ms)
-        self.time_lbl.setText(f"{ms_to_fmt(pos_ms)} / {ms_to_fmt(self.duration_ms)}")
+        self._seek_to_ms(pos_ms)
 
     def _on_range_changed(self, start_ms: int, end_ms: int):
         self.start_ms = start_ms
