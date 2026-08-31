@@ -1,3 +1,4 @@
+import os
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QSizePolicy
 )
@@ -123,26 +124,35 @@ class PreviewCard(QFrame):
         layout.addLayout(right_layout)
 
     def set_data(self, data: dict):
+        if not data:
+            return
+
         self.title_label.setText(data.get("title", "Без названия"))
-        self.author_label.setText(f"👤 {data.get('uploader', 'Неизвестный автор')}")
+        self.author_label.setText(f"👤 {data.get('uploader', 'Локальное видео')}")
         self.platform_badge.setText(data.get("platform", "VIDEO").upper())
         self.duration_badge.setText(f"⏱ {data.get('duration_str', '--:--')}")
         
-        self.thumb_label.setText("LOADING...")
-        thumb_url = data.get("thumbnail")
-        if thumb_url:
-            if self._image_worker and self._image_worker.isRunning():
-                self._image_worker.terminate()
-            self._image_worker = ImageLoaderWorker(thumb_url)
-            self._image_worker.image_loaded.connect(self._on_image_loaded)
-            self._image_worker.start()
+        thumb_val = data.get("thumbnail")
+        if thumb_val:
+            if isinstance(thumb_val, str) and os.path.exists(thumb_val):
+                pix = QPixmap(thumb_val)
+                self._on_image_loaded(pix)
+            elif isinstance(thumb_val, str) and thumb_val.startswith("http"):
+                self.thumb_label.setText("LOADING...")
+                if self._image_worker and self._image_worker.isRunning():
+                    self._image_worker.terminate()
+                self._image_worker = ImageLoaderWorker(thumb_val)
+                self._image_worker.image_loaded.connect(self._on_image_loaded)
+                self._image_worker.start()
+            else:
+                self.thumb_label.setText("NO IMAGE")
         else:
             self.thumb_label.setText("NO IMAGE")
 
         self.setVisible(True)
 
     def _on_image_loaded(self, pixmap: QPixmap):
-        if not pixmap.isNull():
+        if pixmap and not pixmap.isNull():
             self._raw_pixmap = pixmap
             self.image_ready.emit(pixmap)
             scaled = pixmap.scaled(115, 72, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
