@@ -48,9 +48,13 @@ class TrimDialog(QDialog):
         self.video_source = video_source
         self.duration_ms = max(100, int(round((float(duration_sec) if duration_sec else 60.0) * 1000.0)))
         self.start_ms = parse_time_to_ms(initial_start)
-        self.end_ms = parse_time_to_ms(initial_end) if initial_end else self.duration_ms
-        if self.end_ms <= self.start_ms or self.end_ms > self.duration_ms:
+        parsed_end = parse_time_to_ms(initial_end) if initial_end else None
+
+        # Anchor right handle to 100% full duration if not explicitly a custom sub-clip
+        if parsed_end is None or parsed_end >= (self.duration_ms - 800) or parsed_end <= self.start_ms:
             self.end_ms = self.duration_ms
+        else:
+            self.end_ms = min(self.duration_ms, parsed_end)
 
         self.current_pos_ms = self.start_ms
         self.is_looping = True
@@ -360,7 +364,7 @@ class TrimDialog(QDialog):
 
     def _on_player_duration_changed(self, dur_ms: int):
         if dur_ms > 0:
-            was_full = (self.end_ms >= self.duration_ms or self.end_ms == 0)
+            was_full = (self.end_ms >= (self.duration_ms - 800) or self.end_ms == 0)
             self.duration_ms = dur_ms
             self.timeline_slider.set_duration(dur_ms)
             if was_full:
@@ -377,7 +381,8 @@ class TrimDialog(QDialog):
         self.time_lbl.setText(f"{ms_to_fmt(pos_ms)} / {ms_to_fmt(self.duration_ms)}")
 
         # Loop check within trimmed range (or when reaching end)
-        if self.is_looping and pos_ms >= (self.end_ms - 50) and self.player.playbackState() == QMediaPlayer.PlayingState:
+        loop_target = self.end_ms - 80 if self.duration_ms > 500 else self.end_ms
+        if self.is_looping and pos_ms >= loop_target and self.player.playbackState() == QMediaPlayer.PlayingState:
             self._seek_to_ms(self.start_ms)
 
     def _toggle_playback(self):
@@ -386,7 +391,7 @@ class TrimDialog(QDialog):
             self.btn_play.setText(" ВОСПРОИЗВЕДЕНИЕ")
             self.btn_play.setIcon(get_svg_icon("play", color="#000000", size=13))
         else:
-            if self.current_pos_ms >= (self.end_ms - 50) or self.current_pos_ms < self.start_ms:
+            if self.current_pos_ms >= (self.end_ms - 80) or self.current_pos_ms < self.start_ms:
                 self._seek_to_ms(self.start_ms)
             self.player.play()
             self.btn_play.setText(" ПАУЗА")
@@ -395,8 +400,15 @@ class TrimDialog(QDialog):
     def _seek_to_ms(self, pos_ms: int):
         pos_ms = max(0, min(self.duration_ms, pos_ms))
         self.current_pos_ms = pos_ms
-        # Keep last frame rendered on screen without flushing to black at EOF
-        safe_max = max(0, self.duration_ms - 40) if self.duration_ms > 100 else self.duration_ms
+        
+        # Calculate safe seek target to prevent WMF from flushing frame to black at EOF
+        if self.duration_ms <= 1000:
+            safe_max = max(0, self.duration_ms - 60)
+        elif self.duration_ms <= 3000:
+            safe_max = max(0, self.duration_ms - 100)
+        else:
+            safe_max = max(0, self.duration_ms - 150)
+
         player_pos = min(pos_ms, safe_max)
         self.player.setPosition(player_pos)
         self.timeline_slider.set_current_position(pos_ms)
@@ -413,6 +425,8 @@ class TrimDialog(QDialog):
         self.start_ms = start_ms
         self.end_ms = end_ms
         self._update_badges()
+        if self.player.playbackState() != QMediaPlayer.PlayingState:
+            self._seek_to_ms(end_ms)
 
     def _update_badges(self):
         self.badge_start.setText(f"ОТ: {ms_to_fmt(self.start_ms)}")
