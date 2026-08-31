@@ -75,13 +75,37 @@ class VideoCardWidget(QFrame):
         badge_layout.setSpacing(6)
 
         platform_str = data.get("platform", "LOCAL VIDEO" if data.get("is_local") else "VIDEO").upper()
-        self.platform_badge = QLabel(platform_str)
+        self.platform_badge = QLabel(f" {platform_str} ")
         self.platform_badge.setObjectName("PlatformBadge")
+        self.platform_badge.setStyleSheet("""
+            QLabel#PlatformBadge {
+                background-color: #FFFFFF;
+                color: #000000;
+                border-radius: 4px;
+                padding: 2px 8px;
+                font-size: 10px;
+                font-weight: 900;
+                font-family: 'Consolas', monospace;
+                letter-spacing: 0.5px;
+            }
+        """)
         badge_layout.addWidget(self.platform_badge)
 
         dur_str = data.get("duration_str", "--:--")
         self.duration_badge = QLabel(f"⏱ {dur_str}")
         self.duration_badge.setObjectName("Badge")
+        self.duration_badge.setStyleSheet("""
+            QLabel#Badge {
+                background-color: rgba(255, 255, 255, 0.10);
+                border: 1px solid rgba(255, 255, 255, 0.20);
+                border-radius: 4px;
+                color: #EDEDED;
+                padding: 2px 6px;
+                font-size: 10px;
+                font-family: 'Consolas', monospace;
+                font-weight: 700;
+            }
+        """)
         badge_layout.addWidget(self.duration_badge)
 
         badge_layout.addStretch()
@@ -95,8 +119,8 @@ class VideoCardWidget(QFrame):
         info_layout.addWidget(self.title_label)
 
         # Author / Stats
-        uploader = data.get('uploader') or f"Локальное видео ({data.get('width', 1920)}x{data.get('height', 1080)})"
-        self.author_label = QLabel(f"👤 {uploader}")
+        uploader = data.get('uploader') or f"Локальное видео ({data.get('width', 1920)}×{data.get('height', 1080)}, {int(data.get('fps', 30))} FPS)"
+        self.author_label = QLabel(f"{uploader}")
         self.author_label.setStyleSheet("font-size: 10px; color: #A1A1AA;")
         info_layout.addWidget(self.author_label)
 
@@ -338,6 +362,11 @@ class VideoCardsListWidget(QWidget):
             payload['options'] = card.get_options()
             payload['item_id'] = item_id
             self.active_video_changed.emit(payload, card.get_pixmap())
+
+    def save_card_options(self, item_id: str, opts: dict):
+        card = self._get_card(item_id)
+        if card and opts:
+            card.set_options(opts)
 
     def save_active_options(self, opts: dict):
         card = self.get_active_card()
