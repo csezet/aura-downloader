@@ -29,23 +29,6 @@ from ui.smooth_widget import SmoothWidget
 from ui.batch_dialog import BatchDialog
 from ui.settings_modal import SettingsModal
 
-class HoverIconFilter(QWidget):
-    def __init__(self, button: QPushButton, icon_name: str, size: int = 16):
-        super().__init__(button)
-        self.button = button
-        self.icon_name = icon_name
-        self.size = size
-        self.button.installEventFilter(self)
-
-    def eventFilter(self, obj, event):
-        if obj == self.button:
-            if event.type() == QEvent.Enter:
-                self.button.setIcon(get_svg_icon(self.icon_name, color="#000000", size=self.size))
-            elif event.type() == QEvent.Leave:
-                self.button.setIcon(get_svg_icon(self.icon_name, color="#EDEDED", size=self.size))
-        return super().eventFilter(obj, event)
-
-
 class DropOverlay(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -213,48 +196,43 @@ class MainWindow(QMainWindow):
         input_bar.addWidget(self.url_input, stretch=1)
 
         self.paste_btn = QPushButton(" ВСТАВИТЬ")
-        self.paste_btn.setIcon(get_svg_icon("paste", color="#EDEDED", size=15))
+        self.paste_btn.setIcon(get_svg_icon("paste", color="#FFFFFF", size=15))
         self.paste_btn.setIconSize(QSize(15, 15))
         self.paste_btn.setProperty("class", "GlassButton")
         self.paste_btn.clicked.connect(self._paste_and_fetch)
-        self._h_paste = HoverIconFilter(self.paste_btn, "paste", 15)
         input_bar.addWidget(self.paste_btn)
 
         self.file_btn = QPushButton(" ФАЙЛЫ")
-        self.file_btn.setIcon(get_svg_icon("file", color="#EDEDED", size=15))
+        self.file_btn.setIcon(get_svg_icon("file", color="#FFFFFF", size=15))
         self.file_btn.setIconSize(QSize(15, 15))
         self.file_btn.setProperty("class", "GlassButton")
         self.file_btn.setToolTip("Выбрать одно или несколько видео с ПК")
         self.file_btn.clicked.connect(self._open_file_dialog)
-        self._h_file = HoverIconFilter(self.file_btn, "file", 15)
         input_bar.addWidget(self.file_btn)
 
         self.batch_btn = QPushButton(" ПАКЕТ")
-        self.batch_btn.setIcon(get_svg_icon("batch", color="#EDEDED", size=15))
+        self.batch_btn.setIcon(get_svg_icon("batch", color="#FFFFFF", size=15))
         self.batch_btn.setIconSize(QSize(15, 15))
         self.batch_btn.setProperty("class", "GlassButton")
         self.batch_btn.setToolTip("Пакетная загрузка списка ссылок")
         self.batch_btn.clicked.connect(self._open_batch_dialog)
-        self._h_batch = HoverIconFilter(self.batch_btn, "batch", 15)
         input_bar.addWidget(self.batch_btn)
 
         self.history_btn = QPushButton(" ИСТОРИЯ")
-        self.history_btn.setIcon(get_svg_icon("history", color="#EDEDED", size=15))
+        self.history_btn.setIcon(get_svg_icon("history", color="#FFFFFF", size=15))
         self.history_btn.setIconSize(QSize(15, 15))
         self.history_btn.setProperty("class", "GlassButton")
         self.history_btn.setToolTip("Открыть историю загрузок")
         self.history_btn.clicked.connect(self._open_history_modal)
-        self._h_history = HoverIconFilter(self.history_btn, "history", 15)
         input_bar.addWidget(self.history_btn)
 
         self.settings_btn = QPushButton()
-        self.settings_btn.setIcon(get_svg_icon("settings", color="#EDEDED", size=17))
+        self.settings_btn.setIcon(get_svg_icon("settings", color="#FFFFFF", size=17))
         self.settings_btn.setIconSize(QSize(17, 17))
         self.settings_btn.setProperty("class", "GlassButton")
         self.settings_btn.setFixedSize(34, 34)
         self.settings_btn.setToolTip("Настройки")
         self.settings_btn.clicked.connect(self._open_settings)
-        self._h_settings = HoverIconFilter(self.settings_btn, "settings", 17)
         input_bar.addWidget(self.settings_btn)
 
         content_layout.addLayout(input_bar)
@@ -378,12 +356,11 @@ class MainWindow(QMainWindow):
         footer_layout.addWidget(self.dest_lbl, stretch=1)
 
         open_folder_btn = QPushButton(" ОТКРЫТЬ ПАПКУ")
-        open_folder_btn.setIcon(get_svg_icon("folder", color="#EDEDED", size=12))
+        open_folder_btn.setIcon(get_svg_icon("folder", color="#FFFFFF", size=12))
         open_folder_btn.setIconSize(QSize(12, 12))
         open_folder_btn.setProperty("class", "GlassButton")
         open_folder_btn.setStyleSheet("font-size: 10px; padding: 3px 8px; font-weight: 700;")
         open_folder_btn.clicked.connect(self._open_dest_dir)
-        self._h_folder = HoverIconFilter(open_folder_btn, "folder", 12)
         footer_layout.addWidget(open_folder_btn)
 
         content_layout.addLayout(footer_layout)
