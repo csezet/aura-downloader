@@ -338,6 +338,7 @@ class MainWindow(QMainWindow):
         # 5. Full Video Cards List (Supports duplicate videos, smooth wheel scrolling without scrollbars)
         self.cards_list = VideoCardsListWidget()
         self.cards_list.active_video_changed.connect(self._on_active_video_changed)
+        self.cards_list.active_thumbnail_updated.connect(self._on_active_thumbnail_updated)
         self.cards_list.list_changed.connect(self._on_cards_list_changed)
         content_layout.addWidget(self.cards_list, stretch=10)
 
@@ -502,6 +503,12 @@ class MainWindow(QMainWindow):
         else:
             self.smooth_widget.fps_combo.setCurrentIndex(2)
 
+    def _on_active_thumbnail_updated(self, pixmap: QPixmap):
+        if self.current_video_info and pixmap and not pixmap.isNull():
+            w = self.current_video_info.get("width", 1920)
+            h = self.current_video_info.get("height", 1080)
+            self.crop_widget.set_source_info(pixmap, width=w, height=h)
+
     def _on_active_video_changed(self, info: dict, pixmap: QPixmap):
         self._is_restoring_ui = True
         try:
@@ -509,7 +516,8 @@ class MainWindow(QMainWindow):
             w = info.get("width", 1920)
             h = info.get("height", 1080)
             self.crop_widget.set_source_info(pixmap, width=w, height=h)
-            self.trim_widget.set_source_video(info.get('url'), info.get('duration', 60))
+            playable = info.get('playable_url') or info.get('direct_url') or info.get('url')
+            self.trim_widget.set_source_video(playable, info.get('duration', 60))
             if info.get("available_res"):
                 self.res_combo.clear()
                 self.res_combo.addItems(info["available_res"])
