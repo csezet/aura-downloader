@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QSizePolicy
+    QFrame, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QSizePolicy, QGraphicsOpacityEffect
 )
-from PySide6.QtCore import Qt, QThread, Signal, QByteArray
+from PySide6.QtCore import Qt, QThread, Signal, QByteArray, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QPixmap, QImage, QPainter, QPainterPath
 import requests
 
@@ -122,6 +122,14 @@ class PreviewCard(QFrame):
 
         layout.addLayout(right_layout)
 
+        # Opacity and Height Animations
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+        
+        self.anim_opacity = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.anim_opacity.setDuration(240)
+        self.anim_opacity.setEasingCurve(QEasingCurve.OutCubic)
+
     def set_data(self, data: dict):
         self.title_label.setText(data.get("title", "Без названия"))
         self.author_label.setText(f"👤 {data.get('uploader', 'Неизвестный автор')}")
@@ -140,6 +148,10 @@ class PreviewCard(QFrame):
             self.thumb_label.setText("NO IMAGE")
 
         self.setVisible(True)
+        self.anim_opacity.stop()
+        self.anim_opacity.setStartValue(0.0)
+        self.anim_opacity.setEndValue(1.0)
+        self.anim_opacity.start()
 
     def _on_image_loaded(self, pixmap: QPixmap):
         if not pixmap.isNull():
@@ -164,7 +176,15 @@ class PreviewCard(QFrame):
         return self._raw_pixmap
 
     def clear(self):
-        self.setVisible(False)
-        self._raw_pixmap = None
-        self.thumb_label.clear()
-        self.thumb_label.setText("NO PREVIEW")
+        self.anim_opacity.stop()
+        self.anim_opacity.setStartValue(self.opacity_effect.opacity())
+        self.anim_opacity.setEndValue(0.0)
+        self.anim_opacity.finished.connect(self._on_fade_out_finished)
+        self.anim_opacity.start()
+
+    def _on_fade_out_finished(self):
+        if self.opacity_effect.opacity() <= 0.05:
+            self.setVisible(False)
+            self._raw_pixmap = None
+            self.thumb_label.clear()
+            self.thumb_label.setText("NO PREVIEW")
