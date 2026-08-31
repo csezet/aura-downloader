@@ -20,8 +20,7 @@ from assets.styles import get_stylesheet
 from assets.icons import get_svg_icon
 from ui.window_effects import apply_acrylic_effect
 from ui.title_bar import CustomTitleBar
-from ui.preview_card import PreviewCard
-from ui.queue_widget import VideoQueueWidget
+from ui.video_cards_list import VideoCardsListWidget
 from ui.progress_widget import ProgressWidget
 from ui.history_view import HistoryModal
 from ui.trim_widget import TrimWidget
@@ -344,25 +343,11 @@ class MainWindow(QMainWindow):
 
         content_layout.addLayout(tools_layout)
 
-        # 5. Media Container (Preview Card & Multi-Video Queue List)
-        self.media_container = QWidget()
-        media_layout = QVBoxLayout(self.media_container)
-        media_layout.setContentsMargins(0, 0, 0, 0)
-        media_layout.setSpacing(6)
-
-        self.preview_card = PreviewCard()
-        self.preview_card.image_ready.connect(self._on_preview_image_ready)
-        self.preview_card.close_requested.connect(self._clear_loaded_video)
-        media_layout.addWidget(self.preview_card)
-
-        self.queue_widget = VideoQueueWidget()
-        self.queue_widget.queue_changed.connect(self._on_queue_changed)
-        self.queue_widget.active_video_selected.connect(self._on_queue_item_selected)
-        self.queue_widget.add_more_requested.connect(self._open_file_dialog)
-        self.queue_widget.clear_all_requested.connect(self._reset_all_state)
-        media_layout.addWidget(self.queue_widget)
-
-        content_layout.addWidget(self.media_container)
+        # 5. Full Video Cards List (Supports duplicate videos, smooth wheel scrolling without scrollbars)
+        self.cards_list = VideoCardsListWidget()
+        self.cards_list.active_video_changed.connect(self._on_active_video_changed)
+        self.cards_list.list_changed.connect(self._on_cards_list_changed)
+        content_layout.addWidget(self.cards_list)
 
         # 6. Progress Widget
         self.progress_widget = ProgressWidget()
@@ -445,131 +430,47 @@ class MainWindow(QMainWindow):
         if not clean_paths:
             return
 
-        # If we already have a local video loaded, ensure it is in the queue
-        if self.current_video_info and self.current_video_info.get('is_local'):
-            if self.queue_widget.count() == 0:
-                self.queue_widget.add_video(self.current_video_info)
-
-        new_info = None
         for path in clean_paths:
             info = get_local_media_info(path)
             if info:
-                self.queue_widget.add_video(info)
-                new_info = info
+                self.cards_list.add_video(info)
 
-        total_vids = self.queue_widget.get_all_videos()
-        if len(total_vids) == 0:
-            if len(clean_paths) == 1:
-                self._load_single_local_file(clean_paths[0])
-            return
-
-        if len(total_vids) == 1:
-            self.current_video_info = total_vids[0]
-            self.preview_card.set_data(total_vids[0])
-            self.preview_card.setVisible(True)
-            self.queue_widget.setVisible(False)
-            self.url_input.blockSignals(True)
-            self.url_input.setText(total_vids[0].get('url', ''))
-            self.url_input.blockSignals(False)
-        else:
-            active_item = new_info or total_vids[-1]
-            self.current_video_info = active_item
-            self.preview_card.set_data(active_item)
-            self.preview_card.setVisible(True)
-            self.queue_widget.set_active_video(active_item.get('url'))
-            self.queue_widget.setVisible(True)
-            self.url_input.blockSignals(True)
-            self.url_input.setText(f"[ {len(total_vids)} локальных видео в очереди ]")
-            self.url_input.blockSignals(False)
-
-        w = self.current_video_info.get("width", 1920)
-        h = self.current_video_info.get("height", 1080)
-        self.crop_widget.set_source_info(self.preview_card.get_pixmap(), width=w, height=h)
-        if self.current_video_info.get("duration"):
-            self.trim_widget.set_duration_hint(self.current_video_info["duration"])
-
-        self._update_download_button_text()
-
-    def _load_single_local_file(self, file_path: str):
-        file_path = file_path.strip().strip('"').strip("'")
-        self.url_input.blockSignals(True)
-        self.url_input.setText(file_path)
-        self.url_input.blockSignals(False)
-
-        info = get_local_media_info(file_path)
-        if info:
-            self.current_video_info = info
-            self.preview_card.set_data(info)
-            self.preview_card.setVisible(True)
-            self.queue_widget.clear_all()
-            
-            w = info.get("width", 1920)
-            h = info.get("height", 1080)
-            self.crop_widget.set_source_info(self.preview_card.get_pixmap(), width=w, height=h)
-            if info.get("duration"):
-                self.trim_widget.set_duration_hint(info["duration"])
-            self._update_download_button_text()
-
-    def _on_queue_changed(self, count: int):
-        if count == 0:
-            if self.current_video_info is not None:
-                self._reset_all_state()
-        elif count == 1:
-            rem = self.queue_widget.get_all_videos()
-            if rem:
-                self.current_video_info = rem[0]
-                self.preview_card.set_data(rem[0])
-                self.preview_card.setVisible(True)
-                self.queue_widget.setVisible(False)
-                self.url_input.blockSignals(True)
-                self.url_input.setText(rem[0].get('url', ''))
-                self.url_input.blockSignals(False)
-        self._update_download_button_text()
-
-    def _on_queue_item_selected(self, info: dict):
+    def _on_active_video_changed(self, info: dict, pixmap: QPixmap):
         self.current_video_info = info
-        self.preview_card.set_data(info)
-        self.preview_card.setVisible(True)
         w = info.get("width", 1920)
         h = info.get("height", 1080)
-        self.crop_widget.set_source_info(self.preview_card.get_pixmap(), width=w, height=h)
+        self.crop_widget.set_source_info(pixmap, width=w, height=h)
         if info.get("duration"):
             self.trim_widget.set_duration_hint(info["duration"])
+        if info.get("available_res"):
+            self.res_combo.clear()
+            self.res_combo.addItems(info["available_res"])
         self._update_download_button_text()
 
-    def _clear_loaded_video(self):
-        if self.queue_widget.count() > 1:
-            active_url = self.current_video_info.get('url') if self.current_video_info else ''
-            self.queue_widget.remove_video(active_url)
-            rem = self.queue_widget.get_all_videos()
-            if len(rem) == 1:
-                self.current_video_info = rem[0]
-                self.preview_card.set_data(rem[0])
-                self.preview_card.setVisible(True)
-                self.queue_widget.setVisible(False)
-                self.url_input.blockSignals(True)
-                self.url_input.setText(rem[0].get('url', ''))
-                self.url_input.blockSignals(False)
-                self._update_download_button_text()
-            elif len(rem) > 1:
-                self.url_input.blockSignals(True)
-                self.url_input.setText(f"[ {len(rem)} локальных видео в очереди ]")
-                self.url_input.blockSignals(False)
-                self._update_download_button_text()
-            else:
+    def _on_cards_list_changed(self, count: int):
+        if count == 0:
+            if self.current_video_info is not None or self.url_input.text():
                 self._reset_all_state()
+        elif count == 1:
+            all_vids = self.cards_list.get_all_videos()
+            if all_vids:
+                self.url_input.blockSignals(True)
+                self.url_input.setText(all_vids[0].get('url', ''))
+                self.url_input.blockSignals(False)
         else:
-            self._reset_all_state()
+            self.url_input.blockSignals(True)
+            self.url_input.setText(f"[ {count} видео в очереди ]")
+            self.url_input.blockSignals(False)
+        self._update_download_button_text()
 
     def _reset_all_state(self):
-        if self.current_video_info is None and self.queue_widget.count() == 0 and not self.preview_card.isVisible():
+        if self.current_video_info is None and self.cards_list.count() == 0 and not self.url_input.text():
             return
         self.current_video_info = None
         self.url_input.blockSignals(True)
         self.url_input.clear()
         self.url_input.blockSignals(False)
-        self.preview_card.clear()
-        self.queue_widget.clear_all()
+        self.cards_list.clear_all()
         self.crop_widget.toggle.setChecked(False)
         self.trim_widget.toggle.setChecked(False)
         self.smooth_widget.toggle.setChecked(False)
@@ -581,21 +482,6 @@ class MainWindow(QMainWindow):
         elif is_video_file(text):
             if not self.current_video_info or self.current_video_info.get('url') != text:
                 self._load_local_files([text])
-
-    def _on_preview_image_ready(self, pixmap):
-        sw = 1920
-        sh = 1080
-        if self.current_video_info:
-            w = self.current_video_info.get("width")
-            h = self.current_video_info.get("height")
-            if w and h and w > 0 and h > 0:
-                sw, sh = w, h
-            elif pixmap and not pixmap.isNull():
-                sw, sh = pixmap.width(), pixmap.height()
-        elif pixmap and not pixmap.isNull():
-            sw, sh = pixmap.width(), pixmap.height()
-
-        self.crop_widget.set_source_info(pixmap, width=sw, height=sh)
 
     def _fetch_metadata(self):
         url = self.url_input.text().strip()
@@ -618,21 +504,7 @@ class MainWindow(QMainWindow):
         self.metadata_worker.start()
 
     def _on_metadata_ready(self, info: dict):
-        self.current_video_info = info
-        self.preview_card.set_data(info)
-        self.queue_widget.setVisible(False)
-        
-        w = info.get("width", 1920)
-        h = info.get("height", 1080)
-        self.crop_widget.set_source_info(self.preview_card.get_pixmap(), width=w, height=h)
-
-        if info.get("duration"):
-            self.trim_widget.set_duration_hint(info["duration"])
-
-        if info.get("available_res"):
-            self.res_combo.clear()
-            self.res_combo.addItems(info["available_res"])
-
+        self.cards_list.add_video(info)
         self.download_btn.setEnabled(True)
         self._update_download_button_text()
 
@@ -671,7 +543,8 @@ class MainWindow(QMainWindow):
         self._update_download_button_text()
 
     def _update_download_button_text(self):
-        q_count = len(self.queue_widget.get_selected_videos()) if self.queue_widget.isVisible() else 0
+        selected_vids = self.cards_list.get_selected_videos()
+        q_count = len(selected_vids)
         is_local = (self.current_video_info and self.current_video_info.get('is_local')) or q_count > 0
 
         if not self.current_video_info and q_count == 0:
@@ -727,7 +600,7 @@ class MainWindow(QMainWindow):
 
     def _start_download(self):
         url = self.url_input.text().strip()
-        selected_queue = self.queue_widget.get_selected_videos() if self.queue_widget.isVisible() else []
+        selected_queue = self.cards_list.get_selected_videos()
 
         if not url and not selected_queue and not self.current_video_info:
             return
