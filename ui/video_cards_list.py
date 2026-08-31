@@ -2,7 +2,7 @@ import os
 import uuid
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QWidget, QCheckBox, QSizePolicy
+    QScrollArea, QWidget, QSizePolicy, QApplication
 )
 from PySide6.QtCore import Qt, Signal, QSize, QThread, QByteArray
 from PySide6.QtGui import QPixmap, QImage, QPainter, QPainterPath
@@ -30,8 +30,7 @@ class ImageLoaderWorker(QThread):
 
 class VideoCardWidget(QFrame):
     removed = Signal(str)  # item_id
-    activated = Signal(dict, QPixmap)  # item_data, pixmap
-    toggled = Signal()
+    card_clicked = Signal(str, object)  # item_id, mouse_event
 
     def __init__(self, data: dict, item_id: str, parent=None):
         super().__init__(parent)
@@ -39,7 +38,7 @@ class VideoCardWidget(QFrame):
         self.item_id = item_id
         self._raw_pixmap = None
         self._image_worker = None
-        self._is_active = False
+        self._is_selected = False
 
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setFixedHeight(100)
@@ -50,19 +49,13 @@ class VideoCardWidget(QFrame):
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(12)
 
-        # Checkbox
-        self.checkbox = QCheckBox()
-        self.checkbox.setChecked(True)
-        self.checkbox.stateChanged.connect(lambda: self.toggled.emit())
-        layout.addWidget(self.checkbox)
-
         # Thumbnail (115x72)
         self.thumb_label = QLabel()
         self.thumb_label.setFixedSize(115, 72)
         self.thumb_label.setAlignment(Qt.AlignCenter)
         self.thumb_label.setStyleSheet("""
-            background-color: rgba(0, 0, 0, 0.6);
-            border: 1px solid rgba(255, 255, 255, 0.15);
+            background-color: rgba(0, 0, 0, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.18);
             border-radius: 6px;
             color: #71717A;
             font-size: 10px;
@@ -119,17 +112,17 @@ class VideoCardWidget(QFrame):
         self.close_btn.setCursor(Qt.PointingHandCursor)
         self.close_btn.setStyleSheet("""
             QPushButton {
-                color: #71717A;
+                color: #A1A1AA;
                 font-size: 11px;
                 font-weight: 800;
-                background: rgba(255, 255, 255, 0.05);
-                border: 1px solid rgba(255, 255, 255, 0.12);
+                background: rgba(255, 255, 255, 0.06);
+                border: 1px solid rgba(255, 255, 255, 0.15);
                 border-radius: 6px;
             }
             QPushButton:hover {
                 color: #FFFFFF;
-                background: rgba(239, 68, 68, 0.35);
-                border: 1px solid rgba(239, 68, 68, 0.6);
+                background: rgba(239, 68, 68, 0.45);
+                border: 1px solid rgba(239, 68, 68, 0.8);
             }
         """)
         self.close_btn.setToolTip("Убрать это видео")
@@ -142,31 +135,38 @@ class VideoCardWidget(QFrame):
         # Load Thumbnail
         self._load_thumb(data.get("thumbnail"))
 
-    def _update_style(self, active: bool):
-        self._is_active = active
-        if active:
+    def _update_style(self, selected: bool):
+        self._is_selected = selected
+        if selected:
             self.setStyleSheet("""
                 VideoCardWidget {
-                    background-color: rgba(255, 255, 255, 0.13);
-                    border: 1.5px solid rgba(255, 255, 255, 0.7);
+                    background-color: rgba(255, 255, 255, 0.14);
+                    border: 2px solid #FFFFFF;
                     border-radius: 10px;
+                }
+                VideoCardWidget:hover {
+                    background-color: rgba(255, 255, 255, 0.18);
+                    border: 2px solid #FFFFFF;
                 }
             """)
         else:
             self.setStyleSheet("""
                 VideoCardWidget {
-                    background-color: rgba(255, 255, 255, 0.05);
+                    background-color: rgba(20, 24, 33, 0.65);
                     border: 1px solid rgba(255, 255, 255, 0.12);
                     border-radius: 10px;
                 }
                 VideoCardWidget:hover {
-                    background-color: rgba(255, 255, 255, 0.09);
-                    border: 1px solid rgba(255, 255, 255, 0.3);
+                    background-color: rgba(30, 36, 48, 0.85);
+                    border: 1px solid rgba(255, 255, 255, 0.35);
                 }
             """)
 
-    def set_active(self, active: bool):
-        self._update_style(active)
+    def set_selected(self, selected: bool):
+        self._update_style(selected)
+
+    def is_selected(self) -> bool:
+        return self._is_selected
 
     def _load_thumb(self, thumb_val):
         if not thumb_val:
@@ -204,15 +204,12 @@ class VideoCardWidget(QFrame):
             self.thumb_label.setPixmap(target)
             self.thumb_label.setText("")
 
-    def is_selected(self) -> bool:
-        return self.checkbox.isChecked()
-
     def get_pixmap(self) -> QPixmap:
         return self._raw_pixmap
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
-            self.activated.emit(self.data, self._raw_pixmap)
+            self.card_clicked.emit(self.item_id, event)
         super().mousePressEvent(event)
 
 
@@ -224,6 +221,9 @@ class VideoCardsListWidget(QWidget):
         super().__init__(parent)
         self.cards: list[VideoCardWidget] = []
         self.active_id: str = None
+        self.last_clicked_id: str = None
+
+        self.setStyleSheet("background: transparent; border: none;")
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -239,9 +239,14 @@ class VideoCardsListWidget(QWidget):
                 border: none;
                 background: transparent;
             }
+            QScrollArea > QWidget > QWidget {
+                background: transparent;
+            }
         """)
+        self.scroll.viewport().setStyleSheet("background: transparent; border: none;")
 
         self.scroll_content = QWidget()
+        self.scroll_content.setStyleSheet("background: transparent; border: none;")
         self.scroll_layout = QVBoxLayout(self.scroll_content)
         self.scroll_layout.setContentsMargins(0, 0, 0, 0)
         self.scroll_layout.setSpacing(8)
@@ -263,35 +268,74 @@ class VideoCardsListWidget(QWidget):
             self.setFixedHeight(212)
         else:
             self.setVisible(True)
-            # Fits 2 cards cleanly and allows infinite mouse wheel scrolling to reach all others
             self.setFixedHeight(212)
 
     def add_video(self, info: dict) -> str:
         item_id = uuid.uuid4().hex
         card = VideoCardWidget(info, item_id, self.scroll_content)
         card.removed.connect(self.remove_card)
-        card.activated.connect(lambda data, pix: self.set_active_card(card.item_id))
-        card.toggled.connect(lambda: self.list_changed.emit(len(self.cards)))
+        card.card_clicked.connect(self._on_card_clicked)
 
         self.cards.append(card)
         self.scroll_layout.addWidget(card)
 
-        self.set_active_card(item_id)
+        # Select newly added card
+        self._select_single(item_id)
+        self.last_clicked_id = item_id
+
         self._update_container_height()
         self.list_changed.emit(len(self.cards))
         return item_id
 
-    def set_active_card(self, item_id: str):
-        self.active_id = item_id
-        active_card = None
-        for c in self.cards:
-            is_act = (c.item_id == item_id)
-            c.set_active(is_act)
-            if is_act:
-                active_card = c
+    def _on_card_clicked(self, item_id: str, event):
+        modifiers = event.modifiers() if event else Qt.NoModifier
 
-        if active_card:
-            self.active_video_changed.emit(active_card.data, active_card.get_pixmap())
+        if modifiers & Qt.ShiftModifier and self.last_clicked_id:
+            # Shift + Click: Select range
+            idx1 = self._get_card_index(self.last_clicked_id)
+            idx2 = self._get_card_index(item_id)
+            if idx1 >= 0 and idx2 >= 0:
+                start, end = min(idx1, idx2), max(idx1, idx2)
+                for i, c in enumerate(self.cards):
+                    c.set_selected(start <= i <= end)
+            self._set_active_only(item_id)
+        elif modifiers & Qt.ControlModifier:
+            # Ctrl + Click: Toggle individual selection
+            target = self._get_card(item_id)
+            if target:
+                target.set_selected(not target.is_selected())
+                if target.is_selected():
+                    self._set_active_only(item_id)
+            self.last_clicked_id = item_id
+        else:
+            # Normal Click: Select only this video
+            self._select_single(item_id)
+            self.last_clicked_id = item_id
+
+        self.list_changed.emit(len(self.cards))
+
+    def _select_single(self, item_id: str):
+        for c in self.cards:
+            c.set_selected(c.item_id == item_id)
+        self._set_active_only(item_id)
+
+    def _set_active_only(self, item_id: str):
+        self.active_id = item_id
+        card = self._get_card(item_id)
+        if card:
+            self.active_video_changed.emit(card.data, card.get_pixmap())
+
+    def _get_card(self, item_id: str) -> VideoCardWidget:
+        for c in self.cards:
+            if c.item_id == item_id:
+                return c
+        return None
+
+    def _get_card_index(self, item_id: str) -> int:
+        for i, c in enumerate(self.cards):
+            if c.item_id == item_id:
+                return i
+        return -1
 
     def remove_card(self, item_id: str):
         idx = -1
@@ -308,11 +352,12 @@ class VideoCardsListWidget(QWidget):
 
         if len(self.cards) == 0:
             self.active_id = None
+            self.last_clicked_id = None
             self.list_changed.emit(0)
         else:
             if self.active_id == item_id:
                 new_idx = min(idx, len(self.cards) - 1)
-                self.set_active_card(self.cards[new_idx].item_id)
+                self._select_single(self.cards[new_idx].item_id)
             self.list_changed.emit(len(self.cards))
 
     def clear_all(self):
@@ -320,6 +365,7 @@ class VideoCardsListWidget(QWidget):
             c.deleteLater()
         self.cards.clear()
         self.active_id = None
+        self.last_clicked_id = None
         self._update_container_height()
         self.list_changed.emit(0)
 
@@ -327,7 +373,9 @@ class VideoCardsListWidget(QWidget):
         return [c.data for c in self.cards]
 
     def get_selected_videos(self) -> list[dict]:
-        return [c.data for c in self.cards if c.is_selected()]
+        sel = [c.data for c in self.cards if c.is_selected()]
+        # If none selected, fallback to active or all
+        return sel if sel else ([self.get_active_card().data] if self.get_active_card() else [])
 
     def get_active_card(self) -> VideoCardWidget:
         for c in self.cards:
