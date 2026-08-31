@@ -167,7 +167,7 @@ def get_stylesheet(glass_opacity: float = 0.45) -> str:
 
     /* Secondary Glass Inverted Buttons (Fixed position, NO displacement on click) */
     QPushButton.GlassButton {{
-        background-color: rgba(255, 255, 255, 0.04);
+        background-color: rgba(255, 255, 255, 0.05);
         border: 1px solid rgba(255, 255, 255, 0.14);
         border-radius: 8px;
         color: #EDEDED;
@@ -177,16 +177,23 @@ def get_stylesheet(glass_opacity: float = 0.45) -> str:
         font-weight: 600;
     }}
     QPushButton.GlassButton:hover {{
-        background-color: #FFFFFF;
-        border: 1px solid #FFFFFF;
-        color: #000000;
+        background-color: rgba(255, 255, 255, 0.14);
+        border: 1px solid rgba(255, 255, 255, 0.35);
+        color: #FFFFFF;
         padding: 7px 12px;
         margin: 0px;
     }}
     QPushButton.GlassButton:pressed {{
-        background-color: #D4D4D8;
-        border: 1px solid #D4D4D8;
-        color: #000000;
+        background-color: rgba(255, 255, 255, 0.22);
+        border: 1px solid rgba(255, 255, 255, 0.50);
+        color: #FFFFFF;
+        padding: 7px 12px;
+        margin: 0px;
+    }}
+    QPushButton.GlassButton:disabled {{
+        background-color: rgba(255, 255, 255, 0.02);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        color: #52525B;
         padding: 7px 12px;
         margin: 0px;
     }}
