@@ -11,12 +11,15 @@ def get_startupinfo():
     return startupinfo
 
 def get_video_dimensions(input_path: str) -> tuple:
+    if not input_path or not os.path.exists(input_path):
+        return 1920, 1080
     try:
+        import json
         cmd = [
             "ffprobe", "-v", "error",
             "-select_streams", "v:0",
-            "-show_entries", "stream=width,height",
-            "-of", "csv=s=x:p=0",
+            "-show_entries", "stream=width,height,rotation:stream_tags=rotate:stream_side_data=rotation",
+            "-of", "json",
             input_path
         ]
         res = subprocess.run(
@@ -28,9 +31,40 @@ def get_video_dimensions(input_path: str) -> tuple:
             text=True,
             check=True
         )
-        parts = res.stdout.strip().split('x')
-        if len(parts) == 2:
-            return int(parts[0]), int(parts[1])
+        data = json.loads(res.stdout)
+        streams = data.get("streams", [])
+        if streams:
+            s = streams[0]
+            w = int(s.get("width", 1920))
+            h = int(s.get("height", 1080))
+
+            # Detect rotation from tags, side data, or stream attributes
+            rotate = 0
+            tags = s.get("tags", {})
+            if "rotate" in tags:
+                try:
+                    rotate = int(float(tags["rotate"]))
+                except Exception:
+                    pass
+
+            for sd in s.get("side_data_list", []):
+                if "rotation" in sd:
+                    try:
+                        rotate = int(float(sd["rotation"]))
+                    except Exception:
+                        pass
+
+            if "rotation" in s:
+                try:
+                    rotate = int(float(s["rotation"]))
+                except Exception:
+                    pass
+
+            # Swap width and height if rotated 90 or 270 degrees (e.g. mobile 9:16 portrait video)
+            if abs(rotate) in [90, 270]:
+                w, h = h, w
+
+            return w, h
     except Exception:
         pass
     return 1920, 1080
