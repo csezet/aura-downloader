@@ -35,22 +35,41 @@ DWMSBT_TRANSIENTWINDOW = 3  # Acrylic
 DWMSBT_TABBEDWINDOW = 4     # Tabbed
 
 GWL_STYLE = -16
+WS_THICKFRAME = 0x00040000
+WS_CAPTION = 0x00C00000
 WS_MINIMIZEBOX = 0x00020000
+WS_MAXIMIZEBOX = 0x00010000
 WS_SYSMENU = 0x00080000
 
-def enable_taskbar_minimize(hwnd: int):
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_NOZORDER = 0x0004
+SWP_FRAMECHANGED = 0x0020
+
+def enable_native_window_animations(hwnd: int):
+    """
+    Enables Windows 11 DWM smooth minimize/restore animations and taskbar transitions.
+    """
     try:
         style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_STYLE)
-        ctypes.windll.user32.SetWindowLongW(hwnd, GWL_STYLE, style | WS_MINIMIZEBOX | WS_SYSMENU)
+        ctypes.windll.user32.SetWindowLongW(
+            hwnd,
+            GWL_STYLE,
+            style | WS_THICKFRAME | WS_CAPTION | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU
+        )
+        ctypes.windll.user32.SetWindowPos(
+            hwnd, 0, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED
+        )
     except Exception:
         pass
 
 def apply_acrylic_effect(hwnd: int, gradient_color: int = 0x400A0D12):
     """
-    Applies real Acrylic frosted blur, native Windows 11 rounded corners, and taskbar minimize support.
+    Applies real Acrylic frosted blur, native Windows 11 rounded corners, and native DWM animations.
     """
     try:
-        enable_taskbar_minimize(hwnd)
+        enable_native_window_animations(hwnd)
 
         # 1. Dark Mode frame
         dark_mode = c_int(1)
