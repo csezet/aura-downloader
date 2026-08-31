@@ -18,7 +18,7 @@ class VideoQueueItem(QFrame):
         super().__init__(parent)
         self.data = data
         self.setProperty("class", "GlassCard")
-        self.setFixedHeight(56)
+        self.setFixedHeight(54)
         self.setCursor(Qt.PointingHandCursor)
 
         layout = QHBoxLayout(self)
@@ -57,7 +57,7 @@ class VideoQueueItem(QFrame):
         self.title_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         info_layout.addWidget(self.title_lbl)
 
-        meta_text = f"⏱ {data.get('duration_str', '--:--')}  •  {data.get('width', 1920)}×{data.get('height', 1080)}  •  {data.get('file_size_str', '')}"
+        meta_text = f"⏱ {data.get('duration_str', '--:--')} | {data.get('width', 1920)}x{data.get('height', 1080)} | {data.get('file_size_str', '')}"
         self.meta_lbl = QLabel(meta_text)
         self.meta_lbl.setStyleSheet("font-size: 9px; color: #A1A1AA; font-family: 'Consolas', monospace;")
         info_layout.addWidget(self.meta_lbl)
@@ -125,7 +125,6 @@ class VideoQueueWidget(QFrame):
         super().__init__(parent)
         self.items: list[dict] = []
         self.item_widgets: list[VideoQueueItem] = []
-        self.active_index = 0
 
         self.setProperty("class", "GlassCard")
         self.setVisible(False)
@@ -192,9 +191,26 @@ class VideoQueueWidget(QFrame):
 
         main_layout.addWidget(self.scroll)
 
+    def set_videos(self, info_list: list[dict]):
+        self.clear_all()
+        for info in info_list:
+            if info:
+                self.items.append(info)
+                item_w = VideoQueueItem(info, self.scroll_content)
+                item_w.removed.connect(self.remove_video)
+                item_w.selected_for_preview.connect(self.active_video_selected.emit)
+                item_w.toggled_selection.connect(self._update_header)
+                self.item_widgets.append(item_w)
+                self.scroll_layout.addWidget(item_w)
+
+        self._update_header()
+        self.setVisible(len(self.items) > 0)
+        self.queue_changed.emit(len(self.items))
+
     def add_video(self, info: dict):
+        if not info:
+            return
         url = info.get('url')
-        # Check if already in queue
         for it in self.items:
             if it.get('url') == url:
                 return
@@ -212,21 +228,20 @@ class VideoQueueWidget(QFrame):
         self.setVisible(True)
         self.queue_changed.emit(len(self.items))
 
-    def add_videos(self, info_list: list[dict]):
-        for info in info_list:
-            if info:
-                self.add_video(info)
-
     def remove_video(self, url: str):
+        found_idx = -1
         for i, it in enumerate(self.items):
             if it.get('url') == url:
-                self.items.pop(i)
-                w = self.item_widgets.pop(i)
-                w.deleteLater()
+                found_idx = i
                 break
 
+        if found_idx >= 0:
+            self.items.pop(found_idx)
+            w = self.item_widgets.pop(found_idx)
+            w.deleteLater()
+
         self._update_header()
-        if not self.items:
+        if len(self.items) == 0:
             self.setVisible(False)
         self.queue_changed.emit(len(self.items))
 
