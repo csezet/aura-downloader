@@ -31,6 +31,7 @@ class ImageLoaderWorker(QThread):
 class VideoCardWidget(QFrame):
     removed = Signal(str)  # item_id
     card_clicked = Signal(str, object)  # item_id, mouse_event
+    thumb_loaded = Signal(str, QPixmap)  # item_id, pixmap
 
     def __init__(self, data: dict, item_id: str, parent=None):
         super().__init__(parent)
@@ -235,6 +236,7 @@ class VideoCardWidget(QFrame):
 
             self.thumb_label.setPixmap(target)
             self.thumb_label.setText("")
+            self.thumb_loaded.emit(self.item_id, pixmap)
 
     def get_pixmap(self) -> QPixmap:
         return self._raw_pixmap
@@ -247,6 +249,7 @@ class VideoCardWidget(QFrame):
 
 class VideoCardsListWidget(QWidget):
     active_video_changed = Signal(dict, QPixmap)
+    active_thumbnail_updated = Signal(QPixmap)
     list_changed = Signal(int)  # count
 
     def __init__(self, parent=None):
@@ -309,6 +312,7 @@ class VideoCardsListWidget(QWidget):
         card = VideoCardWidget(info, item_id, self.scroll_content)
         card.removed.connect(self.remove_card)
         card.card_clicked.connect(self._on_card_clicked)
+        card.thumb_loaded.connect(self._on_card_thumb_loaded)
 
         self.cards.append(card)
         self.scroll_layout.addWidget(card)
@@ -320,6 +324,10 @@ class VideoCardsListWidget(QWidget):
         self._update_container_height()
         self.list_changed.emit(len(self.cards))
         return item_id
+
+    def _on_card_thumb_loaded(self, item_id: str, pixmap: QPixmap):
+        if item_id == self.active_id and pixmap and not pixmap.isNull():
+            self.active_thumbnail_updated.emit(pixmap)
 
     def _on_card_clicked(self, item_id: str, event):
         modifiers = event.modifiers() if event else Qt.NoModifier
