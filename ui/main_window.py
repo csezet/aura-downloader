@@ -414,7 +414,75 @@ class MainWindow(QMainWindow):
             if info:
                 self.cards_list.add_video(info)
 
+    def _save_current_ui_to_video_info(self):
+        if not self.current_video_info:
+            return
+        trim_start, trim_end = self.trim_widget.get_trim_range()
+        opts = {
+            'mode': self.current_mode,
+            'res': self.res_combo.currentText() if self.current_mode in ['custom', 'video_only'] else None,
+            'audio_fmt': self.audio_fmt_combo.currentText().split()[0].lower() if self.current_mode == 'audio_only' else 'mp3',
+            'audio_q': '320',
+            'trim_enabled': self.trim_widget.is_trim_enabled(),
+            'trim_start': trim_start,
+            'trim_end': trim_end,
+            'crop_enabled': self.crop_widget.is_crop_enabled(),
+            'crop_params': self.crop_widget.get_crop_params(),
+            'smooth_enabled': self.smooth_widget.is_smooth_enabled(),
+            'smooth_fps': self.smooth_widget.get_target_fps(),
+            'smooth_model': self.smooth_widget.get_model()
+        }
+        self.current_video_info['options'] = opts
+        self.cards_list.save_active_options(opts)
+
+    def _restore_ui_from_video_info(self, info: dict):
+        opts = info.get('options')
+        if not opts:
+            self._set_mode("best")
+            self.crop_widget.toggle.setChecked(False)
+            self.trim_widget.toggle.setChecked(False)
+            self.smooth_widget.toggle.setChecked(False)
+            return
+
+        self._set_mode(opts.get('mode', 'best'))
+        if opts.get('res'):
+            self.res_combo.setCurrentText(opts.get('res'))
+        if opts.get('audio_fmt'):
+            for i in range(self.audio_fmt_combo.count()):
+                if opts['audio_fmt'].lower() in self.audio_fmt_combo.itemText(i).lower():
+                    self.audio_fmt_combo.setCurrentIndex(i)
+                    break
+
+        # Trim
+        self.trim_widget.toggle.setChecked(opts.get('trim_enabled', False))
+        if opts.get('trim_start'):
+            self.trim_widget.start_input.setText(opts.get('trim_start'))
+        if opts.get('trim_end'):
+            self.trim_widget.end_input.setText(opts.get('trim_end'))
+
+        # Crop
+        self.crop_widget.toggle.setChecked(opts.get('crop_enabled', False))
+        self.crop_widget._crop_params = opts.get('crop_params')
+        if opts.get('crop_params'):
+            w = opts['crop_params'].get('w', 1920)
+            h = opts['crop_params'].get('h', 1080)
+            self.crop_widget.status_tag.setText(f"{w}×{h}")
+            self.crop_widget.status_tag.setVisible(opts.get('crop_enabled', False))
+        else:
+            self.crop_widget.status_tag.setVisible(False)
+
+        # Smooth
+        self.smooth_widget.toggle.setChecked(opts.get('smooth_enabled', False))
+        fps = opts.get('smooth_fps', 60)
+        if fps == 60:
+            self.smooth_widget.fps_combo.setCurrentIndex(0)
+        elif fps == 120:
+            self.smooth_widget.fps_combo.setCurrentIndex(1)
+        else:
+            self.smooth_widget.fps_combo.setCurrentIndex(2)
+
     def _on_active_video_changed(self, info: dict, pixmap: QPixmap):
+        self._save_current_ui_to_video_info()
         self.current_video_info = info
         w = info.get("width", 1920)
         h = info.get("height", 1080)
@@ -423,6 +491,7 @@ class MainWindow(QMainWindow):
         if info.get("available_res"):
             self.res_combo.clear()
             self.res_combo.addItems(info["available_res"])
+        self._restore_ui_from_video_info(info)
         self._update_download_button_text()
 
     def _on_cards_list_changed(self, count: int):
@@ -577,6 +646,7 @@ class MainWindow(QMainWindow):
                 self.download_btn.setText(f"  СКАЧАТЬ БЕЗ ЗВУКА [{res}]")
 
     def _start_download(self):
+        self._save_current_ui_to_video_info()
         url = self.url_input.text().strip()
         selected_queue = self.cards_list.get_selected_videos()
 
@@ -608,8 +678,7 @@ class MainWindow(QMainWindow):
         self.download_btn.setEnabled(False)
 
         if len(selected_queue) > 1:
-            paths = [v.get('url') for v in selected_queue]
-            self.download_worker = LocalBatchProcessWorker(paths, options, save_dir)
+            self.download_worker = LocalBatchProcessWorker(selected_queue, options, save_dir)
             self.download_worker.progress_updated.connect(self.progress_widget.update_progress)
             self.download_worker.item_completed.connect(self._on_queue_item_completed)
             self.download_worker.batch_completed.connect(self._on_batch_success)
