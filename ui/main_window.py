@@ -262,6 +262,8 @@ class MainWindow(QMainWindow):
         # 3. Mode Selection Bar
         modes_card = QFrame()
         modes_card.setProperty("class", "GlassCard")
+        modes_card.setFixedHeight(42)
+        modes_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         modes_layout = QHBoxLayout(modes_card)
         modes_layout.setContentsMargins(6, 5, 6, 5)
         modes_layout.setSpacing(6)
@@ -347,12 +349,15 @@ class MainWindow(QMainWindow):
         self.cards_list = VideoCardsListWidget()
         self.cards_list.active_video_changed.connect(self._on_active_video_changed)
         self.cards_list.list_changed.connect(self._on_cards_list_changed)
-        content_layout.addWidget(self.cards_list, stretch=1)
+        content_layout.addWidget(self.cards_list, stretch=10)
 
         # 6. Progress Widget
         self.progress_widget = ProgressWidget()
         self.progress_widget.cancelled.connect(self._cancel_download)
         content_layout.addWidget(self.progress_widget)
+
+        # Elastic Stretch pushes Action Button & Footer down cleanly when list is empty
+        content_layout.addStretch(1)
 
         # 7. Main Action Button
         self.download_btn = QPushButton("  СКАЧАТЬ В ЛУЧШЕМ КАЧЕСТВЕ (MP4)")
