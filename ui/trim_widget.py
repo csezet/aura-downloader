@@ -37,9 +37,9 @@ class TrimWidget(QFrame):
         self.title_lbl.setStyleSheet("color: #EDEDED; font-size: 12px; font-weight: 700;")
         layout.addWidget(self.title_lbl)
 
-        # Controls Container (Fixed size, tightly packed on the left)
+        # Controls Container
         self.controls_container = QWidget()
-        self.controls_container.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        self.controls_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         ctrl_layout = QHBoxLayout(self.controls_container)
         ctrl_layout.setContentsMargins(0, 0, 0, 0)
         ctrl_layout.setSpacing(8)
