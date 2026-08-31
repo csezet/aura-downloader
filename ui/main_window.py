@@ -419,8 +419,7 @@ class MainWindow(QMainWindow):
         w = info.get("width", 1920)
         h = info.get("height", 1080)
         self.crop_widget.set_source_info(pixmap, width=w, height=h)
-        if info.get("duration"):
-            self.trim_widget.set_duration_hint(info["duration"])
+        self.trim_widget.set_source_video(info.get('url'), info.get('duration', 60))
         if info.get("available_res"):
             self.res_combo.clear()
             self.res_combo.addItems(info["available_res"])
