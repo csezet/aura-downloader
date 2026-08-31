@@ -44,9 +44,9 @@ class SmoothWidget(QFrame):
         self.title_lbl.setStyleSheet("color: #EDEDED; font-size: 12px; font-weight: 700;")
         layout.addWidget(self.title_lbl)
 
-        # Controls Container (Fixed size, tightly packed on the left)
+        # Controls Container
         self.controls_container = QWidget()
-        self.controls_container.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        self.controls_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         ctrl_layout = QHBoxLayout(self.controls_container)
         ctrl_layout.setContentsMargins(0, 0, 0, 0)
         ctrl_layout.setSpacing(8)
@@ -101,8 +101,8 @@ class SmoothWidget(QFrame):
         ctrl_layout.addWidget(self.engine_btn)
 
         # Status note
-        self.status_lbl = QLabel("")
-        self.status_lbl.setStyleSheet("color: #71717A; font-size: 10px; font-family: 'Consolas', monospace;")
+        self.status_lbl = QLabel("Готов к ускорению")
+        self.status_lbl.setStyleSheet("color: #71717A; font-size: 11px; font-weight: 600; background: transparent; border: none;")
         ctrl_layout.addWidget(self.status_lbl)
 
         layout.addWidget(self.controls_container)
@@ -132,6 +132,7 @@ class SmoothWidget(QFrame):
                         background: rgba(34, 197, 94, 0.18);
                     }
                 """)
+                self.status_lbl.setStyleSheet("color: #4ADE80; font-size: 11px; font-weight: 600; background: transparent; border: none;")
             else:
                 self.engine_btn.setStyleSheet("""
                     QPushButton {
@@ -144,6 +145,7 @@ class SmoothWidget(QFrame):
                         background: rgba(0, 0, 0, 0.2);
                     }
                 """)
+                self.status_lbl.setStyleSheet("color: #71717A; font-size: 11px; font-weight: 600; background: transparent; border: none;")
             self.status_lbl.setText("Готов к ускорению")
         else:
             self.engine_btn.setText(" СКАЧАТЬ RIFE AI")
