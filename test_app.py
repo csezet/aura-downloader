@@ -12,6 +12,9 @@ from core.local_processor import is_video_file, get_local_media_info
 from ui.video_cards_list import VideoCardsListWidget, VideoCardWidget
 from ui.crop_widget import CropWidget
 from ui.crop_dialog import CropDialog, CropCanvas
+from ui.timeline_slider import TimelineRangeSlider, ms_to_time_str
+from ui.trim_dialog import TrimDialog
+from ui.trim_widget import TrimWidget
 from ui.main_window import MainWindow
 
 app = QApplication.instance() or QApplication(sys.argv)
@@ -47,6 +50,21 @@ def test_crop_calculations():
     assert 'w' in dialog.applied_crop_params and 'h' in dialog.applied_crop_params
     dialog.close()
     print("Crop Canvas calculations test passed!")
+
+def test_timeline_and_trim_dialog():
+    print("Testing Timeline Slider and Trim Dialog...")
+    slider = TimelineRangeSlider()
+    slider.set_duration(60000)
+    slider.set_range(10000, 40000)
+    assert slider.start_ms == 10000
+    assert slider.end_ms == 40000
+
+    dialog = TrimDialog(parent=None, video_source=None, duration_sec=60, initial_start="00:10", initial_end="00:40")
+    dialog.show()
+    dialog._apply()
+    assert dialog.applied_range == ("00:10", "00:40")
+    dialog.close()
+    print("Timeline Slider and Trim Dialog test passed!")
 
 def test_video_cards_list():
     print("Testing VideoCardsListWidget...")
@@ -94,10 +112,11 @@ def test_video_cards_list():
     print("VideoCardsListWidget test passed!")
 
 def test_main_window_init():
-    print("Testing UI initialization with Video Cards List...")
+    print("Testing UI initialization with Video Cards List & Trim Widget...")
     win = MainWindow()
     win.show()
     assert win.cards_list is not None
+    assert win.trim_widget is not None
     assert win.download_btn is not None
     assert win.cards_list.isVisible() is False
     win.close()
@@ -108,6 +127,7 @@ if __name__ == "__main__":
     print("Imports OK!")
     test_downloader_utils()
     test_crop_calculations()
+    test_timeline_and_trim_dialog()
     test_video_cards_list()
     test_main_window_init()
     print("[ALL TESTS PASSED]")
