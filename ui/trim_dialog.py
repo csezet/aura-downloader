@@ -339,11 +339,16 @@ class TrimDialog(QDialog):
         self.player.durationChanged.connect(self._on_player_duration_changed)
         self.player.errorOccurred.connect(self._on_player_error)
 
-        if self.video_source and os.path.exists(self.video_source):
-            playable = get_or_create_preview_proxy(self.video_source)
-            self.player.setSource(QUrl.fromLocalFile(playable))
-            self.player.pause()
-            self._seek_to_ms(self.start_ms)
+        if self.video_source:
+            if isinstance(self.video_source, str) and (self.video_source.startswith("http://") or self.video_source.startswith("https://")):
+                self.player.setSource(QUrl(self.video_source))
+                self.player.pause()
+                self._seek_to_ms(self.start_ms)
+            elif os.path.exists(self.video_source):
+                playable = get_or_create_preview_proxy(self.video_source)
+                self.player.setSource(QUrl.fromLocalFile(playable))
+                self.player.pause()
+                self._seek_to_ms(self.start_ms)
 
     def _on_player_error(self, error, error_string):
         if self.video_source and os.path.exists(self.video_source):
