@@ -41,7 +41,7 @@ class TimelineRangeSlider(QWidget):
         self.track_margin_x = 16
 
     def set_duration(self, duration_ms: int):
-        self.duration_ms = max(1000, duration_ms)
+        self.duration_ms = max(100, duration_ms)
         self.start_ms = 0
         self.end_ms = self.duration_ms
         self.current_pos_ms = 0
@@ -49,7 +49,7 @@ class TimelineRangeSlider(QWidget):
 
     def set_range(self, start_ms: int, end_ms: int):
         self.start_ms = max(0, min(self.duration_ms, start_ms))
-        self.end_ms = max(self.start_ms + 100, min(self.duration_ms, end_ms))
+        self.end_ms = max(self.start_ms, min(self.duration_ms, end_ms))
         self.update()
 
     def set_current_position(self, pos_ms: int):
