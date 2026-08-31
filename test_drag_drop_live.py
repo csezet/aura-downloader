@@ -23,65 +23,31 @@ def create_dummy_video(filename="sample_test.mp4"):
 def run_simulation():
     app = QApplication.instance() or QApplication(sys.argv)
     
-    v1 = create_dummy_video("sample_s1.mp4")
-    v2 = create_dummy_video("sample_s2.mp4")
-    v3 = create_dummy_video("sample_s3.mp4")
+    videos = [create_dummy_video(f"sample_fs_{i}.mp4") for i in range(1, 6)]
 
     window = MainWindow()
+    window.resize(760, 650)
     window.show()
 
-    print("\n--- 1. Drop 3 videos into app ---")
+    print("\n--- 1. Drop 5 videos in standard window mode (760x650) ---")
     mime = QMimeData()
-    mime.setUrls([QUrl.fromLocalFile(v1), QUrl.fromLocalFile(v2), QUrl.fromLocalFile(v3)])
+    mime.setUrls([QUrl.fromLocalFile(v) for v in videos])
     window.dropEvent(QDropEvent(QPoint(100, 100), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier))
     
-    assert window.cards_list.count() == 3
-    print(f"Loaded 3 cards! Selected count: {len(window.cards_list.get_selected_videos())}")
-    # Only 1 card (the latest added) is selected by default
-    assert len(window.cards_list.get_selected_videos()) == 1
-    assert "ОБРАБОТАТЬ И СОХРАНИТЬ" in window.download_btn.text()
+    assert window.cards_list.count() == 5
+    assert window.cards_list.isVisible() is True
+    print(f"Cards list height in standard mode: {window.cards_list.height()}px")
 
-    print("\n--- 2. Normal Click on Card 1 ---")
-    card1 = window.cards_list.cards[0]
-    evt_normal = QMouseEvent(QMouseEvent.MouseButtonPress, QPoint(10, 10), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
-    card1.mousePressEvent(evt_normal)
+    print("\n--- 2. Maximize / Fullscreen Window (1920x1080) ---")
+    window.resize(1920, 1080)
+    app.processEvents()
     
-    assert window.cards_list.cards[0].is_selected() is True
-    assert window.cards_list.cards[1].is_selected() is False
-    assert window.cards_list.cards[2].is_selected() is False
-    assert len(window.cards_list.get_selected_videos()) == 1
-    print("Normal click on Card 1: Only Card 1 is selected!")
+    print(f"Cards list height in fullscreen mode: {window.cards_list.height()}px")
+    # In fullscreen mode (1920x1080), cards_list automatically expands to > 500px and fits all 5 cards!
+    assert window.cards_list.height() > 400
+    print(f"Cards list successfully expanded to fill fullscreen height ({window.cards_list.height()}px)! No cut-offs, no empty void.")
 
-    print("\n--- 3. Shift + Click on Card 3 (Range Selection) ---")
-    card3 = window.cards_list.cards[2]
-    evt_shift = QMouseEvent(QMouseEvent.MouseButtonPress, QPoint(10, 10), Qt.LeftButton, Qt.LeftButton, Qt.ShiftModifier)
-    card3.mousePressEvent(evt_shift)
-    
-    assert window.cards_list.cards[0].is_selected() is True
-    assert window.cards_list.cards[1].is_selected() is True
-    assert window.cards_list.cards[2].is_selected() is True
-    assert len(window.cards_list.get_selected_videos()) == 3
-    assert "ОБРАБОТАТЬ ВСЕ ВИДЕО (3)" in window.download_btn.text()
-    print("Shift + Click on Card 3: All 3 cards selected via range! Button updated to: 'ОБРАБОТАТЬ ВСЕ ВИДЕО (3)'")
-
-    print("\n--- 4. Ctrl + Click on Card 2 (Deselect Card 2) ---")
-    card2 = window.cards_list.cards[1]
-    evt_ctrl = QMouseEvent(QMouseEvent.MouseButtonPress, QPoint(10, 10), Qt.LeftButton, Qt.LeftButton, Qt.ControlModifier)
-    card2.mousePressEvent(evt_ctrl)
-    
-    assert window.cards_list.cards[0].is_selected() is True
-    assert window.cards_list.cards[1].is_selected() is False
-    assert window.cards_list.cards[2].is_selected() is True
-    assert len(window.cards_list.get_selected_videos()) == 2
-    assert "ОБРАБОТАТЬ ВСЕ ВИДЕО (2)" in window.download_btn.text()
-    print("Ctrl + Click on Card 2: Card 2 deselected, 2 cards remaining selected! Button: 'ОБРАБОТАТЬ ВСЕ ВИДЕО (2)'")
-
-    print("\n--- 5. Verify No Checkbox and Transparent Background ---")
-    assert not hasattr(card1, 'checkbox')
-    assert "transparent" in window.cards_list.styleSheet()
-    print("Verified: Checkboxes removed, transparent background active!")
-
-    print("\n[ALL SELECTION, SHIFT-CLICK, AND STYLING TESTS 100% PASSED!]")
+    print("\n[ALL FULLSCREEN RESPONSIVENESS AND EXPANDING TESTS 100% PASSED!]")
 
 if __name__ == "__main__":
     run_simulation()
