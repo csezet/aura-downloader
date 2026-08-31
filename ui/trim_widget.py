@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QLineEdit, QWidget
+    QFrame, QHBoxLayout, QLabel, QLineEdit, QWidget, QGraphicsOpacityEffect
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QIcon
 from assets.icons import get_svg_icon
 from ui.toggle_switch import ToggleSwitch
@@ -33,10 +33,16 @@ class TrimWidget(QFrame):
         self.title_lbl.setStyleSheet("color: #EDEDED; font-size: 12px; font-weight: 700;")
         layout.addWidget(self.title_lbl)
 
+        # Controls Container (Animated)
+        self.controls_container = QWidget()
+        ctrl_layout = QHBoxLayout(self.controls_container)
+        ctrl_layout.setContentsMargins(0, 0, 0, 0)
+        ctrl_layout.setSpacing(8)
+
         # Start Time Input
         lbl_from = QLabel("От:")
         lbl_from.setStyleSheet("color: #71717A; font-size: 11px; font-weight: bold;")
-        layout.addWidget(lbl_from)
+        ctrl_layout.addWidget(lbl_from)
 
         self.start_input = QLineEdit()
         self.start_input.setPlaceholderText("00:00")
@@ -53,12 +59,12 @@ class TrimWidget(QFrame):
             text-align: center;
         """)
         self.start_input.setEnabled(False)
-        layout.addWidget(self.start_input)
+        ctrl_layout.addWidget(self.start_input)
 
         # End Time Input
         lbl_to = QLabel("До:")
         lbl_to.setStyleSheet("color: #71717A; font-size: 11px; font-weight: bold;")
-        layout.addWidget(lbl_to)
+        ctrl_layout.addWidget(lbl_to)
 
         self.end_input = QLineEdit()
         self.end_input.setPlaceholderText("01:30")
@@ -75,13 +81,28 @@ class TrimWidget(QFrame):
             text-align: center;
         """)
         self.end_input.setEnabled(False)
-        layout.addWidget(self.end_input)
+        ctrl_layout.addWidget(self.end_input)
 
+        # Opacity Animation Effect
+        self.opacity_effect = QGraphicsOpacityEffect(self.controls_container)
+        self.opacity_effect.setOpacity(0.3)
+        self.controls_container.setGraphicsEffect(self.opacity_effect)
+        self.anim = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.anim.setDuration(220)
+        self.anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        layout.addWidget(self.controls_container)
         layout.addStretch()
 
     def _on_toggled(self, checked: bool):
         self.start_input.setEnabled(checked)
         self.end_input.setEnabled(checked)
+        
+        self.anim.stop()
+        self.anim.setStartValue(self.opacity_effect.opacity())
+        self.anim.setEndValue(1.0 if checked else 0.3)
+        self.anim.start()
+
         self.trim_toggled.emit(checked)
 
     def is_trim_enabled(self) -> bool:
