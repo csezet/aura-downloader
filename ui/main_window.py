@@ -347,15 +347,12 @@ class MainWindow(QMainWindow):
         self.cards_list = VideoCardsListWidget()
         self.cards_list.active_video_changed.connect(self._on_active_video_changed)
         self.cards_list.list_changed.connect(self._on_cards_list_changed)
-        content_layout.addWidget(self.cards_list)
+        content_layout.addWidget(self.cards_list, stretch=1)
 
         # 6. Progress Widget
         self.progress_widget = ProgressWidget()
         self.progress_widget.cancelled.connect(self._cancel_download)
         content_layout.addWidget(self.progress_widget)
-
-        # Elastic Stretch pushes Action Button & Footer down cleanly
-        content_layout.addStretch(1)
 
         # 7. Main Action Button
         self.download_btn = QPushButton("  СКАЧАТЬ В ЛУЧШЕМ КАЧЕСТВЕ (MP4)")
