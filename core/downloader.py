@@ -83,6 +83,7 @@ DEFAULT_EXTRACTOR_ARGS = {
 
 class MetadataWorker(QThread):
     info_ready = Signal(dict)
+    playlist_ready = Signal(dict)
     info_error = Signal(str)
 
     def __init__(self, url):
@@ -94,10 +95,11 @@ class MetadataWorker(QThread):
         self.is_cancelled = True
 
     def run(self):
+        is_playlist_url = 'list=' in self.url or '/playlist' in self.url
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
-            'extract_flat': False,
+            'extract_flat': 'in_playlist' if is_playlist_url else False,
             'skip_download': True,
             'ignoreerrors': False,
             'geo_bypass': True,
@@ -114,6 +116,29 @@ class MetadataWorker(QThread):
                 if not info:
                     self.info_error.emit("Не удалось получить информацию о видео.")
                     return
+
+                # Detect playlist with multiple entries
+                if is_playlist_url and 'entries' in info and len(info['entries']) > 1:
+                    entries = []
+                    for e in info.get('entries', []):
+                        if e:
+                            vid = e.get('id')
+                            v_url = e.get('url') or (f"https://www.youtube.com/watch?v={vid}" if vid else None)
+                            entries.append({
+                                'url': v_url,
+                                'title': e.get('title', 'Без названия'),
+                                'duration': e.get('duration', 0),
+                                'duration_str': format_seconds(e.get('duration', 0)),
+                                'thumbnail': e.get('thumbnail') or (f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg" if vid else None),
+                                'uploader': e.get('uploader') or e.get('channel') or info.get('uploader') or 'Автор'
+                            })
+                    valid_entries = [e for e in entries if e['url']]
+                    if valid_entries and not self.is_cancelled:
+                        self.playlist_ready.emit({
+                            'title': info.get('title', 'Плейлист YouTube'),
+                            'entries': valid_entries
+                        })
+                        return
 
                 if 'entries' in info and info['entries']:
                     info = info['entries'][0]
@@ -303,6 +328,16 @@ class DownloadWorker(QThread):
                     ydl_opts['download_ranges'] = yt_dlp.utils.download_range_func(None, [(start_sec, end_sec)])
                 elif start_sec > 0:
                     ydl_opts['download_ranges'] = yt_dlp.utils.download_range_func(None, [(start_sec, float('inf'))])
+
+            # Subtitle support
+            download_subs = self.options.get('download_subs', settings.get('download_subtitles', False))
+            if download_subs:
+                ydl_opts.update({
+                    'writesubtitles': True,
+                    'writeautomaticsub': True,
+                    'subtitleslangs': settings.get('subtitles_langs', ['ru', 'en']),
+                    'subtitlesformat': 'srt/best',
+                })
 
             if mode == 'audio_only':
                 ydl_opts.update({
