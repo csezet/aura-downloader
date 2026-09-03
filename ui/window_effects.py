@@ -48,14 +48,15 @@ SWP_FRAMECHANGED = 0x0020
 
 def enable_native_window_animations(hwnd: int):
     """
-    Enables Windows 11 DWM smooth minimize/restore animations and taskbar transitions.
+    Enables Windows 11 DWM smooth minimize/restore animations and taskbar transitions
+    without adding conflicting non-client caption borders.
     """
     try:
         style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_STYLE)
         ctypes.windll.user32.SetWindowLongW(
             hwnd,
             GWL_STYLE,
-            style | WS_THICKFRAME | WS_CAPTION | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU
+            style | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU
         )
         ctypes.windll.user32.SetWindowPos(
             hwnd, 0, 0, 0, 0, 0,
@@ -74,17 +75,11 @@ class MARGINS(Structure):
 
 def apply_acrylic_effect(hwnd: int, gradient_color: int = 0x400A0D12):
     """
-    Applies real Acrylic frosted blur, native Windows 11 rounded corners, and native DWM animations.
+    Applies real Acrylic frosted blur behind translucent Qt widgets
+    without DWM non-client corner clipping conflicts.
     """
     try:
         enable_native_window_animations(hwnd)
-
-        # Extend DWM frame into client area for flawless anti-aliased rounded corners
-        try:
-            margins = MARGINS(-1, -1, -1, -1)
-            ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(hwnd, byref(margins))
-        except Exception:
-            pass
 
         # 1. Dark Mode frame
         dark_mode = c_int(1)
@@ -95,8 +90,8 @@ def apply_acrylic_effect(hwnd: int, gradient_color: int = 0x400A0D12):
             sizeof(dark_mode)
         )
 
-        # 2. Force Windows 11 Native Rounded Corners (Eliminates black square corner artifacts!)
-        corner_pref = c_int(DWMWCP_ROUND)
+        # 2. Tell DWM not to draw a conflicting system border over Qt's transparent window
+        corner_pref = c_int(DWMWCP_DONOTROUND)
         ctypes.windll.dwmapi.DwmSetWindowAttribute(
             hwnd,
             DWMWA_WINDOW_CORNER_PREFERENCE,
@@ -104,16 +99,7 @@ def apply_acrylic_effect(hwnd: int, gradient_color: int = 0x400A0D12):
             sizeof(corner_pref)
         )
 
-        # 3. Windows 11 System Backdrop (Acrylic)
-        backdrop_type = c_int(DWMSBT_TRANSIENTWINDOW)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_SYSTEMBACKDROP_TYPE,
-            byref(backdrop_type),
-            sizeof(backdrop_type)
-        )
-
-        # 4. Windows 10 & 11 Acrylic BlurBehind via SetWindowCompositionAttribute
+        # 3. Windows 10 & 11 Acrylic BlurBehind via SetWindowCompositionAttribute
         user32 = ctypes.windll.user32
         set_window_composition_attribute = getattr(user32, 'SetWindowCompositionAttribute', None)
         if set_window_composition_attribute:
