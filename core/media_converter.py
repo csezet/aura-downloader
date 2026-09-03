@@ -1,4 +1,6 @@
 import os
+import time
+import tempfile
 import subprocess
 from pathlib import Path
 
@@ -162,17 +164,12 @@ def compress_to_target_size(input_path: str, target_mb: float = 8.0, output_path
         print(f"Video compression error: {e}")
         return input_path
 
-def crop_video(input_path: str, crop_params: dict, output_path: str = None) -> str:
-    if not input_path or not os.path.exists(input_path) or not crop_params:
-        return input_path
-
-    if not output_path:
-        base, ext = os.path.splitext(input_path)
-        output_path = f"{base}_crop{ext or '.mp4'}"
-
+def get_crop_filter(input_path: str, crop_params: dict) -> str:
+    if not input_path or not crop_params:
+        return ""
     try:
         real_w, real_h = get_video_dimensions(input_path)
-        
+
         if 'x_norm' in crop_params:
             x_norm = max(0.0, min(1.0, float(crop_params.get('x_norm', 0.0))))
             y_norm = max(0.0, min(1.0, float(crop_params.get('y_norm', 0.0))))
@@ -189,7 +186,7 @@ def crop_video(input_path: str, crop_params: dict, output_path: str = None) -> s
             crop_x = int(crop_params.get('x', 0))
             crop_y = int(crop_params.get('y', 0))
 
-        # Enforce even dimensions for H.264/H.265/VP9 codecs
+        # Enforce even dimensions for video codecs
         crop_w = max(2, crop_w - (crop_w % 2))
         crop_h = max(2, crop_h - (crop_h % 2))
         crop_x = crop_x - (crop_x % 2)
@@ -201,8 +198,24 @@ def crop_video(input_path: str, crop_params: dict, output_path: str = None) -> s
         if crop_y + crop_h > real_h:
             crop_h = max(2, real_h - crop_y - ((real_h - crop_y) % 2))
 
-        crop_filter = f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y}"
-        
+        return f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y}"
+    except Exception as e:
+        print(f"Error calculating crop filter: {e}")
+        return ""
+
+def crop_video(input_path: str, crop_params: dict, output_path: str = None) -> str:
+    if not input_path or not os.path.exists(input_path) or not crop_params:
+        return input_path
+
+    if not output_path:
+        base, ext = os.path.splitext(input_path)
+        output_path = f"{base}_crop{ext or '.mp4'}"
+
+    try:
+        crop_filter = get_crop_filter(input_path, crop_params)
+        if not crop_filter:
+            return input_path
+
         is_gif = input_path.lower().endswith('.gif')
         if is_gif:
             filter_complex = f"[0:v] {crop_filter},split [a][b];[a] palettegen [p];[b][p] paletteuse"
@@ -231,6 +244,28 @@ def crop_video(input_path: str, crop_params: dict, output_path: str = None) -> s
     except Exception as e:
         print(f"Video crop error: {e}")
         return input_path
+
+def cleanup_aura_temp_files(max_age_hours: float = 24.0) -> int:
+    """Cleans up leftover aura temp files (proxies, thumbs, cropped previews) older than max_age_hours."""
+    temp_dir = tempfile.gettempdir()
+    now = time.time()
+    cutoff = now - (max_age_hours * 3600)
+    cleaned_count = 0
+
+    prefixes = ("aura_proxy_", "aura_thumb_", "aura_crop_", "sample_")
+    try:
+        for entry in os.scandir(temp_dir):
+            try:
+                if entry.name.startswith(prefixes) and (entry.name.endswith(".mp4") or entry.name.endswith(".jpg") or entry.name.endswith(".png")):
+                    mtime = entry.stat().st_mtime
+                    if mtime < cutoff or max_age_hours <= 0:
+                        os.remove(entry.path)
+                        cleaned_count += 1
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"Error during temp cleanup: {e}")
+    return cleaned_count
 
 
 def get_video_codec(input_path: str) -> str:
