@@ -64,12 +64,27 @@ def enable_native_window_animations(hwnd: int):
     except Exception:
         pass
 
+class MARGINS(Structure):
+    _fields_ = [
+        ('cxLeftWidth', c_int),
+        ('cxRightWidth', c_int),
+        ('cyTopHeight', c_int),
+        ('cyBottomHeight', c_int)
+    ]
+
 def apply_acrylic_effect(hwnd: int, gradient_color: int = 0x400A0D12):
     """
     Applies real Acrylic frosted blur, native Windows 11 rounded corners, and native DWM animations.
     """
     try:
         enable_native_window_animations(hwnd)
+
+        # Extend DWM frame into client area for flawless anti-aliased rounded corners
+        try:
+            margins = MARGINS(-1, -1, -1, -1)
+            ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(hwnd, byref(margins))
+        except Exception:
+            pass
 
         # 1. Dark Mode frame
         dark_mode = c_int(1)
