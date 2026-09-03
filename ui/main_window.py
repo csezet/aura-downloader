@@ -28,6 +28,8 @@ from ui.crop_widget import CropWidget
 from ui.smooth_widget import SmoothWidget
 from ui.batch_dialog import BatchDialog
 from ui.settings_modal import SettingsModal
+from ui.playlist_dialog import PlaylistDialog
+from core.notifications import NotificationManager
 
 class DropOverlay(QFrame):
     def __init__(self, parent=None):
@@ -90,6 +92,7 @@ class MainWindow(QMainWindow):
         self.metadata_worker = None
         self.download_worker = None
         self.current_video_info = None
+        self.notification_manager = NotificationManager(parent=self, icon_path=self.icon_path)
 
         self._init_ui()
         self._apply_theme()
@@ -628,8 +631,34 @@ class MainWindow(QMainWindow):
 
         self.metadata_worker = MetadataWorker(url)
         self.metadata_worker.info_ready.connect(self._on_metadata_ready)
+        self.metadata_worker.playlist_ready.connect(self._on_playlist_ready)
         self.metadata_worker.info_error.connect(self._on_metadata_error)
         self.metadata_worker.start()
+
+    def _on_playlist_ready(self, playlist_data: dict):
+        self.download_btn.setEnabled(True)
+        self._update_download_button_text()
+
+        dialog = PlaylistDialog(playlist_data, self)
+        if dialog.exec():
+            selected = dialog.get_selected_entries()
+            for item in selected:
+                info = {
+                    'url': item.get('url'),
+                    'direct_url': None,
+                    'playable_url': item.get('url'),
+                    'title': item.get('title', 'Без названия'),
+                    'uploader': item.get('uploader', 'Автор'),
+                    'duration': item.get('duration', 0),
+                    'duration_str': item.get('duration_str', '--:--'),
+                    'thumbnail': item.get('thumbnail'),
+                    'platform': 'youtube',
+                    'available_res': ['1080p Full HD', '720p HD', '480p'],
+                    'has_video': True,
+                    'width': 1920,
+                    'height': 1080
+                }
+                self.cards_list.add_video(info)
 
     def _on_metadata_ready(self, info: dict):
         self.cards_list.add_video(info)
@@ -802,6 +831,12 @@ class MainWindow(QMainWindow):
         last_res['mode'] = f"Пакет ({len(results)} шт)"
         self.progress_widget.complete(last_res)
 
+        if hasattr(self, 'notification_manager'):
+            self.notification_manager.show_download_complete(
+                title=f"Очередь завершена ({len(results)} видео)",
+                file_path=last_res.get('file_path')
+            )
+
     def _on_download_success(self, result: dict):
         self.download_btn.setEnabled(True)
         self._update_download_button_text()
@@ -821,6 +856,12 @@ class MainWindow(QMainWindow):
             size_bytes=result.get('file_size', 0),
             thumbnail=result.get('thumbnail')
         )
+
+        if hasattr(self, 'notification_manager'):
+            self.notification_manager.show_download_complete(
+                title=result.get('title', 'Видео'),
+                file_path=result.get('file_path')
+            )
 
     def _on_download_fail(self, error_msg: str):
         self.download_btn.setEnabled(True)
