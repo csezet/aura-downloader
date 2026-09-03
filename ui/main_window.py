@@ -149,7 +149,17 @@ class MainWindow(QMainWindow):
                 if os.path.exists(line):
                     files.append(line)
 
-        valid_videos = [f for f in files if is_video_file(f)]
+        valid_videos = []
+        for f in files:
+            if os.path.isdir(f):
+                for root, _, dir_files in os.walk(f):
+                    for df in dir_files:
+                        full_p = os.path.join(root, df)
+                        if is_video_file(full_p):
+                            valid_videos.append(full_p)
+            elif is_video_file(f):
+                valid_videos.append(f)
+
         if valid_videos:
             event.acceptProposedAction()
             self._load_local_files(valid_videos)
@@ -416,7 +426,13 @@ class MainWindow(QMainWindow):
         for p in file_paths:
             if isinstance(p, str):
                 c = p.strip().strip('"').strip("'")
-                if is_video_file(c):
+                if os.path.isdir(c):
+                    for root, _, files in os.walk(c):
+                        for f in files:
+                            full_p = os.path.join(root, f)
+                            if is_video_file(full_p):
+                                clean_paths.append(full_p)
+                elif is_video_file(c):
                     clean_paths.append(c)
 
         if not clean_paths:
@@ -563,7 +579,12 @@ class MainWindow(QMainWindow):
             return
 
         if self.metadata_worker and self.metadata_worker.isRunning():
-            self.metadata_worker.terminate()
+            self.metadata_worker.cancel()
+            try:
+                self.metadata_worker.info_ready.disconnect()
+                self.metadata_worker.info_error.disconnect()
+            except Exception:
+                pass
 
         self.download_btn.setEnabled(False)
         self.download_btn.setText("  ПОЛУЧЕНИЕ ИНФОРМАЦИИ...")
