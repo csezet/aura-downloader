@@ -14,6 +14,9 @@ DEFAULT_SETTINGS = {
     "glass_opacity": 0.45,     # 0.45 for real desktop visibility through main window
     "browser_cookies": "none",
     "sound_notification": True,
+    "notifications_enabled": True,
+    "download_subtitles": False,
+    "subtitles_langs": ["ru", "en"],
 }
 
 CONFIG_DIR = Path.home() / ".aura_downloader"
