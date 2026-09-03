@@ -154,6 +154,7 @@ class TrimDialog(QDialog):
         self.btn_step_back = QPushButton("-0.1s")
         self.btn_step_back.setProperty("class", "GlassButton")
         self.btn_step_back.setCursor(Qt.PointingHandCursor)
+        self.btn_step_back.setToolTip("Шаг назад на 0.1 сек [←] (или Shift+← на 1 сек)")
         self.btn_step_back.clicked.connect(lambda: self._seek_relative(-100))
         play_bar.addWidget(self.btn_step_back)
 
@@ -162,6 +163,7 @@ class TrimDialog(QDialog):
         self.btn_play.setIcon(get_svg_icon("play", color="#000000", size=13))
         self.btn_play.setIconSize(QSize(13, 13))
         self.btn_play.setCursor(Qt.PointingHandCursor)
+        self.btn_play.setToolTip("Воспроизведение / Пауза [ПРОБЕЛ]")
         self.btn_play.setStyleSheet("""
             QPushButton {
                 background-color: #FFFFFF;
@@ -187,6 +189,7 @@ class TrimDialog(QDialog):
         self.btn_step_fwd = QPushButton("+0.1s")
         self.btn_step_fwd.setProperty("class", "GlassButton")
         self.btn_step_fwd.setCursor(Qt.PointingHandCursor)
+        self.btn_step_fwd.setToolTip("Шаг вперед на 0.1 сек [→] (или Shift+→ на 1 сек)")
         self.btn_step_fwd.clicked.connect(lambda: self._seek_relative(100))
         play_bar.addWidget(self.btn_step_fwd)
 
@@ -196,6 +199,7 @@ class TrimDialog(QDialog):
         self.btn_jump_end.setIconSize(QSize(13, 13))
         self.btn_jump_end.setProperty("class", "GlassButton")
         self.btn_jump_end.setCursor(Qt.PointingHandCursor)
+        self.btn_jump_end.setToolTip("Перейти в конец отрезка [End]")
         self.btn_jump_end.clicked.connect(lambda: self._seek_to_ms(self.end_ms))
         play_bar.addWidget(self.btn_jump_end)
 
@@ -234,7 +238,7 @@ class TrimDialog(QDialog):
         self.btn_mark_start.setIconSize(QSize(13, 13))
         self.btn_mark_start.setProperty("class", "GlassButton")
         self.btn_mark_start.setCursor(Qt.PointingHandCursor)
-        self.btn_mark_start.setToolTip("Установить текущий кадр видео как точку начала")
+        self.btn_mark_start.setToolTip("Установить текущий кадр как точку начала [I]")
         self.btn_mark_start.clicked.connect(self._set_current_as_start)
         info_bar.addWidget(self.btn_mark_start)
 
@@ -243,7 +247,7 @@ class TrimDialog(QDialog):
         self.btn_mark_end.setIconSize(QSize(13, 13))
         self.btn_mark_end.setProperty("class", "GlassButton")
         self.btn_mark_end.setCursor(Qt.PointingHandCursor)
-        self.btn_mark_end.setToolTip("Установить текущий кадр видео как точку конца")
+        self.btn_mark_end.setToolTip("Установить текущий кадр как точку конца [O]")
         self.btn_mark_end.clicked.connect(self._set_current_as_end)
         info_bar.addWidget(self.btn_mark_end)
 
@@ -254,6 +258,7 @@ class TrimDialog(QDialog):
         self.btn_loop.setCursor(Qt.PointingHandCursor)
         self.btn_loop.setCheckable(True)
         self.btn_loop.setChecked(True)
+        self.btn_loop.setToolTip("Включить/выключить повтор отрезка [L]")
         self.btn_loop.toggled.connect(self._on_loop_toggled)
         self._update_loop_btn_style()
         info_bar.addWidget(self.btn_loop)
@@ -512,3 +517,52 @@ class TrimDialog(QDialog):
         if event.buttons() == Qt.LeftButton and self._drag_pos is not None:
             self.move(event.globalPosition().toPoint() - self._drag_pos)
             event.accept()
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        modifiers = event.modifiers()
+
+        if key == Qt.Key_Space:
+            self._toggle_playback()
+            event.accept()
+            return
+        elif key == Qt.Key_Left:
+            step = -1000 if (modifiers & Qt.ShiftModifier) else -100
+            self._seek_relative(step)
+            event.accept()
+            return
+        elif key == Qt.Key_Right:
+            step = 1000 if (modifiers & Qt.ShiftModifier) else 100
+            self._seek_relative(step)
+            event.accept()
+            return
+        elif key in (Qt.Key_I, 1064, 1096):  # I or Russian Ш / ш
+            self._set_current_as_start()
+            event.accept()
+            return
+        elif key in (Qt.Key_O, 1065, 1097):  # O or Russian Щ / щ
+            self._set_current_as_end()
+            event.accept()
+            return
+        elif key in (Qt.Key_L, 1044, 1076):  # L or Russian Д / д
+            self.btn_loop.toggle()
+            event.accept()
+            return
+        elif key == Qt.Key_Home:
+            self._seek_to_ms(self.start_ms)
+            event.accept()
+            return
+        elif key == Qt.Key_End:
+            self._seek_to_ms(self.end_ms)
+            event.accept()
+            return
+        elif key in (Qt.Key_Return, Qt.Key_Enter):
+            self._apply()
+            event.accept()
+            return
+        elif key == Qt.Key_Escape:
+            self.reject()
+            event.accept()
+            return
+
+        super().keyPressEvent(event)
