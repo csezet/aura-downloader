@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 from core.downloader import format_bytes, format_seconds, parse_time_str
-from core.media_converter import convert_to_gif, compress_to_target_size, crop_video, get_video_dimensions, get_video_duration
+from core.media_converter import convert_to_gif, compress_to_target_size, crop_video, get_crop_filter, get_video_dimensions, get_video_duration
 from core.interpolator import interpolate_video, get_video_fps
 
 CREATE_NO_WINDOW = 0x08000000
@@ -121,8 +121,41 @@ def process_single_local_file(file_path: str, options: dict, save_dir: str, stat
     if status_cb:
         status_cb(f"Подготовка {base_name}...")
 
-    # 1. Trimming
-    if trim_enabled and (trim_start or trim_end):
+    has_trim = trim_enabled and (trim_start or trim_end)
+    has_crop = crop_enabled and crop_params and mode != 'audio_only'
+
+    # 1. Single-pass Trim + Crop (2x faster, no generation loss)
+    if has_trim and has_crop:
+        if is_cancelled_cb and is_cancelled_cb():
+            return None
+        if status_cb:
+            status_cb(f"Обрезка и кадрирование {base_name} (Single-pass)...")
+        start_sec = parse_time_str(trim_start) or 0
+        end_sec = parse_time_str(trim_end)
+        crop_filter = get_crop_filter(current_path, crop_params)
+
+        out_path = os.path.join(save_dir, f"{base_name}_trim_crop.mp4")
+        cmd = ["ffmpeg", "-y"]
+        if start_sec > 0:
+            cmd.extend(["-ss", str(start_sec)])
+        if end_sec is not None and end_sec > start_sec:
+            cmd.extend(["-to", str(end_sec)])
+        cmd.extend(["-i", current_path])
+        if crop_filter:
+            cmd.extend(["-vf", crop_filter])
+        cmd.extend(["-c:v", "libx264", "-crf", "18", "-preset", "faster", "-c:a", "copy", out_path])
+
+        subprocess.run(
+            cmd,
+            startupinfo=get_startupinfo(),
+            creationflags=CREATE_NO_WINDOW,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True
+        )
+        current_path = out_path
+
+    elif has_trim:
         if is_cancelled_cb and is_cancelled_cb():
             return None
         if status_cb:
@@ -148,8 +181,7 @@ def process_single_local_file(file_path: str, options: dict, save_dir: str, stat
         )
         current_path = trimmed_path
 
-    # 2. Cropping
-    if crop_enabled and crop_params and mode != 'audio_only':
+    elif has_crop:
         if is_cancelled_cb and is_cancelled_cb():
             return None
         if status_cb:
