@@ -394,26 +394,31 @@ class CropDialog(QDialog):
 
         self.pill_free = QPushButton("Свободный")
         self.pill_free.setProperty("class", "ModePill")
+        self.pill_free.setToolTip("Свободный выбор пропорций [0]")
         self.pill_free.clicked.connect(lambda: self._set_preset(None, self.pill_free))
         preset_bar.addWidget(self.pill_free)
 
         self.pill_1_1 = QPushButton("1:1 (Квадрат)")
         self.pill_1_1.setProperty("class", "ModePill")
+        self.pill_1_1.setToolTip("Пропорция 1:1 Квадрат [1]")
         self.pill_1_1.clicked.connect(lambda: self._set_preset(1.0, self.pill_1_1))
         preset_bar.addWidget(self.pill_1_1)
 
         self.pill_9_16 = QPushButton("9:16 (Reels/Shorts)")
         self.pill_9_16.setProperty("class", "ModePill")
+        self.pill_9_16.setToolTip("Пропорция 9:16 Reels/Shorts [2]")
         self.pill_9_16.clicked.connect(lambda: self._set_preset(9.0/16.0, self.pill_9_16))
         preset_bar.addWidget(self.pill_9_16)
 
         self.pill_16_9 = QPushButton("16:9 (YouTube)")
         self.pill_16_9.setProperty("class", "ModePill")
+        self.pill_16_9.setToolTip("Пропорция 16:9 YouTube [3]")
         self.pill_16_9.clicked.connect(lambda: self._set_preset(16.0/9.0, self.pill_16_9))
         preset_bar.addWidget(self.pill_16_9)
 
         self.pill_4_5 = QPushButton("4:5 (Портрет)")
         self.pill_4_5.setProperty("class", "ModePill")
+        self.pill_4_5.setToolTip("Пропорция 4:5 Портрет [4]")
         self.pill_4_5.clicked.connect(lambda: self._set_preset(4.0/5.0, self.pill_4_5))
         preset_bar.addWidget(self.pill_4_5)
 
@@ -422,7 +427,7 @@ class CropDialog(QDialog):
         reset_btn = QPushButton("↺ ВЕСЬ КАДР")
         reset_btn.setProperty("class", "GlassButton")
         reset_btn.setStyleSheet("font-size: 11px; font-weight: 700; padding: 4px 10px;")
-        reset_btn.setToolTip("Сбросить выделение на весь исходный кадр")
+        reset_btn.setToolTip("Сбросить выделение на весь исходный кадр [R]")
         reset_btn.clicked.connect(self._reset)
         preset_bar.addWidget(reset_btn)
 
@@ -435,6 +440,7 @@ class CropDialog(QDialog):
         cancel_btn = QPushButton("ОТМЕНА")
         cancel_btn.setProperty("class", "GlassButton")
         cancel_btn.setStyleSheet("font-size: 11px; font-weight: 700; padding: 6px 14px;")
+        cancel_btn.setToolTip("Отменить кадрирование [Esc]")
         cancel_btn.clicked.connect(self.reject)
         actions_layout.addWidget(cancel_btn)
 
@@ -443,6 +449,7 @@ class CropDialog(QDialog):
         apply_btn = QPushButton("✓ ПРИМЕНИТЬ КАДРИРОВАНИЕ")
         apply_btn.setObjectName("PrimaryButton")
         apply_btn.setStyleSheet("font-size: 12px; font-weight: 800; padding: 6px 18px; border-radius: 6px;")
+        apply_btn.setToolTip("Применить кадрирование [ENTER]")
         apply_btn.clicked.connect(self._apply)
         actions_layout.addWidget(apply_btn)
 
@@ -499,3 +506,40 @@ class CropDialog(QDialog):
         if event.buttons() == Qt.LeftButton and self._drag_pos is not None:
             self.move(event.globalPosition().toPoint() - self._drag_pos)
             event.accept()
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        if key in (Qt.Key_0, Qt.Key_F, 1040, 1072):  # 0, F, or А / а
+            self._set_preset(None, self.pill_free)
+            event.accept()
+            return
+        elif key == Qt.Key_1:
+            self._set_preset(1.0, self.pill_1_1)
+            event.accept()
+            return
+        elif key == Qt.Key_2:
+            self._set_preset(9.0/16.0, self.pill_9_16)
+            event.accept()
+            return
+        elif key == Qt.Key_3:
+            self._set_preset(16.0/9.0, self.pill_16_9)
+            event.accept()
+            return
+        elif key == Qt.Key_4:
+            self._set_preset(4.0/5.0, self.pill_4_5)
+            event.accept()
+            return
+        elif key in (Qt.Key_R, 1050, 1082):  # R or К / к
+            self._reset()
+            event.accept()
+            return
+        elif key in (Qt.Key_Return, Qt.Key_Enter):
+            self._apply()
+            event.accept()
+            return
+        elif key == Qt.Key_Escape:
+            self.reject()
+            event.accept()
+            return
+
+        super().keyPressEvent(event)
