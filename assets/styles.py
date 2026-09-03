@@ -16,14 +16,16 @@ def get_stylesheet(glass_opacity: float = 0.45) -> str:
     /* Main Window Central Glass Panel */
     #CentralWidget {{
         background-color: rgba(10, 13, 18, {glass_opacity});
-        border-radius: 12px;
-        border: 1px solid rgba(255, 255, 255, 0.20);
+        border-radius: 20px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
     }}
 
     /* Title Bar */
     #TitleBar {{
         background-color: transparent;
         border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        border-top-left-radius: 20px;
+        border-top-right-radius: 20px;
     }}
     
     #AppTitle {{
@@ -37,7 +39,7 @@ def get_stylesheet(glass_opacity: float = 0.45) -> str:
     #TitleButton {{
         background-color: transparent;
         border: none;
-        border-radius: 6px;
+        border-radius: 7px;
         color: #A1A1AA;
         font-size: 13px;
         font-weight: bold;
@@ -63,12 +65,14 @@ def get_stylesheet(glass_opacity: float = 0.45) -> str:
     #CloseButton:hover {{
         background-color: #E81123;
         color: #FFFFFF;
+        border-top-right-radius: 18px;
         margin: 0px;
         padding: 0px;
     }}
     #CloseButton:pressed {{
         background-color: #B80D1A;
         color: #FFFFFF;
+        border-top-right-radius: 18px;
         margin: 0px;
         padding: 0px;
     }}
@@ -104,7 +108,7 @@ def get_stylesheet(glass_opacity: float = 0.45) -> str:
     .GlassCard {{
         background-color: rgba(255, 255, 255, 0.035);
         border: 1px solid rgba(255, 255, 255, 0.12);
-        border-radius: 10px;
+        border-radius: 12px;
     }}
     .GlassCard:hover {{
         border: 1px solid rgba(255, 255, 255, 0.22);
@@ -114,7 +118,7 @@ def get_stylesheet(glass_opacity: float = 0.45) -> str:
     QLineEdit#UrlInput {{
         background-color: rgba(0, 0, 0, 0.65);
         border: 1px solid rgba(255, 255, 255, 0.15);
-        border-radius: 8px;
+        border-radius: 10px;
         padding: 9px 12px;
         color: #FFFFFF;
         font-size: 13px;
@@ -136,7 +140,7 @@ def get_stylesheet(glass_opacity: float = 0.45) -> str:
         background-color: #FFFFFF;
         color: #000000;
         border: 1px solid #FFFFFF;
-        border-radius: 8px;
+        border-radius: 12px;
         padding: 10px 20px;
         margin: 0px;
         font-size: 13px;
