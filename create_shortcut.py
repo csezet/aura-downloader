@@ -17,26 +17,18 @@ def refresh_windows_icon_cache():
 
 def create_shortcuts():
     project_dir = Path(__file__).resolve().parent
-    main_script = project_dir / "main.pyw"
+    vbs_script = project_dir / "run.vbs"
     icon_path = project_dir / "assets" / "app_logo.ico"
+    if not icon_path.exists():
+        icon_path = project_dir / "assets" / "icon.ico"
 
-    python_dir = Path(sys.executable).parent
-    pythonw_exe = python_dir / "pythonw.exe"
-    if not pythonw_exe.exists():
-        pythonw_exe = Path(sys.executable)
+    # Use wscript.exe so Windows NEVER spawns a console window
+    wscript_exe = Path(os.environ.get("SystemRoot", "C:/Windows")) / "System32" / "wscript.exe"
+    target_exe = str(wscript_exe) if wscript_exe.exists() else "wscript.exe"
 
-    # Detect user's real primary desktop
+    # Detect user's real desktop directories (including OneDrive Desktop / Рабочий стол)
     desktop_dirs = []
-    try:
-        ps_cmd = "[Environment]::GetFolderPath('Desktop')"
-        res = subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], capture_output=True, text=True)
-        p = res.stdout.strip()
-        if p and os.path.exists(p):
-            desktop_dirs.append(Path(p))
-    except Exception:
-        pass
-
-    user_home = Path(os.environ.get("USERPROFILE", "C:/Users/denis"))
+    user_home = Path(os.environ.get("USERPROFILE", str(Path.home())))
     candidates = [
         user_home / "OneDrive" / "Рабочий стол",
         user_home / "OneDrive" / "Desktop",
@@ -49,20 +41,22 @@ def create_shortcuts():
     shell = win32com.client.Dispatch("WScript.Shell")
 
     created = []
-    # Primary desktop first
-    for d in desktop_dirs[:1]:  # Only create in primary desktop to avoid duplicates
+    for d in desktop_dirs:
         try:
             shortcut_path = d / "Aura Downloader.lnk"
             if shortcut_path.exists():
-                shortcut_path.unlink()
+                try:
+                    shortcut_path.unlink()
+                except Exception:
+                    pass
 
             shortcut = shell.CreateShortCut(str(shortcut_path))
-            shortcut.TargetPath = str(pythonw_exe)
-            shortcut.Arguments = f'"{str(main_script)}"'
+            shortcut.TargetPath = target_exe
+            shortcut.Arguments = f'"{str(vbs_script)}"'
             shortcut.WorkingDirectory = str(project_dir)
             shortcut.IconLocation = f"{str(icon_path)},0"
-            shortcut.Description = "Aura Downloader - Liquid Glass Media Downloader"
-            shortcut.WindowStyle = 1
+            shortcut.Description = "Aura Downloader - Media Downloader"
+            shortcut.WindowStyle = 7  # 7 = Minimized / Silent
             shortcut.save()
             created.append(str(shortcut_path))
             print(f"[OK] Shortcut created at: {shortcut_path}")
