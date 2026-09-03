@@ -3,9 +3,10 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFileDialog,
     QSlider, QComboBox, QFrame, QWidget
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QThread
 from core.settings import settings
 from core.cookies_helper import SUPPORTED_BROWSERS
+from core.media_converter import cleanup_aura_temp_files
 from ui.toggle_switch import ToggleSwitch
 
 class SettingsModal(QDialog):
@@ -161,6 +162,40 @@ class SettingsModal(QDialog):
         clip_row.addWidget(lbl_clip, stretch=1)
         container_layout.addLayout(clip_row)
 
+        # 6. Maintenance & Utilities (Cache & yt-dlp updates)
+        util_group = QVBoxLayout()
+        util_group.setSpacing(6)
+
+        lbl_util = QLabel("Служебные утилиты:")
+        lbl_util.setStyleSheet("font-size: 11px; font-weight: 700; color: #A1A1AA; text-transform: uppercase;")
+        util_group.addWidget(lbl_util)
+
+        util_row = QHBoxLayout()
+        util_row.setSpacing(8)
+
+        self.btn_clear_cache = QPushButton("🧹 Очистить кэш (%TEMP%)")
+        self.btn_clear_cache.setProperty("class", "GlassButton")
+        self.btn_clear_cache.setCursor(Qt.PointingHandCursor)
+        self.btn_clear_cache.setToolTip("Удалить временные прокси-файлы и эскизы из системной папки")
+        self.btn_clear_cache.clicked.connect(self._clear_cache)
+        util_row.addWidget(self.btn_clear_cache)
+
+        self.btn_update_ytdlp = QPushButton("⚡ Обновить yt-dlp")
+        self.btn_update_ytdlp.setProperty("class", "GlassButton")
+        self.btn_update_ytdlp.setCursor(Qt.PointingHandCursor)
+        self.btn_update_ytdlp.setToolTip("Проверить и обновить загрузчик yt-dlp до последней версии")
+        self.btn_update_ytdlp.clicked.connect(self._update_ytdlp)
+        util_row.addWidget(self.btn_update_ytdlp)
+
+        util_group.addLayout(util_row)
+
+        self.util_status_lbl = QLabel("")
+        self.util_status_lbl.setStyleSheet("font-size: 11px; color: #4ADE80; font-weight: 600;")
+        self.util_status_lbl.setVisible(False)
+        util_group.addWidget(self.util_status_lbl)
+
+        container_layout.addLayout(util_group)
+
         layout.addWidget(container)
 
     def _browse_dir(self):
@@ -183,3 +218,51 @@ class SettingsModal(QDialog):
         formats = ["mp3", "flac", "m4a", "opus", "wav"]
         if idx < len(formats):
             settings.set("audio_format", formats[idx])
+
+    def _clear_cache(self):
+        count = cleanup_aura_temp_files(max_age_hours=0)
+        self.util_status_lbl.setText(f"✓ Временные файлы очищены ({count} шт.)")
+        self.util_status_lbl.setStyleSheet("font-size: 11px; color: #4ADE80; font-weight: 600;")
+        self.util_status_lbl.setVisible(True)
+
+    def _update_ytdlp(self):
+        self.btn_update_ytdlp.setEnabled(False)
+        self.util_status_lbl.setText("Проверка и обновление yt-dlp...")
+        self.util_status_lbl.setStyleSheet("font-size: 11px; color: #60A5FA; font-weight: 600;")
+        self.util_status_lbl.setVisible(True)
+
+        self.update_worker = UpdateYtdlpWorker()
+        self.update_worker.finished_signal.connect(self._on_ytdlp_update_finished)
+        self.update_worker.start()
+
+    def _on_ytdlp_update_finished(self, msg: str, success: bool):
+        self.btn_update_ytdlp.setEnabled(True)
+        color = "#4ADE80" if success else "#EF4444"
+        self.util_status_lbl.setText(msg)
+        self.util_status_lbl.setStyleSheet(f"font-size: 11px; color: {color}; font-weight: 600;")
+        self.util_status_lbl.setVisible(True)
+
+
+class UpdateYtdlpWorker(QThread):
+    finished_signal = Signal(str, bool)
+
+    def run(self):
+        try:
+            import subprocess, sys
+            cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"]
+            res = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                creationflags=0x08000000
+            )
+            if res.returncode == 0:
+                if "Requirement already satisfied" in res.stdout:
+                    self.finished_signal.emit("Установлена самая актуальная версия yt-dlp.", True)
+                else:
+                    self.finished_signal.emit("Движок yt-dlp успешно обновлен!", True)
+            else:
+                self.finished_signal.emit(f"Ошибка обновления: {res.stderr[:60]}", False)
+        except Exception as e:
+            self.finished_signal.emit(f"Ошибка: {str(e)[:60]}", False)
