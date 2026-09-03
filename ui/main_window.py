@@ -190,7 +190,7 @@ class MainWindow(QMainWindow):
         # Content Area
         content_widget = QWidget()
         content_layout = QVBoxLayout(content_widget)
-        content_layout.setContentsMargins(18, 14, 18, 16)
+        content_layout.setContentsMargins(22, 12, 22, 18)
         content_layout.setSpacing(10)
 
         # 2. Upper Input Bar
@@ -405,7 +405,7 @@ class MainWindow(QMainWindow):
 
         # 8. Footer
         footer_layout = QHBoxLayout()
-        footer_layout.setContentsMargins(2, 0, 2, 0)
+        footer_layout.setContentsMargins(4, 2, 4, 2)
 
         self.dest_lbl = QLabel(f"DIR: {settings.get('download_dir')}")
         self.dest_lbl.setStyleSheet("font-size: 10px; color: #71717A; font-family: 'Consolas', monospace;")
