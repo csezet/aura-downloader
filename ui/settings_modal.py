@@ -170,6 +170,18 @@ class SettingsModal(QDialog):
         clip_row.addWidget(self.clip_toggle)
         c1_layout.addLayout(clip_row)
 
+        # Notifications row
+        notif_row = QHBoxLayout()
+        notif_row.setContentsMargins(0, 2, 0, 0)
+        lbl_notif = QLabel("Уведомления Windows при завершении загрузки")
+        lbl_notif.setStyleSheet("color: #E4E4E7; font-size: 12px; font-weight: 600;")
+        notif_row.addWidget(lbl_notif, stretch=1)
+
+        self.notif_toggle = ToggleSwitch(checked=settings.get("notifications_enabled", True))
+        self.notif_toggle.toggled.connect(lambda v: settings.set("notifications_enabled", v))
+        notif_row.addWidget(self.notif_toggle)
+        c1_layout.addLayout(notif_row)
+
         container_layout.addWidget(card1)
 
         # --- Card 2: Оформление и форматы ---
@@ -263,6 +275,19 @@ class SettingsModal(QDialog):
         dropdown_row.addLayout(cookies_col, stretch=1)
 
         c2_layout.addLayout(dropdown_row)
+
+        # Subtitle row
+        sub_row = QHBoxLayout()
+        sub_row.setContentsMargins(0, 4, 0, 0)
+        lbl_sub = QLabel("Скачивать субтитры (при наличии: RU / EN)")
+        lbl_sub.setStyleSheet("color: #E4E4E7; font-size: 12px; font-weight: 600;")
+        sub_row.addWidget(lbl_sub, stretch=1)
+
+        self.sub_toggle = ToggleSwitch(checked=settings.get("download_subtitles", False))
+        self.sub_toggle.toggled.connect(lambda v: settings.set("download_subtitles", v))
+        sub_row.addWidget(self.sub_toggle)
+        c2_layout.addLayout(sub_row)
+
         container_layout.addWidget(card2)
 
         # --- Card 3: Служебные утилиты и обновления ---
