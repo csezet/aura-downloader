@@ -14,6 +14,7 @@ except Exception:
     pass
 
 from ui.main_window import MainWindow
+from core.media_converter import cleanup_aura_temp_files
 
 def main():
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
@@ -21,6 +22,13 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Aura Downloader")
     app.setOrganizationName("AuraDev")
+
+    # Clean up any leftover temporary proxies/thumbs
+    try:
+        cleanup_aura_temp_files(max_age_hours=24)
+        app.aboutToQuit.connect(lambda: cleanup_aura_temp_files(max_age_hours=0))
+    except Exception:
+        pass
 
     base_dir = Path(__file__).resolve().parent
     icon_path = str(base_dir / "assets" / "app_logo.ico")
