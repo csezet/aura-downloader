@@ -94,6 +94,8 @@ class MainWindow(QMainWindow):
         self.current_video_info = None
         self.notification_manager = NotificationManager(parent=self, icon_path=self.icon_path)
 
+        self.setStatusBar(None)
+
         self._init_ui()
         self._apply_theme()
         self._setup_clipboard()
@@ -104,14 +106,6 @@ class MainWindow(QMainWindow):
         apply_acrylic_effect(hwnd)
 
     def nativeEvent(self, eventType, message):
-        if eventType in (b"windows_generic_MSG", "windows_generic_MSG"):
-            try:
-                msg = wintypes.MSG.from_address(int(message))
-                # WM_NCCALCSIZE = 0x0083
-                if msg.message == 0x0083 and msg.wParam == 1:
-                    return True, 0
-            except Exception:
-                pass
         return super().nativeEvent(eventType, message)
 
     def resizeEvent(self, event):
