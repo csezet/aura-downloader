@@ -16,7 +16,7 @@ def get_stylesheet(glass_opacity: float = 0.45) -> str:
     /* Main Window Central Glass Panel */
     #CentralWidget {{
         background-color: rgba(10, 13, 18, {glass_opacity});
-        border-radius: 20px;
+        border-radius: 12px;
         border: 1px solid rgba(255, 255, 255, 0.18);
     }}
 
@@ -24,8 +24,8 @@ def get_stylesheet(glass_opacity: float = 0.45) -> str:
     #TitleBar {{
         background-color: transparent;
         border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-        border-top-left-radius: 20px;
-        border-top-right-radius: 20px;
+        border-top-left-radius: 12px;
+        border-top-right-radius: 12px;
     }}
     
     #AppTitle {{
@@ -39,7 +39,7 @@ def get_stylesheet(glass_opacity: float = 0.45) -> str:
     #TitleButton {{
         background-color: transparent;
         border: none;
-        border-radius: 7px;
+        border-radius: 6px;
         color: #A1A1AA;
         font-size: 13px;
         font-weight: bold;
@@ -65,14 +65,14 @@ def get_stylesheet(glass_opacity: float = 0.45) -> str:
     #CloseButton:hover {{
         background-color: #E81123;
         color: #FFFFFF;
-        border-top-right-radius: 18px;
+        border-top-right-radius: 11px;
         margin: 0px;
         padding: 0px;
     }}
     #CloseButton:pressed {{
         background-color: #B80D1A;
         color: #FFFFFF;
-        border-top-right-radius: 18px;
+        border-top-right-radius: 11px;
         margin: 0px;
         padding: 0px;
     }}
