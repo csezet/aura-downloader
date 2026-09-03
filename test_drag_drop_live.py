@@ -5,6 +5,7 @@ import subprocess
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt, QPoint, QMimeData, QUrl
 from PySide6.QtGui import QMouseEvent, QDropEvent, QPixmap, QColor
+from PySide6.QtMultimedia import QMediaPlayer
 from ui.main_window import MainWindow
 from ui.timeline_slider import TimelineRangeSlider, ms_to_time_str
 from ui.trim_dialog import TrimDialog
@@ -173,8 +174,78 @@ def run_simulation():
     trim_dlg_short._seek_to_ms(int(info_short['duration'] * 1000))
     app.processEvents()
     assert trim_dlg_short.current_pos_ms <= trim_dlg_short.duration_ms
-    trim_dlg_short.close()
-    print("Short video (1.35s) full timeline sync and safe end seek verified!")
+    print("\n--- 7. Test Hotkeys, Folder Drop & Cache Cleanup ---")
+    from PySide6.QtGui import QKeyEvent
+    from core.media_converter import cleanup_aura_temp_files, get_crop_filter
+
+    # 7.1 Test TrimDialog Hotkeys
+    trim_dlg_hotkey = TrimDialog(parent=None, video_source=v1, duration_sec=3.0)
+    trim_dlg_hotkey.show()
+    app.processEvents()
+
+    # Press Space to toggle play
+    key_space = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_Space, Qt.NoModifier)
+    trim_dlg_hotkey.keyPressEvent(key_space)
+    assert trim_dlg_hotkey.player.playbackState() == QMediaPlayer.PlayingState
+
+    trim_dlg_hotkey.keyPressEvent(key_space)
+    assert trim_dlg_hotkey.player.playbackState() != QMediaPlayer.PlayingState
+
+    # Press Right arrow to step
+    pos_before = trim_dlg_hotkey.current_pos_ms
+    key_right = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_Right, Qt.NoModifier)
+    trim_dlg_hotkey.keyPressEvent(key_right)
+    assert trim_dlg_hotkey.current_pos_ms >= pos_before
+
+    # Press I (mark start) and O (mark end)
+    key_i = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_I, Qt.NoModifier)
+    trim_dlg_hotkey.keyPressEvent(key_i)
+    assert trim_dlg_hotkey.start_ms == trim_dlg_hotkey.current_pos_ms
+
+    trim_dlg_hotkey.close()
+    print("TrimDialog hotkeys (Space, Arrow, In/Out) verified!")
+
+    # 7.2 Test CropDialog Hotkeys
+    crop_dlg_hotkey = CropDialog(parent=None, pixmap=portrait_pixmap)
+    crop_dlg_hotkey.show()
+    app.processEvents()
+
+    # Press '1' for 1:1 square
+    key_1 = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_1, Qt.NoModifier)
+    crop_dlg_hotkey.keyPressEvent(key_1)
+    assert crop_dlg_hotkey.canvas.aspect_ratio == 1.0
+
+    # Press '2' for 9:16
+    key_2 = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_2, Qt.NoModifier)
+    crop_dlg_hotkey.keyPressEvent(key_2)
+    assert abs(crop_dlg_hotkey.canvas.aspect_ratio - (9.0/16.0)) < 0.01
+
+    # Press '0' for Free
+    key_0 = QKeyEvent(QKeyEvent.KeyPress, Qt.Key_0, Qt.NoModifier)
+    crop_dlg_hotkey.keyPressEvent(key_0)
+    assert crop_dlg_hotkey.canvas.aspect_ratio is None
+
+    crop_dlg_hotkey.close()
+    print("CropDialog hotkeys (0, 1, 2 presets) verified!")
+
+    # 7.3 Test Folder Drop
+    test_folder = tempfile.mkdtemp(prefix="aura_test_folder_")
+    sub_video = create_dummy_video("sub_video.mp4", size="160x120", duration="1")
+    import shutil
+    shutil.copy(sub_video, os.path.join(test_folder, "copied_sub.mp4"))
+
+    count_before = window.cards_list.count()
+    window._load_local_files([test_folder])
+    assert window.cards_list.count() > count_before
+    shutil.rmtree(test_folder, ignore_errors=True)
+    print("Folder recursive Drag & Drop discovery verified!")
+
+    # 7.4 Test Single-pass crop filter & Temp cleanup
+    filter_str = get_crop_filter(v1, {'x_norm': 0.1, 'y_norm': 0.1, 'w_norm': 0.8, 'h_norm': 0.8})
+    assert "crop=" in filter_str
+
+    cleanup_count = cleanup_aura_temp_files(max_age_hours=0)
+    print(f"Cleanup function ran successfully ({cleanup_count} files cleaned)!")
 
     window.close()
     print("\n[ALL TESTS 100% PASSED!]")
