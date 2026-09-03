@@ -16,7 +16,7 @@ def get_stylesheet(glass_opacity: float = 0.45) -> str:
     /* Main Window Central Glass Panel */
     #CentralWidget {{
         background-color: rgba(10, 13, 18, {glass_opacity});
-        border-radius: 12px;
+        border-radius: 14px;
         border: 1px solid rgba(255, 255, 255, 0.18);
     }}
 
@@ -24,8 +24,8 @@ def get_stylesheet(glass_opacity: float = 0.45) -> str:
     #TitleBar {{
         background-color: transparent;
         border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-        border-top-left-radius: 12px;
-        border-top-right-radius: 12px;
+        border-top-left-radius: 14px;
+        border-top-right-radius: 14px;
     }}
     
     #AppTitle {{
