@@ -88,6 +88,10 @@ class MetadataWorker(QThread):
     def __init__(self, url):
         super().__init__()
         self.url = url.strip()
+        self.is_cancelled = False
+
+    def cancel(self):
+        self.is_cancelled = True
 
     def run(self):
         ydl_opts = {
@@ -183,8 +187,11 @@ class MetadataWorker(QThread):
                     'width': width or 1920,
                     'height': height or 1080
                 }
-                self.info_ready.emit(result)
+                if not self.is_cancelled:
+                    self.info_ready.emit(result)
         except Exception as e:
+            if self.is_cancelled:
+                return
             err_msg = str(e)
             if "Unsupported URL" in err_msg:
                 err_msg = "Неподдерживаемая ссылка или ресурс недоступен."
