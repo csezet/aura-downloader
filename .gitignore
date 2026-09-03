@@ -7,3 +7,6 @@ venv/
 env/
 .pytest_cache/
 *.log
+build/
+dist/
+*.spec
