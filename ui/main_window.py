@@ -38,7 +38,7 @@ class DropOverlay(QFrame):
             DropOverlay {
                 background-color: rgba(10, 14, 20, 0.92);
                 border: 2px dashed rgba(255, 255, 255, 0.85);
-                border-radius: 12px;
+                border-radius: 20px;
             }
         """)
         layout = QVBoxLayout(self)
@@ -352,6 +352,39 @@ class MainWindow(QMainWindow):
         self.cards_list.list_changed.connect(self._on_cards_list_changed)
         content_layout.addWidget(self.cards_list, stretch=10)
 
+        # 5.1 Empty State Placeholder (Visible when no cards loaded)
+        self.empty_placeholder = QFrame()
+        self.empty_placeholder.setObjectName("EmptyPlaceholder")
+        self.empty_placeholder.setStyleSheet("""
+            QFrame#EmptyPlaceholder {
+                background-color: rgba(255, 255, 255, 0.018);
+                border: 1px dashed rgba(255, 255, 255, 0.12);
+                border-radius: 14px;
+            }
+        """)
+        ep_layout = QVBoxLayout(self.empty_placeholder)
+        ep_layout.setAlignment(Qt.AlignCenter)
+        ep_layout.setContentsMargins(16, 24, 16, 24)
+        ep_layout.setSpacing(6)
+
+        ep_icon = QLabel()
+        ep_icon.setPixmap(get_svg_icon("download", color="#71717A", size=26).pixmap(26, 26))
+        ep_icon.setAlignment(Qt.AlignCenter)
+        ep_icon.setStyleSheet("background: transparent; border: none;")
+        ep_layout.addWidget(ep_icon)
+
+        ep_title = QLabel("Перетащите видеофайлы или вставьте ссылку")
+        ep_title.setAlignment(Qt.AlignCenter)
+        ep_title.setStyleSheet("color: #A1A1AA; font-size: 12px; font-weight: 600; background: transparent; border: none;")
+        ep_layout.addWidget(ep_title)
+
+        ep_sub = QLabel("YouTube • Instagram • TikTok • VK • Файлы с ПК")
+        ep_sub.setAlignment(Qt.AlignCenter)
+        ep_sub.setStyleSheet("color: #52525B; font-size: 11px; font-weight: 500; font-family: 'Consolas', monospace; background: transparent; border: none;")
+        ep_layout.addWidget(ep_sub)
+
+        content_layout.addWidget(self.empty_placeholder)
+
         # 6. Progress Widget
         self.progress_widget = ProgressWidget()
         self.progress_widget.cancelled.connect(self._cancel_download)
@@ -543,6 +576,8 @@ class MainWindow(QMainWindow):
             self._is_restoring_ui = False
 
     def _on_cards_list_changed(self, count: int):
+        if hasattr(self, 'empty_placeholder'):
+            self.empty_placeholder.setVisible(count == 0)
         if count == 0:
             self.current_video_info = None
             self.crop_widget.toggle.setChecked(False)
@@ -556,6 +591,8 @@ class MainWindow(QMainWindow):
         self.url_input.clear()
         self.url_input.blockSignals(False)
         self.cards_list.clear_all()
+        if hasattr(self, 'empty_placeholder'):
+            self.empty_placeholder.setVisible(True)
         self.crop_widget.toggle.setChecked(False)
         self.trim_widget.toggle.setChecked(False)
         self.smooth_widget.toggle.setChecked(False)
