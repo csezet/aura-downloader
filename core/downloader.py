@@ -2,6 +2,7 @@ import os
 import re
 import time
 import subprocess
+import shutil
 from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 import yt_dlp
@@ -73,9 +74,6 @@ DEFAULT_HTTP_HEADERS = {
 }
 
 DEFAULT_EXTRACTOR_ARGS = {
-    'youtube': {
-        'player_client': ['android', 'web', 'ios'],
-    },
     'instagram': {
         'include_reels': True,
     }
@@ -321,6 +319,10 @@ class DownloadWorker(QThread):
             if cookies:
                 ydl_opts['cookiesfrombrowser'] = cookies
 
+            ffmpeg_exe = shutil.which('ffmpeg')
+            if ffmpeg_exe:
+                ydl_opts['ffmpeg_location'] = ffmpeg_exe
+
             # Trimmer section
             if trim_enabled and (trim_start or trim_end):
                 start_sec = parse_time_str(trim_start) or 0
@@ -359,32 +361,32 @@ class DownloadWorker(QThread):
                 if target_res:
                     height_match = re.search(r'(\d+)p', target_res)
                     h = height_match.group(1) if height_match else '1080'
-                    ydl_opts['format'] = f'bestvideo[height<={h}][vcodec^=avc1]/bestvideo[height<={h}][ext=mp4]/bestvideo[height<={h}]/bestvideo'
+                    ydl_opts['format'] = f'bestvideo[height<={h}]/bestvideo'
                 else:
-                    ydl_opts['format'] = 'bestvideo[vcodec^=avc1]/bestvideo[ext=mp4]/bestvideo'
+                    ydl_opts['format'] = 'bestvideo/best'
             elif mode == 'custom' and target_res:
                 height_match = re.search(r'(\d+)p', target_res)
                 h = height_match.group(1) if height_match else '1080'
                 ydl_opts.update({
-                    'format': f'bestvideo[height<={h}][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={h}]+bestaudio/best[height<={h}]/best',
+                    'format': f'bestvideo[height<={h}]+bestaudio/best[height<={h}]/best',
                     'merge_output_format': 'mp4',
                     'postprocessors': [{'key': 'FFmpegMetadata', 'add_metadata': True}]
                 })
             elif mode == 'gif':
                 ydl_opts.update({
-                    'format': 'bestvideo[height<=720][vcodec^=avc1]/bestvideo[height<=720]/best',
+                    'format': 'bestvideo[height<=720]/best',
                     'merge_output_format': 'mp4',
                 })
             elif mode == 'discord_8mb' or mode == 'telegram_50mb':
                 ydl_opts.update({
-                    'format': 'bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',
+                    'format': 'bestvideo+bestaudio/best',
                     'merge_output_format': 'mp4',
                     'postprocessors': [{'key': 'FFmpegMetadata', 'add_metadata': True}]
                 })
             else:
-                # Default "Best" MP4 with H.264 priority for universal compatibility
+                # Default "Best" Maximum Quality: Highest video resolution + best audio merged into MP4
                 ydl_opts.update({
-                    'format': 'bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc]+bestaudio/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',
+                    'format': 'bestvideo+bestaudio/best',
                     'merge_output_format': 'mp4',
                     'postprocessors': [{'key': 'FFmpegMetadata', 'add_metadata': True}]
                 })
