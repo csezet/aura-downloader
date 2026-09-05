@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 import yt_dlp
+from core.settings import settings
 from core.cookies_helper import get_cookies_config
 from core.media_converter import convert_to_gif, compress_to_target_size, crop_video
 from core.interpolator import interpolate_video
