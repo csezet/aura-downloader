@@ -5,13 +5,13 @@ from PySide6.QtWidgets import (
     QPushButton, QScrollArea, QWidget, QCheckBox, QGraphicsDropShadowEffect
 )
 from PySide6.QtCore import Qt, Signal, QSize, QThread
-from PySide6.QtGui import QColor, QPixmap, QImage
+from PySide6.QtGui import QColor, QPixmap, QImage, QPainter, QPainterPath
 from assets.icons import get_svg_icon, get_svg_pixmap
 
 class ThumbnailLoader(QThread):
     loaded = Signal(QPixmap)
 
-    def __init__(self, url: str, target_size: QSize = QSize(64, 64)):
+    def __init__(self, url: str, target_size: QSize = QSize(70, 70)):
         super().__init__()
         self.url = url
         self.target_size = target_size
@@ -31,9 +31,72 @@ class ThumbnailLoader(QThread):
                         Qt.KeepAspectRatioByExpanding,
                         Qt.SmoothTransformation
                     )
-                    self.loaded.emit(pix)
+                    if pix.width() > self.target_size.width() or pix.height() > self.target_size.height():
+                        x = max(0, (pix.width() - self.target_size.width()) // 2)
+                        y = max(0, (pix.height() - self.target_size.height()) // 2)
+                        pix = pix.copy(x, y, self.target_size.width(), self.target_size.height())
+
+                    rounded = QPixmap(self.target_size)
+                    rounded.fill(Qt.transparent)
+                    painter = QPainter(rounded)
+                    painter.setRenderHint(QPainter.Antialiasing, True)
+                    path = QPainterPath()
+                    path.addRoundedRect(0, 0, self.target_size.width(), self.target_size.height(), 9, 9)
+                    painter.setClipPath(path)
+                    painter.drawPixmap(0, 0, pix)
+                    painter.end()
+                    self.loaded.emit(rounded)
         except Exception:
             pass
+
+
+class CheckmarkBox(QFrame):
+    def __init__(self, checked=True, parent=None):
+        super().__init__(parent)
+        self.setObjectName("CheckmarkBox")
+        self.setFixedSize(22, 22)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._checked = checked
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setAlignment(Qt.AlignCenter)
+
+        self.icon_lbl = QLabel(self)
+        self.icon_lbl.setAlignment(Qt.AlignCenter)
+        self.icon_lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.icon_lbl.setStyleSheet("border: none; background: transparent;")
+        layout.addWidget(self.icon_lbl)
+
+        self._update_appearance()
+
+    def isChecked(self) -> bool:
+        return self._checked
+
+    def setChecked(self, val: bool):
+        if self._checked != val:
+            self._checked = val
+            self._update_appearance()
+
+    def _update_appearance(self):
+        if self._checked:
+            self.icon_lbl.setPixmap(get_svg_pixmap("check", color="#000000", size=13))
+            self.setStyleSheet("""
+                QFrame#CheckmarkBox {
+                    background-color: #FFFFFF;
+                    border: 1px solid #FFFFFF;
+                    border-radius: 6px;
+                }
+            """)
+        else:
+            self.icon_lbl.clear()
+            self.setStyleSheet("""
+                QFrame#CheckmarkBox {
+                    background-color: rgba(0, 0, 0, 0.45);
+                    border: 1.5px solid rgba(255, 255, 255, 0.40);
+                    border-radius: 6px;
+                }
+            """)
 
 
 class GalleryItemWidget(QFrame):
@@ -42,55 +105,26 @@ class GalleryItemWidget(QFrame):
     def __init__(self, item: dict, parent=None):
         super().__init__(parent)
         self.item = item
+        self._is_selected = True
         self.setCursor(Qt.PointingHandCursor)
-        self.setStyleSheet("""
-            QFrame#GalleryCard {
-                background-color: rgba(255, 255, 255, 0.035);
-                border: 1px solid rgba(255, 255, 255, 0.09);
-                border-radius: 12px;
-            }
-            QFrame#GalleryCard:hover {
-                background-color: rgba(255, 255, 255, 0.07);
-                border: 1px solid rgba(255, 255, 255, 0.22);
-            }
-        """)
         self.setObjectName("GalleryCard")
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 10, 14, 10)
+        layout.setContentsMargins(14, 12, 16, 12)
         layout.setSpacing(14)
 
-        # Checkbox
-        self.checkbox = QCheckBox()
-        self.checkbox.setChecked(True)
-        self.checkbox.setCursor(Qt.PointingHandCursor)
-        self.checkbox.setStyleSheet("""
-            QCheckBox::indicator {
-                width: 18px;
-                height: 18px;
-                border-radius: 5px;
-                border: 1px solid rgba(255, 255, 255, 0.35);
-                background: rgba(0, 0, 0, 0.4);
-            }
-            QCheckBox::indicator:checked {
-                background-color: #FFFFFF;
-                border: 1px solid #FFFFFF;
-            }
-            QCheckBox::indicator:hover {
-                border: 1px solid #FFFFFF;
-            }
-        """)
-        self.checkbox.toggled.connect(lambda _: self.toggled.emit())
+        # High-contrast Checkbox with crisp checkmark icon
+        self.checkbox = CheckmarkBox(checked=True, parent=self)
         layout.addWidget(self.checkbox)
 
         # Thumbnail container
         self.thumb_lbl = QLabel()
-        self.thumb_lbl.setFixedSize(64, 64)
+        self.thumb_lbl.setFixedSize(70, 70)
         self.thumb_lbl.setAlignment(Qt.AlignCenter)
         self.thumb_lbl.setStyleSheet("""
-            background-color: rgba(0, 0, 0, 0.4);
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            border-radius: 8px;
+            background-color: #090C10;
+            border: 1.5px solid rgba(255, 255, 255, 0.18);
+            border-radius: 10px;
         """)
         self.thumb_lbl.setPixmap(get_svg_pixmap("image", color="#52525B", size=24))
         layout.addWidget(self.thumb_lbl)
@@ -98,71 +132,128 @@ class GalleryItemWidget(QFrame):
         # Asynchronously load thumbnail
         thumb_url = item.get('thumbnail') or item.get('best_image') or item.get('url')
         if thumb_url and thumb_url.startswith('http'):
-            self.loader = ThumbnailLoader(thumb_url, QSize(64, 64))
+            self.loader = ThumbnailLoader(thumb_url, QSize(70, 70))
             self.loader.loaded.connect(self._on_thumb_loaded)
             self.loader.start()
 
         # Information column
         info_layout = QVBoxLayout()
-        info_layout.setSpacing(4)
+        info_layout.setSpacing(5)
 
-        # Top tag row: Badge + Dimension
+        # Top tag row: Badge + Format
         tags_layout = QHBoxLayout()
         tags_layout.setSpacing(8)
 
         is_video = item.get('is_video', False)
-        type_badge = QLabel(f"ВИДЕО #{item.get('index', 1)}" if is_video else f"ФОТО #{item.get('index', 1)}")
-        type_badge.setStyleSheet("""
-            background-color: rgba(255, 255, 255, 0.12);
-            color: #FFFFFF;
-            border: 1px solid rgba(255, 255, 255, 0.20);
-            border-radius: 4px;
-            padding: 2px 7px;
-            font-size: 10px;
-            font-weight: 800;
-            letter-spacing: 0.5px;
-        """)
-        tags_layout.addWidget(type_badge)
+        self.type_badge = QLabel(f"ВИДЕО #{item.get('index', 1)}" if is_video else f"ФОТО #{item.get('index', 1)}")
+        tags_layout.addWidget(self.type_badge)
 
-        format_badge = QLabel("MP4" if is_video else "JPG ORIGINAL (HD)")
-        format_badge.setStyleSheet("""
-            color: #A1A1AA;
-            font-size: 10px;
-            font-weight: 700;
-            font-family: 'Consolas', monospace;
-        """)
-        tags_layout.addWidget(format_badge)
+        self.format_badge = QLabel("MP4 VIDEO" if is_video else "JPG ORIGINAL (HD)")
+        tags_layout.addWidget(self.format_badge)
         tags_layout.addStretch()
         info_layout.addLayout(tags_layout)
 
         # Title
-        title = item.get('title') or f"Instagram Media {item.get('index', 1)}"
+        title = item.get('title') or f"Instagram Media #{item.get('index', 1)}"
         self.title_lbl = QLabel(title)
-        self.title_lbl.setStyleSheet("font-size: 12px; font-weight: 700; color: #FFFFFF; background: transparent; border: none;")
         self.title_lbl.setWordWrap(True)
         info_layout.addWidget(self.title_lbl)
 
         # Uploader
         uploader = item.get('uploader') or 'Instagram'
         self.sub_lbl = QLabel(f"Автор: @{uploader}")
-        self.sub_lbl.setStyleSheet("font-size: 10px; color: #71717A; background: transparent; border: none;")
         info_layout.addWidget(self.sub_lbl)
 
         layout.addLayout(info_layout, stretch=1)
+        self._update_appearance()
 
     def _on_thumb_loaded(self, pix: QPixmap):
         self.thumb_lbl.setPixmap(pix)
 
+    def _update_appearance(self):
+        if self._is_selected:
+            self.setStyleSheet("""
+                QFrame#GalleryCard {
+                    background-color: rgba(30, 38, 52, 0.90);
+                    border: 1.5px solid rgba(255, 255, 255, 0.40);
+                    border-radius: 12px;
+                }
+                QFrame#GalleryCard:hover {
+                    background-color: rgba(36, 46, 64, 0.98);
+                    border: 1.5px solid #FFFFFF;
+                }
+            """)
+            self.type_badge.setStyleSheet("""
+                background-color: #FFFFFF;
+                color: #000000;
+                border-radius: 4px;
+                padding: 2px 8px;
+                font-size: 10px;
+                font-weight: 900;
+                font-family: 'Consolas', monospace;
+                letter-spacing: 0.5px;
+            """)
+            self.format_badge.setStyleSheet("""
+                background-color: rgba(255, 255, 255, 0.10);
+                color: #E4E4E7;
+                border: 1px solid rgba(255, 255, 255, 0.22);
+                border-radius: 4px;
+                padding: 2px 7px;
+                font-size: 10px;
+                font-weight: 700;
+                font-family: 'Consolas', monospace;
+            """)
+            self.title_lbl.setStyleSheet("font-size: 12px; font-weight: 700; color: #FFFFFF; background: transparent; border: none;")
+            self.sub_lbl.setStyleSheet("font-size: 10px; color: #A1A1AA; background: transparent; border: none;")
+        else:
+            self.setStyleSheet("""
+                QFrame#GalleryCard {
+                    background-color: rgba(18, 22, 30, 0.50);
+                    border: 1px solid rgba(255, 255, 255, 0.14);
+                    border-radius: 12px;
+                }
+                QFrame#GalleryCard:hover {
+                    background-color: rgba(26, 32, 44, 0.75);
+                    border: 1px solid rgba(255, 255, 255, 0.28);
+                }
+            """)
+            self.type_badge.setStyleSheet("""
+                background-color: rgba(255, 255, 255, 0.08);
+                color: #A1A1AA;
+                border: 1px solid rgba(255, 255, 255, 0.14);
+                border-radius: 4px;
+                padding: 2px 8px;
+                font-size: 10px;
+                font-weight: 800;
+                font-family: 'Consolas', monospace;
+                letter-spacing: 0.5px;
+            """)
+            self.format_badge.setStyleSheet("""
+                background-color: rgba(255, 255, 255, 0.04);
+                color: #71717A;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 4px;
+                padding: 2px 7px;
+                font-size: 10px;
+                font-weight: 600;
+                font-family: 'Consolas', monospace;
+            """)
+            self.title_lbl.setStyleSheet("font-size: 12px; font-weight: 600; color: #A1A1AA; background: transparent; border: none;")
+            self.sub_lbl.setStyleSheet("font-size: 10px; color: #71717A; background: transparent; border: none;")
+
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
-            self.checkbox.setChecked(not self.checkbox.isChecked())
+            self.set_selected(not self._is_selected)
+            self.toggled.emit()
         super().mousePressEvent(event)
 
     def is_selected(self) -> bool:
-        return self.checkbox.isChecked()
+        return self._is_selected
 
     def set_selected(self, val: bool):
+        self._is_selected = val
         self.checkbox.setChecked(val)
+        self._update_appearance()
 
 
 class InstagramGalleryDialog(QDialog):
@@ -263,16 +354,18 @@ class InstagramGalleryDialog(QDialog):
         select_all_btn.setCursor(Qt.PointingHandCursor)
         select_all_btn.setStyleSheet("""
             QPushButton {
-                background: rgba(255, 255, 255, 0.05);
-                border: 1px solid rgba(255, 255, 255, 0.14);
-                color: #EDEDED;
+                background: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.20);
+                color: #FFFFFF;
                 font-size: 10px;
-                font-weight: 700;
+                font-weight: 800;
                 border-radius: 6px;
-                padding: 5px 10px;
+                padding: 6px 12px;
+                letter-spacing: 0.5px;
             }
             QPushButton:hover {
-                background: rgba(255, 255, 255, 0.12);
+                background: rgba(255, 255, 255, 0.16);
+                border: 1px solid rgba(255, 255, 255, 0.40);
                 color: #FFFFFF;
             }
         """)
@@ -289,10 +382,12 @@ class InstagramGalleryDialog(QDialog):
                 font-size: 10px;
                 font-weight: 700;
                 border-radius: 6px;
-                padding: 5px 10px;
+                padding: 6px 12px;
+                letter-spacing: 0.5px;
             }
             QPushButton:hover {
                 background: rgba(255, 255, 255, 0.12);
+                border: 1px solid rgba(255, 255, 255, 0.30);
                 color: #FFFFFF;
             }
         """)
@@ -302,7 +397,7 @@ class InstagramGalleryDialog(QDialog):
         ctrl_layout.addStretch()
 
         self.count_lbl = QLabel(f"Выбрано: {len(self.items)} из {len(self.items)}")
-        self.count_lbl.setStyleSheet("color: #A1A1AA; font-size: 11px; font-weight: 600;")
+        self.count_lbl.setStyleSheet("color: #D4D4D8; font-size: 11px; font-weight: 700;")
         ctrl_layout.addWidget(self.count_lbl)
 
         container_layout.addLayout(ctrl_layout)

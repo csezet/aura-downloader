@@ -4,7 +4,57 @@ from PySide6.QtWidgets import (
     QPushButton, QScrollArea, QWidget, QCheckBox
 )
 from PySide6.QtCore import Qt, Signal, QSize
-from assets.icons import get_svg_icon
+from PySide6.QtGui import QColor
+from assets.icons import get_svg_icon, get_svg_pixmap
+
+class CheckmarkBox(QFrame):
+    def __init__(self, checked=True, parent=None):
+        super().__init__(parent)
+        self.setObjectName("CheckmarkBox")
+        self.setFixedSize(22, 22)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._checked = checked
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setAlignment(Qt.AlignCenter)
+
+        self.icon_lbl = QLabel(self)
+        self.icon_lbl.setAlignment(Qt.AlignCenter)
+        self.icon_lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.icon_lbl.setStyleSheet("border: none; background: transparent;")
+        layout.addWidget(self.icon_lbl)
+
+        self._update_appearance()
+
+    def isChecked(self) -> bool:
+        return self._checked
+
+    def setChecked(self, val: bool):
+        if self._checked != val:
+            self._checked = val
+            self._update_appearance()
+
+    def _update_appearance(self):
+        if self._checked:
+            self.icon_lbl.setPixmap(get_svg_pixmap("check", color="#000000", size=13))
+            self.setStyleSheet("""
+                QFrame#CheckmarkBox {
+                    background-color: #FFFFFF;
+                    border: 1px solid #FFFFFF;
+                    border-radius: 6px;
+                }
+            """)
+        else:
+            self.icon_lbl.clear()
+            self.setStyleSheet("""
+                QFrame#CheckmarkBox {
+                    background-color: rgba(0, 0, 0, 0.45);
+                    border: 1.5px solid rgba(255, 255, 255, 0.40);
+                    border-radius: 6px;
+                }
+            """)
+
 
 class PlaylistItemWidget(QFrame):
     toggled = Signal()
@@ -12,84 +62,102 @@ class PlaylistItemWidget(QFrame):
     def __init__(self, item: dict, parent=None):
         super().__init__(parent)
         self.item = item
-        self.setStyleSheet("""
-            QFrame {
-                background-color: rgba(255, 255, 255, 0.035);
-                border: 1px solid rgba(255, 255, 255, 0.09);
-                border-radius: 10px;
-            }
-            QFrame:hover {
-                background-color: rgba(255, 255, 255, 0.065);
-                border: 1px solid rgba(255, 255, 255, 0.20);
-            }
-        """)
+        self._is_selected = True
+        self.setCursor(Qt.PointingHandCursor)
+        self.setObjectName("PlaylistItemCard")
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setContentsMargins(14, 10, 14, 10)
         layout.setSpacing(12)
 
-        self.checkbox = QCheckBox()
-        self.checkbox.setChecked(True)
-        self.checkbox.setCursor(Qt.PointingHandCursor)
-        self.checkbox.setStyleSheet("""
-            QCheckBox::indicator {
-                width: 18px;
-                height: 18px;
-                border-radius: 4px;
-                border: 1px solid rgba(255, 255, 255, 0.3);
-                background: rgba(0, 0, 0, 0.5);
-            }
-            QCheckBox::indicator:checked {
-                background-color: #FFFFFF;
-                border: 1px solid #FFFFFF;
-                image: none;
-            }
-            QCheckBox::indicator:hover {
-                border: 1px solid #FFFFFF;
-            }
-        """)
-        self.checkbox.toggled.connect(lambda _: self.toggled.emit())
+        self.checkbox = CheckmarkBox(checked=True, parent=self)
         layout.addWidget(self.checkbox)
 
         # Duration badge
         dur_str = item.get('duration_str', '--:--')
-        dur_badge = QLabel(dur_str)
-        dur_badge.setStyleSheet("""
-            background-color: rgba(255, 255, 255, 0.10);
-            color: #EDEDED;
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            border-radius: 5px;
-            padding: 3px 6px;
-            font-size: 10px;
-            font-weight: 700;
-            font-family: 'Consolas', monospace;
-        """)
-        dur_badge.setAlignment(Qt.AlignCenter)
-        dur_badge.setFixedWidth(52)
-        layout.addWidget(dur_badge)
+        self.dur_badge = QLabel(dur_str)
+        self.dur_badge.setAlignment(Qt.AlignCenter)
+        self.dur_badge.setFixedWidth(54)
+        layout.addWidget(self.dur_badge)
 
         # Title and uploader
         info_layout = QVBoxLayout()
-        info_layout.setSpacing(2)
+        info_layout.setSpacing(3)
 
         title = item.get('title', 'Без названия')
         self.title_lbl = QLabel(title)
-        self.title_lbl.setStyleSheet("font-size: 12px; font-weight: 700; color: #FFFFFF; background: transparent; border: none;")
         self.title_lbl.setWordWrap(True)
         info_layout.addWidget(self.title_lbl)
 
         uploader = item.get('uploader', '')
         self.sub_lbl = QLabel(uploader)
-        self.sub_lbl.setStyleSheet("font-size: 10px; color: #71717A; background: transparent; border: none;")
         info_layout.addWidget(self.sub_lbl)
 
         layout.addLayout(info_layout, stretch=1)
+        self._update_appearance()
+
+    def _update_appearance(self):
+        if self._is_selected:
+            self.setStyleSheet("""
+                QFrame#PlaylistItemCard {
+                    background-color: rgba(30, 38, 52, 0.90);
+                    border: 1.5px solid rgba(255, 255, 255, 0.40);
+                    border-radius: 10px;
+                }
+                QFrame#PlaylistItemCard:hover {
+                    background-color: rgba(36, 46, 64, 0.98);
+                    border: 1.5px solid #FFFFFF;
+                }
+            """)
+            self.dur_badge.setStyleSheet("""
+                background-color: #FFFFFF;
+                color: #000000;
+                border-radius: 5px;
+                padding: 3px 6px;
+                font-size: 10px;
+                font-weight: 900;
+                font-family: 'Consolas', monospace;
+            """)
+            self.title_lbl.setStyleSheet("font-size: 12px; font-weight: 700; color: #FFFFFF; background: transparent; border: none;")
+            self.sub_lbl.setStyleSheet("font-size: 10px; color: #A1A1AA; background: transparent; border: none;")
+        else:
+            self.setStyleSheet("""
+                QFrame#PlaylistItemCard {
+                    background-color: rgba(18, 22, 30, 0.50);
+                    border: 1px solid rgba(255, 255, 255, 0.14);
+                    border-radius: 10px;
+                }
+                QFrame#PlaylistItemCard:hover {
+                    background-color: rgba(26, 32, 44, 0.75);
+                    border: 1px solid rgba(255, 255, 255, 0.28);
+                }
+            """)
+            self.dur_badge.setStyleSheet("""
+                background-color: rgba(255, 255, 255, 0.08);
+                color: #A1A1AA;
+                border: 1px solid rgba(255, 255, 255, 0.14);
+                border-radius: 5px;
+                padding: 3px 6px;
+                font-size: 10px;
+                font-weight: 800;
+                font-family: 'Consolas', monospace;
+            """)
+            self.title_lbl.setStyleSheet("font-size: 12px; font-weight: 600; color: #A1A1AA; background: transparent; border: none;")
+            self.sub_lbl.setStyleSheet("font-size: 10px; color: #71717A; background: transparent; border: none;")
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.set_selected(not self._is_selected)
+            self.toggled.emit()
+        super().mousePressEvent(event)
 
     def is_selected(self) -> bool:
-        return self.checkbox.isChecked()
+        return self._is_selected
 
     def set_selected(self, val: bool):
+        self._is_selected = val
         self.checkbox.setChecked(val)
+        self._update_appearance()
 
 
 class PlaylistDialog(QDialog):
@@ -180,40 +248,44 @@ class PlaylistDialog(QDialog):
         controls_bar = QHBoxLayout()
         controls_bar.setSpacing(8)
 
-        btn_select_all = QPushButton("Выбрать все")
+        btn_select_all = QPushButton("ВЫБРАТЬ ВСЕ")
         btn_select_all.setCursor(Qt.PointingHandCursor)
         btn_select_all.setStyleSheet("""
             QPushButton {
-                background-color: rgba(255, 255, 255, 0.05);
-                border: 1px solid rgba(255, 255, 255, 0.10);
-                border-radius: 7px;
-                padding: 4px 10px;
-                font-size: 11px;
-                font-weight: 600;
-                color: #EDEDED;
+                background-color: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.20);
+                border-radius: 6px;
+                padding: 6px 12px;
+                font-size: 10px;
+                font-weight: 800;
+                color: #FFFFFF;
+                letter-spacing: 0.5px;
             }
             QPushButton:hover {
-                background-color: rgba(255, 255, 255, 0.12);
+                background-color: rgba(255, 255, 255, 0.16);
+                border: 1px solid rgba(255, 255, 255, 0.40);
                 color: #FFFFFF;
             }
         """)
         btn_select_all.clicked.connect(self._select_all)
         controls_bar.addWidget(btn_select_all)
 
-        btn_deselect_all = QPushButton("Снять выбор")
+        btn_deselect_all = QPushButton("СНЯТЬ ВЫБОР")
         btn_deselect_all.setCursor(Qt.PointingHandCursor)
         btn_deselect_all.setStyleSheet("""
             QPushButton {
                 background-color: rgba(255, 255, 255, 0.05);
-                border: 1px solid rgba(255, 255, 255, 0.10);
-                border-radius: 7px;
-                padding: 4px 10px;
-                font-size: 11px;
-                font-weight: 600;
+                border: 1px solid rgba(255, 255, 255, 0.14);
+                border-radius: 6px;
+                padding: 6px 12px;
+                font-size: 10px;
+                font-weight: 700;
                 color: #A1A1AA;
+                letter-spacing: 0.5px;
             }
             QPushButton:hover {
                 background-color: rgba(255, 255, 255, 0.12);
+                border: 1px solid rgba(255, 255, 255, 0.30);
                 color: #FFFFFF;
             }
         """)
@@ -223,7 +295,7 @@ class PlaylistDialog(QDialog):
         controls_bar.addStretch()
 
         self.selected_count_lbl = QLabel("")
-        self.selected_count_lbl.setStyleSheet("font-size: 11px; color: #A1A1AA; font-weight: 600;")
+        self.selected_count_lbl.setStyleSheet("font-size: 11px; color: #D4D4D8; font-weight: 700;")
         controls_bar.addWidget(self.selected_count_lbl)
 
         c_layout.addLayout(controls_bar)
