@@ -13,7 +13,7 @@ from PySide6.QtGui import QColor, QPixmap
 
 from core.settings import settings
 from core.history import history
-from core.downloader import MetadataWorker, DownloadWorker
+from core.downloader import MetadataWorker, DownloadWorker, GalleryDownloadWorker
 from core.local_processor import get_local_media_info, is_video_file, LocalProcessWorker, LocalBatchProcessWorker
 from core.clipboard import ClipboardWatcher
 from assets.styles import get_stylesheet
@@ -29,6 +29,7 @@ from ui.smooth_widget import SmoothWidget
 from ui.batch_dialog import BatchDialog
 from ui.settings_modal import SettingsModal
 from ui.playlist_dialog import PlaylistDialog
+from ui.gallery_dialog import InstagramGalleryDialog
 from core.notifications import NotificationManager
 
 class DropOverlay(QFrame):
@@ -259,11 +260,11 @@ class MainWindow(QMainWindow):
         content_layout.addLayout(input_bar)
 
         # 3. Mode Selection Bar
-        modes_card = QFrame()
-        modes_card.setProperty("class", "GlassCard")
-        modes_card.setFixedHeight(42)
-        modes_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        modes_layout = QHBoxLayout(modes_card)
+        self.modes_card = QFrame()
+        self.modes_card.setProperty("class", "GlassCard")
+        self.modes_card.setFixedHeight(42)
+        self.modes_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        modes_layout = QHBoxLayout(self.modes_card)
         modes_layout.setContentsMargins(6, 5, 6, 5)
         modes_layout.setSpacing(6)
 
@@ -327,7 +328,7 @@ class MainWindow(QMainWindow):
         modes_layout.addWidget(self.pill_video_only)
 
         modes_layout.addStretch()
-        content_layout.addWidget(modes_card)
+        content_layout.addWidget(self.modes_card)
 
         # 4. Trimmer, Crop & Smooth FPS Widgets
         tools_layout = QVBoxLayout()
@@ -573,11 +574,18 @@ class MainWindow(QMainWindow):
         self._is_restoring_ui = True
         try:
             self.current_video_info = info
+            is_photo = bool(info and info.get('is_photo'))
+            if hasattr(self, 'modes_card'):
+                self.modes_card.setVisible(not is_photo)
+            self.trim_widget.setVisible(not is_photo)
+            self.smooth_widget.setVisible(not is_photo)
+
             w = info.get("width", 1920)
             h = info.get("height", 1080)
             self.crop_widget.set_source_info(pixmap, width=w, height=h)
             playable = info.get('playable_url') or info.get('direct_url') or info.get('url')
-            self.trim_widget.set_source_video(playable, info.get('duration', 60))
+            if not is_photo:
+                self.trim_widget.set_source_video(playable, info.get('duration', 60))
             if info.get("available_res"):
                 self.res_combo.clear()
                 self.res_combo.addItems(info["available_res"])
@@ -591,9 +599,13 @@ class MainWindow(QMainWindow):
             self.empty_placeholder.setVisible(count == 0)
         if count == 0:
             self.current_video_info = None
+            if hasattr(self, 'modes_card'):
+                self.modes_card.setVisible(True)
             self.crop_widget.toggle.setChecked(False)
             self.trim_widget.toggle.setChecked(False)
             self.smooth_widget.toggle.setChecked(False)
+            self.trim_widget.setVisible(True)
+            self.smooth_widget.setVisible(True)
         self._update_download_button_text()
 
     def _reset_all_state(self):
@@ -604,9 +616,13 @@ class MainWindow(QMainWindow):
         self.cards_list.clear_all()
         if hasattr(self, 'empty_placeholder'):
             self.empty_placeholder.setVisible(True)
+        if hasattr(self, 'modes_card'):
+            self.modes_card.setVisible(True)
         self.crop_widget.toggle.setChecked(False)
         self.trim_widget.toggle.setChecked(False)
         self.smooth_widget.toggle.setChecked(False)
+        self.trim_widget.setVisible(True)
+        self.smooth_widget.setVisible(True)
         self._update_download_button_text()
 
     def _on_url_text_changed(self, text: str):
@@ -630,6 +646,8 @@ class MainWindow(QMainWindow):
             self.metadata_worker.cancel()
             try:
                 self.metadata_worker.info_ready.disconnect()
+                self.metadata_worker.playlist_ready.disconnect()
+                self.metadata_worker.gallery_ready.disconnect()
                 self.metadata_worker.info_error.disconnect()
             except Exception:
                 pass
@@ -640,8 +658,29 @@ class MainWindow(QMainWindow):
         self.metadata_worker = MetadataWorker(url)
         self.metadata_worker.info_ready.connect(self._on_metadata_ready)
         self.metadata_worker.playlist_ready.connect(self._on_playlist_ready)
+        self.metadata_worker.gallery_ready.connect(self._on_gallery_ready)
         self.metadata_worker.info_error.connect(self._on_metadata_error)
         self.metadata_worker.start()
+
+    def _on_gallery_ready(self, gallery_data: dict):
+        self.download_btn.setEnabled(True)
+        self._update_download_button_text()
+
+        dialog = InstagramGalleryDialog(gallery_data, self)
+        if dialog.exec():
+            selected = dialog.get_selected_items()
+            if not selected:
+                return
+            save_dir = settings.get("download_dir")
+            self.progress_widget.start_progress()
+            self.download_btn.setEnabled(False)
+            self.download_worker = GalleryDownloadWorker(selected, save_dir)
+            self.download_worker.progress_updated.connect(self.progress_widget.update_progress)
+            self.download_worker.item_completed.connect(self._on_queue_item_completed)
+            self.download_worker.batch_completed.connect(self._on_batch_success)
+            self.download_worker.download_error.connect(self._on_download_fail)
+            self.download_worker.status_message.connect(lambda msg: self.progress_widget.status_label.setText(msg.upper()))
+            self.download_worker.start()
 
     def _on_playlist_ready(self, playlist_data: dict):
         self.download_btn.setEnabled(True)
@@ -716,6 +755,12 @@ class MainWindow(QMainWindow):
         if not self.current_video_info and q_count == 0:
             self.download_btn.setIcon(get_svg_icon("download", color="#000000", size=18))
             self.download_btn.setText("  СКАЧАТЬ В ЛУЧШЕМ КАЧЕСТВЕ (MP4)")
+            return
+
+        active_video = selected_vids[0] if selected_vids else self.current_video_info
+        if active_video and active_video.get('is_photo'):
+            self.download_btn.setIcon(get_svg_icon("camera", color="#000000", size=18))
+            self.download_btn.setText("  СКАЧАТЬ ФОТОГРАФИЮ (JPG)")
             return
 
         if q_count > 1:
@@ -813,6 +858,10 @@ class MainWindow(QMainWindow):
         if is_local:
             self.download_worker = LocalProcessWorker(target_url, options, save_dir)
         else:
+            if active_video and active_video.get('is_photo'):
+                options['is_photo'] = True
+                options['direct_media_url'] = active_video.get('direct_media_url')
+                options['title'] = active_video.get('title')
             self.download_worker = DownloadWorker(target_url, options, save_dir)
 
         self.download_worker.progress_updated.connect(self.progress_widget.update_progress)
@@ -836,12 +885,14 @@ class MainWindow(QMainWindow):
         self.download_btn.setEnabled(True)
         self._update_download_button_text()
         last_res = results[-1] if results else {'file_path': settings.get("download_dir"), 'file_size_str': f"{len(results)} файлов"}
-        last_res['mode'] = f"Пакет ({len(results)} шт)"
+        is_all_photos = all(r.get('mode') in ['JPG', 'PNG', 'WEBP'] for r in results) if results else False
+        last_res['mode'] = f"Галерея ({len(results)} фото)" if is_all_photos else f"Пакет ({len(results)} шт)"
         self.progress_widget.complete(last_res)
 
         if hasattr(self, 'notification_manager'):
+            notice_title = f"Скачивание завершено ({len(results)} фото)" if is_all_photos else f"Очередь завершена ({len(results)} видео)"
             self.notification_manager.show_download_complete(
-                title=f"Очередь завершена ({len(results)} видео)",
+                title=notice_title,
                 file_path=last_res.get('file_path')
             )
 
@@ -867,7 +918,7 @@ class MainWindow(QMainWindow):
 
         if hasattr(self, 'notification_manager'):
             self.notification_manager.show_download_complete(
-                title=result.get('title', 'Видео'),
+                title=result.get('title', 'Файл'),
                 file_path=result.get('file_path')
             )
 

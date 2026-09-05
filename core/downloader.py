@@ -3,9 +3,11 @@ import re
 import time
 import subprocess
 import shutil
+import requests
 from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 import yt_dlp
+from yt_dlp.extractor.instagram import InstagramIE
 from core.settings import settings
 from core.cookies_helper import get_cookies_config
 from core.media_converter import convert_to_gif, compress_to_target_size, crop_video
@@ -83,6 +85,7 @@ DEFAULT_EXTRACTOR_ARGS = {
 class MetadataWorker(QThread):
     info_ready = Signal(dict)
     playlist_ready = Signal(dict)
+    gallery_ready = Signal(dict)
     info_error = Signal(str)
 
     def __init__(self, url):
@@ -108,6 +111,66 @@ class MetadataWorker(QThread):
         cookies = get_cookies_config()
         if cookies:
             ydl_opts['cookiesfrombrowser'] = cookies
+
+        # Specialized Instagram carousel & photo extraction
+        if 'instagram.com' in self.url.lower():
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl_inst:
+                    ie = InstagramIE(ydl_inst)
+                    info = ie.extract(self.url)
+                    if info:
+                        # 1. Multi-item Carousel (2+ photos/videos)
+                        if 'entries' in info and len(info['entries']) > 1:
+                            items = []
+                            for idx, e in enumerate(info['entries']):
+                                is_vid = bool(e.get('formats'))
+                                thumbs = e.get('thumbnails', [])
+                                best_img = thumbs[-1]['url'] if thumbs else None
+                                preview_thumb = thumbs[0]['url'] if thumbs else best_img
+                                vid_url = e.get('formats', [])[-1].get('url') if is_vid else None
+                                items.append({
+                                    'id': e.get('id', f'item_{idx+1}'),
+                                    'index': idx + 1,
+                                    'is_video': is_vid,
+                                    'media_type': 'video' if is_vid else 'photo',
+                                    'url': vid_url if is_vid else best_img,
+                                    'best_image': best_img,
+                                    'thumbnail': preview_thumb,
+                                    'title': e.get('title') or f"Instagram Фото #{idx+1}",
+                                    'uploader': info.get('uploader') or info.get('channel') or 'Instagram',
+                                })
+                            if not self.is_cancelled:
+                                self.gallery_ready.emit({
+                                    'title': info.get('title', 'Галерея Instagram'),
+                                    'uploader': info.get('uploader') or info.get('channel') or 'Instagram',
+                                    'items': items
+                                })
+                                return
+
+                        # 2. Single photo item (or single item inside entries)
+                        target_entry = info['entries'][0] if ('entries' in info and info['entries']) else info
+                        is_vid = bool(target_entry.get('formats'))
+                        thumbs = target_entry.get('thumbnails', [])
+                        if not is_vid and thumbs:
+                            best_img = thumbs[-1]['url']
+                            uploader = info.get('uploader') or target_entry.get('uploader') or 'Instagram'
+                            title = target_entry.get('title') or info.get('title') or f"Фото от @{uploader}"
+                            if not self.is_cancelled:
+                                self.info_ready.emit({
+                                    'title': title,
+                                    'uploader': uploader,
+                                    'duration': 0,
+                                    'duration_str': "ФОТО",
+                                    'thumbnail': best_img,
+                                    'url': self.url,
+                                    'direct_media_url': best_img,
+                                    'is_photo': True,
+                                    'platform': 'Instagram',
+                                    'available_resolutions': ['Оригинал (JPG)']
+                                })
+                                return
+            except Exception:
+                pass
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -342,6 +405,54 @@ class DownloadWorker(QThread):
                     'subtitlesformat': 'srt/best',
                 })
 
+            # Direct Image / Instagram Photo Download
+            is_photo = self.options.get('is_photo', False) or (self.url and any(self.url.lower().split('?')[0].endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.webp'])) or 'cdninstagram' in self.url
+            if is_photo:
+                self.status_message.emit("Скачивание фотографии...")
+                target_url = self.options.get('direct_media_url') or self.url
+                headers = {
+                    'User-Agent': DEFAULT_HTTP_HEADERS['User-Agent'],
+                    'Referer': 'https://www.instagram.com/'
+                }
+                resp = requests.get(target_url, headers=headers, stream=True, timeout=15)
+                resp.raise_for_status()
+                total_bytes = int(resp.headers.get('content-length', 0))
+                downloaded_bytes = 0
+                t0 = time.time()
+
+                title = self.options.get('title') or "Instagram_Photo"
+                clean_title = re.sub(r'[^\w\-]', '_', title)
+                file_path = os.path.join(self.save_dir, f"{clean_title}.jpg")
+                counter = 1
+                base, ext_part = os.path.splitext(file_path)
+                while os.path.exists(file_path):
+                    file_path = f"{base}_{counter}{ext_part}"
+                    counter += 1
+
+                with open(file_path, 'wb') as f:
+                    for chunk in resp.iter_content(chunk_size=65536):
+                        if self.is_cancelled:
+                            raise Exception("Загрузка отменена.")
+                        f.write(chunk)
+                        downloaded_bytes += len(chunk)
+                        dt = time.time() - t0
+                        speed = downloaded_bytes / dt if dt > 0 else 0
+                        speed_str = f"{speed / (1024 * 1024):.1f} MB/s" if speed > 0 else "-- MB/s"
+                        pct = (downloaded_bytes / total_bytes * 100.0) if total_bytes > 0 else 100.0
+                        self.progress_updated.emit(pct, speed_str, "--:--", format_bytes(downloaded_bytes), format_bytes(total_bytes))
+
+                file_size = os.path.getsize(file_path)
+                self.download_completed.emit({
+                    'title': title,
+                    'url': self.url,
+                    'file_path': file_path,
+                    'file_size': file_size,
+                    'file_size_str': format_bytes(file_size),
+                    'thumbnail': file_path,
+                    'mode': 'JPG'
+                })
+                return
+
             if mode == 'audio_only':
                 ydl_opts.update({
                     'format': 'bestaudio/best',
@@ -480,3 +591,114 @@ class DownloadWorker(QThread):
         except Exception as e:
             if not self.is_cancelled:
                 self.download_error.emit(str(e))
+
+
+class GalleryDownloadWorker(QThread):
+    progress_updated = Signal(float, str, str, str, str)  # percent, speed, eta, downloaded, total
+    item_completed = Signal(dict)
+    batch_completed = Signal(list)
+    download_error = Signal(str)
+    status_message = Signal(str)
+
+    def __init__(self, items: list, save_dir: str):
+        super().__init__()
+        self.items = items
+        self.save_dir = save_dir
+        self.is_cancelled = False
+
+    def cancel(self):
+        self.is_cancelled = True
+
+    def run(self):
+        os.makedirs(self.save_dir, exist_ok=True)
+        total_items = len(self.items)
+        if total_items == 0:
+            return
+
+        results = []
+        headers = {
+            'User-Agent': DEFAULT_HTTP_HEADERS['User-Agent'],
+            'Referer': 'https://www.instagram.com/'
+        }
+
+        for i, item in enumerate(self.items):
+            if self.is_cancelled:
+                break
+
+            media_type = item.get('media_type', 'photo')
+            is_video = item.get('is_video', False)
+            uploader = item.get('uploader', 'Instagram')
+            item_id = item.get('id', str(i + 1))
+            ext = 'mp4' if is_video else 'jpg'
+
+            clean_uploader = re.sub(r'[^\w\-]', '_', uploader)
+            clean_id = re.sub(r'[^\w\-]', '_', str(item_id))
+            filename = f"Instagram_{clean_uploader}_{clean_id}.{ext}"
+            file_path = os.path.join(self.save_dir, filename)
+
+            # Ensure unique filename
+            counter = 1
+            base, ext_part = os.path.splitext(file_path)
+            while os.path.exists(file_path):
+                file_path = f"{base}_{counter}{ext_part}"
+                counter += 1
+
+            self.status_message.emit(f"Скачивание {i + 1}/{total_items}: {filename}")
+            download_url = item.get('best_image') or item.get('url')
+
+            try:
+                resp = requests.get(download_url, headers=headers, stream=True, timeout=20)
+                resp.raise_for_status()
+                total_bytes = int(resp.headers.get('content-length', 0))
+                downloaded_bytes = 0
+                t0 = time.time()
+
+                with open(file_path, 'wb') as f:
+                    for chunk in resp.iter_content(chunk_size=65536):
+                        if self.is_cancelled:
+                            break
+                        f.write(chunk)
+                        downloaded_bytes += len(chunk)
+                        dt = time.time() - t0
+                        speed = downloaded_bytes / dt if dt > 0 else 0
+                        speed_str = f"{speed / (1024 * 1024):.1f} MB/s" if speed > 0 else "-- MB/s"
+
+                        item_pct = (downloaded_bytes / total_bytes) if total_bytes > 0 else 1.0
+                        overall_pct = ((i + item_pct) / total_items) * 100.0
+                        self.progress_updated.emit(
+                            overall_pct,
+                            speed_str,
+                            "--:--",
+                            format_bytes(downloaded_bytes),
+                            format_bytes(total_bytes) if total_bytes > 0 else "--"
+                        )
+
+                if self.is_cancelled:
+                    if os.path.exists(file_path):
+                        try:
+                            os.remove(file_path)
+                        except Exception:
+                            pass
+                    break
+
+                file_size = os.path.getsize(file_path)
+                result_item = {
+                    'title': item.get('title') or f"Instagram Фото #{i + 1}",
+                    'url': download_url,
+                    'file_path': file_path,
+                    'file_size': file_size,
+                    'file_size_str': format_bytes(file_size),
+                    'mode': 'MP4' if is_video else 'JPG',
+                    'thumbnail': file_path
+                }
+                results.append(result_item)
+                self.item_completed.emit(result_item)
+
+            except Exception as e:
+                self.download_error.emit(f"Ошибка при скачивании {filename}: {e}")
+
+        if not self.is_cancelled and results:
+            total_sz = sum(r['file_size'] for r in results)
+            self.progress_updated.emit(100.0, "0 MB/s", "00:00", format_bytes(total_sz), format_bytes(total_sz))
+            self.batch_completed.emit(results)
+

@@ -18,7 +18,11 @@ class ImageLoaderWorker(QThread):
 
     def run(self):
         try:
-            resp = requests.get(self.url, timeout=6)
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                'Referer': 'https://www.instagram.com/'
+            }
+            resp = requests.get(self.url, headers=headers, timeout=8)
             if resp.status_code == 200:
                 image = QImage()
                 image.loadFromData(QByteArray(resp.content))
@@ -93,7 +97,8 @@ class VideoCardWidget(QFrame):
         badge_layout.addWidget(self.platform_badge)
 
         dur_str = data.get("duration_str", "--:--")
-        self.duration_badge = QLabel(f"⏱ {dur_str}")
+        dur_icon = "📸" if data.get("is_photo") else "⏱"
+        self.duration_badge = QLabel(f"{dur_icon} {dur_str}")
         self.duration_badge.setObjectName("Badge")
         self.duration_badge.setStyleSheet("""
             QLabel#Badge {

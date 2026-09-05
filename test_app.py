@@ -122,6 +122,42 @@ def test_main_window_init():
     win.close()
     print("UI initialization passed!")
 
+def test_instagram_support():
+    print("Testing Instagram Gallery & Photo Support...")
+    from ui.gallery_dialog import InstagramGalleryDialog
+    sample_data = {
+        'title': 'Instagram Test Post',
+        'uploader': 'testuser',
+        'items': [
+            {'id': '1', 'index': 1, 'is_video': False, 'media_type': 'photo', 'url': 'http://test/1.jpg', 'title': 'Photo 1', 'uploader': 'testuser'},
+            {'id': '2', 'index': 2, 'is_video': False, 'media_type': 'photo', 'url': 'http://test/2.jpg', 'title': 'Photo 2', 'uploader': 'testuser'}
+        ]
+    }
+    dlg = InstagramGalleryDialog(sample_data)
+    assert len(dlg.get_selected_items()) == 2
+    dlg._set_all_selected(False)
+    assert len(dlg.get_selected_items()) == 0
+    dlg._set_all_selected(True)
+    assert len(dlg.get_selected_items()) == 2
+
+    # Single photo card handling in MainWindow
+    win = MainWindow()
+    photo_info = {
+        'url': 'https://instagram.com/p/test/',
+        'direct_media_url': 'https://scontent.cdninstagram.com/test.jpg',
+        'title': 'Test IG Photo',
+        'uploader': 'testuser',
+        'is_photo': True,
+        'duration': 0,
+        'duration_str': 'ФОТО',
+        'thumbnail': 'https://scontent.cdninstagram.com/test.jpg',
+        'platform': 'Instagram'
+    }
+    win.cards_list.add_video(photo_info)
+    assert "ФОТОГРАФИЮ" in win.download_btn.text()
+    win.close()
+    print("Instagram Gallery & Photo Support test passed!")
+
 if __name__ == "__main__":
     print("Testing core imports...")
     print("Imports OK!")
@@ -130,4 +166,6 @@ if __name__ == "__main__":
     test_timeline_and_trim_dialog()
     test_video_cards_list()
     test_main_window_init()
+    test_instagram_support()
     print("[ALL TESTS PASSED]")
+    os._exit(0)
