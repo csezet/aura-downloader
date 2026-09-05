@@ -123,8 +123,18 @@ class ProgressWidget(QFrame):
 
     def set_error(self, err_msg: str):
         self.status_label.setText("ОШИБКА")
-        self.metrics_label.setText(err_msg[:60])
+        self.metrics_label.setText(err_msg[:80] if err_msg else "Ошибка получения информации")
+        self.cancel_btn.setVisible(True)
         self.cancel_btn.setText("✕ ЗАКРЫТЬ")
+        self.open_file_btn.setVisible(False)
+        self.open_dir_btn.setVisible(False)
+        self.progress_bar.setValue(0)
+        self.percent_label.setText("✕")
+        self.setVisible(True)
+        self.anim_opacity.stop()
+        self.anim_opacity.setStartValue(self.opacity_effect.opacity())
+        self.anim_opacity.setEndValue(1.0)
+        self.anim_opacity.start()
 
     def hide_progress(self):
         self.anim_opacity.stop()

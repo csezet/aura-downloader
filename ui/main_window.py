@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QComboBox, QFrame, QApplication,
     QSizePolicy, QFileDialog, QSizeGrip
 )
-from PySide6.QtCore import Qt, QSize, QEvent
+from PySide6.QtCore import Qt, QSize, QEvent, QTimer
 from PySide6.QtGui import QColor, QPixmap
 
 from core.settings import settings
@@ -94,6 +94,11 @@ class MainWindow(QMainWindow):
         self.download_worker = None
         self.current_video_info = None
         self.notification_manager = NotificationManager(parent=self, icon_path=self.icon_path)
+
+        self.url_debounce_timer = QTimer(self)
+        self.url_debounce_timer.setSingleShot(True)
+        self.url_debounce_timer.setInterval(400)
+        self.url_debounce_timer.timeout.connect(self._fetch_metadata)
 
         self.setStatusBar(None)
 
@@ -447,6 +452,8 @@ class MainWindow(QMainWindow):
             self._fetch_metadata()
 
     def _paste_and_fetch(self):
+        if hasattr(self, 'url_debounce_timer'):
+            self.url_debounce_timer.stop()
         clipboard = QApplication.clipboard()
         text = clipboard.text().strip()
         if text:
@@ -626,11 +633,28 @@ class MainWindow(QMainWindow):
         self._update_download_button_text()
 
     def _on_url_text_changed(self, text: str):
-        if is_video_file(text):
+        clean_text = text.strip()
+        if not clean_text:
+            if hasattr(self, 'url_debounce_timer'):
+                self.url_debounce_timer.stop()
+            return
+
+        if is_video_file(clean_text):
+            if hasattr(self, 'url_debounce_timer'):
+                self.url_debounce_timer.stop()
             self.url_input.clear()
-            self._load_local_files([text])
+            self._load_local_files([clean_text])
+            return
+
+        # Auto-fetch as soon as a complete URL is pasted or entered (starts with http/https)
+        if clean_text.startswith(("http://", "https://")) and len(clean_text) > 12:
+            if hasattr(self, 'url_debounce_timer'):
+                self.url_debounce_timer.start(400)
 
     def _fetch_metadata(self):
+        if hasattr(self, 'url_debounce_timer'):
+            self.url_debounce_timer.stop()
+
         url = self.url_input.text().strip()
         if not url:
             return
@@ -671,6 +695,29 @@ class MainWindow(QMainWindow):
             selected = dialog.get_selected_items()
             if not selected:
                 return
+
+            # Display cards for all selected items in main cards_list
+            for item in selected:
+                is_vid = item.get('is_video', False)
+                info = {
+                    'url': item.get('url') or item.get('best_image'),
+                    'direct_url': item.get('best_image') or item.get('url'),
+                    'direct_media_url': item.get('best_image') or item.get('url'),
+                    'playable_url': item.get('url'),
+                    'title': item.get('title') or f"Instagram Фото #{item.get('index', 1)}",
+                    'uploader': item.get('uploader') or gallery_data.get('uploader') or 'Instagram',
+                    'duration': 0,
+                    'duration_str': 'ФОТО' if not is_vid else 'ВИДЕО',
+                    'thumbnail': item.get('thumbnail') or item.get('best_image'),
+                    'platform': 'Instagram',
+                    'available_res': ['Оригинал (JPG)'] if not is_vid else ['1080p Full HD'],
+                    'has_video': is_vid,
+                    'is_photo': not is_vid,
+                    'width': 1080,
+                    'height': 1350
+                }
+                self.cards_list.add_video(info)
+
             save_dir = settings.get("download_dir")
             self.progress_widget.start_progress()
             self.download_btn.setEnabled(False)

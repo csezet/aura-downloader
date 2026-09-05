@@ -114,63 +114,76 @@ class MetadataWorker(QThread):
 
         # Specialized Instagram carousel & photo extraction
         if 'instagram.com' in self.url.lower():
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl_inst:
-                    ie = InstagramIE(ydl_inst)
-                    info = ie.extract(self.url)
-                    if info:
-                        # 1. Multi-item Carousel (2+ photos/videos)
-                        if 'entries' in info and len(info['entries']) > 1:
-                            items = []
-                            for idx, e in enumerate(info['entries']):
-                                is_vid = bool(e.get('formats'))
-                                thumbs = e.get('thumbnails', [])
-                                best_img = thumbs[-1]['url'] if thumbs else None
-                                preview_thumb = thumbs[0]['url'] if thumbs else best_img
-                                vid_url = e.get('formats', [])[-1].get('url') if is_vid else None
-                                items.append({
-                                    'id': e.get('id', f'item_{idx+1}'),
-                                    'index': idx + 1,
-                                    'is_video': is_vid,
-                                    'media_type': 'video' if is_vid else 'photo',
-                                    'url': vid_url if is_vid else best_img,
-                                    'best_image': best_img,
-                                    'thumbnail': preview_thumb,
-                                    'title': e.get('title') or f"Instagram Фото #{idx+1}",
-                                    'uploader': info.get('uploader') or info.get('channel') or 'Instagram',
-                                })
-                            if not self.is_cancelled:
-                                self.gallery_ready.emit({
-                                    'title': info.get('title', 'Галерея Instagram'),
-                                    'uploader': info.get('uploader') or info.get('channel') or 'Instagram',
-                                    'items': items
-                                })
-                                return
+            clean_ig_url = re.sub(r'\?.*$', '', self.url)
+            urls_to_try = [self.url]
+            if clean_ig_url != self.url:
+                urls_to_try.append(clean_ig_url)
 
-                        # 2. Single photo item (or single item inside entries)
-                        target_entry = info['entries'][0] if ('entries' in info and info['entries']) else info
-                        is_vid = bool(target_entry.get('formats'))
-                        thumbs = target_entry.get('thumbnails', [])
-                        if not is_vid and thumbs:
-                            best_img = thumbs[-1]['url']
-                            uploader = info.get('uploader') or target_entry.get('uploader') or 'Instagram'
-                            title = target_entry.get('title') or info.get('title') or f"Фото от @{uploader}"
-                            if not self.is_cancelled:
-                                self.info_ready.emit({
-                                    'title': title,
-                                    'uploader': uploader,
-                                    'duration': 0,
-                                    'duration_str': "ФОТО",
-                                    'thumbnail': best_img,
-                                    'url': self.url,
-                                    'direct_media_url': best_img,
-                                    'is_photo': True,
-                                    'platform': 'Instagram',
-                                    'available_resolutions': ['Оригинал (JPG)']
-                                })
-                                return
-            except Exception:
-                pass
+            for try_url in urls_to_try:
+                for with_cookies in [True, False]:
+                    try:
+                        cur_opts = dict(ydl_opts)
+                        if not with_cookies and 'cookiesfrombrowser' in cur_opts:
+                            del cur_opts['cookiesfrombrowser']
+                        with yt_dlp.YoutubeDL(cur_opts) as ydl_inst:
+                            ie = InstagramIE(ydl_inst)
+                            info = ie.extract(try_url)
+                            if not info:
+                                continue
+
+                            entries = list(info.get('entries') or [])
+                            # 1. Multi-item Carousel (2+ photos/videos)
+                            if len(entries) > 1:
+                                items = []
+                                for idx, e in enumerate(entries):
+                                    is_vid = bool(e.get('formats'))
+                                    thumbs = e.get('thumbnails', [])
+                                    best_img = thumbs[-1]['url'] if thumbs else None
+                                    preview_thumb = thumbs[0]['url'] if thumbs else best_img
+                                    vid_url = e.get('formats', [])[-1].get('url') if is_vid else None
+                                    items.append({
+                                        'id': e.get('id', f'item_{idx+1}'),
+                                        'index': idx + 1,
+                                        'is_video': is_vid,
+                                        'media_type': 'video' if is_vid else 'photo',
+                                        'url': vid_url if is_vid else best_img,
+                                        'best_image': best_img,
+                                        'thumbnail': preview_thumb,
+                                        'title': e.get('title') or f"Instagram Фото #{idx+1}",
+                                        'uploader': info.get('uploader') or info.get('channel') or 'Instagram',
+                                    })
+                                if not self.is_cancelled:
+                                    self.gallery_ready.emit({
+                                        'title': info.get('title', 'Галерея Instagram'),
+                                        'uploader': info.get('uploader') or info.get('channel') or 'Instagram',
+                                        'items': items
+                                    })
+                                    return
+
+                            # 2. Single photo item (or single item inside entries)
+                            target_entry = entries[0] if entries else info
+                            is_vid = bool(target_entry.get('formats'))
+                            thumbs = target_entry.get('thumbnails', [])
+                            if not is_vid and thumbs:
+                                best_img = thumbs[-1]['url']
+                                uploader = info.get('uploader') or target_entry.get('uploader') or 'Instagram'
+                                title = target_entry.get('title') or info.get('title') or f"Фото от @{uploader}"
+                                if not self.is_cancelled:
+                                    self.info_ready.emit({
+                                        'title': title,
+                                        'uploader': uploader,
+                                        'duration': 0,
+                                        'duration_str': "ФОТО",
+                                        'thumbnail': best_img,
+                                        'url': self.url,
+                                        'direct_media_url': best_img,
+                                        'is_photo': True,
+                                        'platform': 'Instagram',
+                                        'available_resolutions': ['Оригинал (JPG)']
+                                    })
+                                    return
+                    except Exception:
+                        continue
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:

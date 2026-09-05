@@ -406,5 +406,15 @@ class InstagramGalleryDialog(QDialog):
             self.move(event.globalPosition().toPoint() - self._drag_pos)
             event.accept()
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self.parent():
+            parent_geo = self.parent().geometry()
+            x = parent_geo.x() + (parent_geo.width() - self.width()) // 2
+            y = parent_geo.y() + (parent_geo.height() - self.height()) // 2
+            self.move(max(0, x), max(0, y))
+        self.raise_()
+        self.activateWindow()
+
     def mouseReleaseEvent(self, event):
         self._drag_pos = None
