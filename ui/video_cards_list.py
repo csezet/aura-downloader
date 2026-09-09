@@ -217,7 +217,10 @@ class VideoCardWidget(QFrame):
         elif isinstance(thumb_val, str) and thumb_val.startswith("http"):
             self.thumb_label.setText("LOADING...")
             if self._image_worker and self._image_worker.isRunning():
-                self._image_worker.terminate()
+                try:
+                    self._image_worker.image_loaded.disconnect()
+                except Exception:
+                    pass
             self._image_worker = ImageLoaderWorker(thumb_val)
             self._image_worker.image_loaded.connect(self._on_image_loaded)
             self._image_worker.start()
@@ -244,7 +247,7 @@ class VideoCardWidget(QFrame):
             self.thumb_loaded.emit(self.item_id, pixmap)
 
     def get_pixmap(self) -> QPixmap:
-        return self._raw_pixmap
+        return self._raw_pixmap if self._raw_pixmap else QPixmap()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -253,8 +256,8 @@ class VideoCardWidget(QFrame):
 
 
 class VideoCardsListWidget(QWidget):
-    active_video_changed = Signal(dict, QPixmap)
-    active_thumbnail_updated = Signal(QPixmap)
+    active_video_changed = Signal(dict, object)
+    active_thumbnail_updated = Signal(object)
     list_changed = Signal(int)  # count
 
     def __init__(self, parent=None):

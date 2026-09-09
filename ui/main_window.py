@@ -100,11 +100,25 @@ class MainWindow(QMainWindow):
         self.url_debounce_timer.setInterval(400)
         self.url_debounce_timer.timeout.connect(self._fetch_metadata)
 
+        self._active_workers = []
+
         self.setStatusBar(None)
 
         self._init_ui()
         self._apply_theme()
         self._setup_clipboard()
+
+    def _track_worker(self, worker):
+        if worker and worker not in self._active_workers:
+            self._active_workers.append(worker)
+            try:
+                worker.finished.connect(lambda: self._untrack_worker(worker))
+            except Exception:
+                pass
+
+    def _untrack_worker(self, worker):
+        if worker in self._active_workers:
+            self._active_workers.remove(worker)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -152,6 +166,30 @@ class MainWindow(QMainWindow):
 
     def dropEvent(self, event):
         self.drop_overlay.hide_overlay()
+
+        # 1. Check if user dropped a web link (from browser address bar or link drag)
+        web_url = None
+        if event.mimeData().hasUrls():
+            for u in event.mimeData().urls():
+                us = u.toString().strip()
+                if us.startswith(("http://", "https://")):
+                    web_url = us
+                    break
+        if not web_url and event.mimeData().hasText():
+            t = event.mimeData().text().strip()
+            if t.startswith(("http://", "https://")):
+                web_url = t
+
+        if web_url:
+            event.acceptProposedAction()
+            if hasattr(self, 'url_debounce_timer'):
+                self.url_debounce_timer.stop()
+            self.url_input.blockSignals(True)
+            self.url_input.setText(web_url)
+            self.url_input.blockSignals(False)
+            self._fetch_metadata()
+            return
+
         files = []
         if event.mimeData().hasUrls():
             for u in event.mimeData().urls():
@@ -183,7 +221,11 @@ class MainWindow(QMainWindow):
         elif files:
             first = files[0]
             if first.startswith("http"):
+                if hasattr(self, 'url_debounce_timer'):
+                    self.url_debounce_timer.stop()
+                self.url_input.blockSignals(True)
                 self.url_input.setText(first)
+                self.url_input.blockSignals(False)
                 self._fetch_metadata()
 
     def _apply_theme(self):
@@ -448,7 +490,11 @@ class MainWindow(QMainWindow):
 
     def _on_clipboard_url(self, url: str):
         if settings.get("auto_paste", False) and not self.download_worker:
+            if hasattr(self, 'url_debounce_timer'):
+                self.url_debounce_timer.stop()
+            self.url_input.blockSignals(True)
             self.url_input.setText(url)
+            self.url_input.blockSignals(False)
             self._fetch_metadata()
 
     def _paste_and_fetch(self):
@@ -457,7 +503,9 @@ class MainWindow(QMainWindow):
         clipboard = QApplication.clipboard()
         text = clipboard.text().strip()
         if text:
+            self.url_input.blockSignals(True)
             self.url_input.setText(text)
+            self.url_input.blockSignals(False)
             self._fetch_metadata()
 
     def _open_file_dialog(self):
@@ -659,27 +707,32 @@ class MainWindow(QMainWindow):
         if not url:
             return
 
-        # Clear input field immediately upon pressing Enter/Paste
+        # Clear input field immediately upon pressing Enter/Paste without re-triggering textChanged
+        self.url_input.blockSignals(True)
         self.url_input.clear()
+        self.url_input.blockSignals(False)
 
         if is_video_file(url):
             self._load_local_files([url])
             return
 
         if self.metadata_worker and self.metadata_worker.isRunning():
-            self.metadata_worker.cancel()
+            old_worker = self.metadata_worker
+            old_worker.cancel()
             try:
-                self.metadata_worker.info_ready.disconnect()
-                self.metadata_worker.playlist_ready.disconnect()
-                self.metadata_worker.gallery_ready.disconnect()
-                self.metadata_worker.info_error.disconnect()
+                old_worker.info_ready.disconnect()
+                old_worker.playlist_ready.disconnect()
+                old_worker.gallery_ready.disconnect()
+                old_worker.info_error.disconnect()
             except Exception:
                 pass
+            self.metadata_worker = None
 
         self.download_btn.setEnabled(False)
         self.download_btn.setText("  ПОЛУЧЕНИЕ ИНФОРМАЦИИ...")
 
         self.metadata_worker = MetadataWorker(url)
+        self._track_worker(self.metadata_worker)
         self.metadata_worker.info_ready.connect(self._on_metadata_ready)
         self.metadata_worker.playlist_ready.connect(self._on_playlist_ready)
         self.metadata_worker.gallery_ready.connect(self._on_gallery_ready)
@@ -890,6 +943,7 @@ class MainWindow(QMainWindow):
 
         if len(selected_queue) > 1:
             self.download_worker = LocalBatchProcessWorker(selected_queue, options, save_dir)
+            self._track_worker(self.download_worker)
             self.download_worker.progress_updated.connect(self.progress_widget.update_progress)
             self.download_worker.item_completed.connect(self._on_queue_item_completed)
             self.download_worker.batch_completed.connect(self._on_batch_success)
@@ -911,6 +965,7 @@ class MainWindow(QMainWindow):
                 options['title'] = active_video.get('title')
             self.download_worker = DownloadWorker(target_url, options, save_dir)
 
+        self._track_worker(self.download_worker)
         self.download_worker.progress_updated.connect(self.progress_widget.update_progress)
         self.download_worker.download_completed.connect(self._on_download_success)
         self.download_worker.download_error.connect(self._on_download_fail)
@@ -977,6 +1032,8 @@ class MainWindow(QMainWindow):
     def _cancel_download(self):
         if self.download_worker and self.download_worker.isRunning():
             self.download_worker.cancel()
+        if self.metadata_worker and self.metadata_worker.isRunning():
+            self.metadata_worker.cancel()
         self.progress_widget.hide_progress()
         self.download_btn.setEnabled(True)
         self._update_download_button_text()

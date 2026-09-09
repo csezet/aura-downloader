@@ -185,110 +185,136 @@ class MetadataWorker(QThread):
                     except Exception:
                         continue
 
+        info = None
+        extract_error = None
+        for attempt_no, try_opts in enumerate([ydl_opts, {**ydl_opts, 'proxy': ''}]):
+            if self.is_cancelled:
+                return
+            try:
+                with yt_dlp.YoutubeDL(try_opts) as ydl:
+                    info = ydl.extract_info(self.url, download=False)
+                    if info:
+                        break
+            except Exception as e:
+                extract_error = e
+                err_str = str(e).lower()
+                if attempt_no == 0 and any(keyword in err_str for keyword in ['ssl', 'proxy', 'tunnel', 'connection refused', 'timed out']):
+                    continue
+                break
+
+        if not info:
+            if self.is_cancelled:
+                return
+            err_msg = str(extract_error) if extract_error else "Не удалось получить информацию о видео."
+            if "Unsupported URL" in err_msg:
+                err_msg = "Неподдерживаемая ссылка или ресурс недоступен."
+            elif "Private video" in err_msg:
+                err_msg = "Приватное видео (включите Cookies браузера в настройках)."
+            elif "Sign in" in err_msg or "login" in err_msg.lower():
+                err_msg = "Требуется авторизация (включите Cookies браузера в настройках)."
+            elif "rate-limit" in err_msg.lower() or "429" in err_msg:
+                err_msg = "Ограничение частоты запросов. Попробуйте через минуту или включите Cookies."
+            self.info_error.emit(err_msg)
+            return
+
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(self.url, download=False)
-                if not info:
-                    self.info_error.emit("Не удалось получить информацию о видео.")
+            # Detect playlist with multiple entries
+            if is_playlist_url and 'entries' in info and len(info['entries']) > 1:
+                entries = []
+                for e in info.get('entries', []):
+                    if e:
+                        vid = e.get('id')
+                        v_url = e.get('url') or (f"https://www.youtube.com/watch?v={vid}" if vid else None)
+                        entries.append({
+                            'url': v_url,
+                            'title': e.get('title', 'Без названия'),
+                            'duration': e.get('duration', 0),
+                            'duration_str': format_seconds(e.get('duration', 0)),
+                            'thumbnail': e.get('thumbnail') or (f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg" if vid else None),
+                            'uploader': e.get('uploader') or e.get('channel') or info.get('uploader') or 'Автор'
+                        })
+                valid_entries = [e for e in entries if e['url']]
+                if valid_entries and not self.is_cancelled:
+                    self.playlist_ready.emit({
+                        'title': info.get('title', 'Плейлист YouTube'),
+                        'entries': valid_entries
+                    })
                     return
 
-                # Detect playlist with multiple entries
-                if is_playlist_url and 'entries' in info and len(info['entries']) > 1:
-                    entries = []
-                    for e in info.get('entries', []):
-                        if e:
-                            vid = e.get('id')
-                            v_url = e.get('url') or (f"https://www.youtube.com/watch?v={vid}" if vid else None)
-                            entries.append({
-                                'url': v_url,
-                                'title': e.get('title', 'Без названия'),
-                                'duration': e.get('duration', 0),
-                                'duration_str': format_seconds(e.get('duration', 0)),
-                                'thumbnail': e.get('thumbnail') or (f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg" if vid else None),
-                                'uploader': e.get('uploader') or e.get('channel') or info.get('uploader') or 'Автор'
-                            })
-                    valid_entries = [e for e in entries if e['url']]
-                    if valid_entries and not self.is_cancelled:
-                        self.playlist_ready.emit({
-                            'title': info.get('title', 'Плейлист YouTube'),
-                            'entries': valid_entries
-                        })
-                        return
+            if 'entries' in info and info['entries']:
+                info = info['entries'][0]
 
-                if 'entries' in info and info['entries']:
-                    info = info['entries'][0]
+            title = info.get('title', 'Без названия')
+            uploader = info.get('uploader') or info.get('channel') or info.get('creator') or 'Неизвестный автор'
+            duration = info.get('duration', 0)
+            thumbnail = info.get('thumbnail')
+            
+            formats = info.get('formats', [])
+            resolutions = set()
+            has_video = False
+            for f in formats:
+                if f.get('vcodec') != 'none' and f.get('height'):
+                    has_video = True
+                    h = f.get('height')
+                    if h >= 2160:
+                        resolutions.add('4K (2160p)')
+                    elif h >= 1440:
+                        resolutions.add('2K (1440p)')
+                    elif h >= 1080:
+                        resolutions.add('1080p Full HD')
+                    elif h >= 720:
+                        resolutions.add('720p HD')
+                    elif h >= 480:
+                        resolutions.add('480p')
+                    elif h >= 360:
+                        resolutions.add('360p')
 
-                title = info.get('title', 'Без названия')
-                uploader = info.get('uploader') or info.get('channel') or info.get('creator') or 'Неизвестный автор'
-                duration = info.get('duration', 0)
-                thumbnail = info.get('thumbnail')
-                
-                formats = info.get('formats', [])
-                resolutions = set()
-                has_video = False
-                for f in formats:
-                    if f.get('vcodec') != 'none' and f.get('height'):
-                        has_video = True
-                        h = f.get('height')
-                        if h >= 2160:
-                            resolutions.add('4K (2160p)')
-                        elif h >= 1440:
-                            resolutions.add('2K (1440p)')
-                        elif h >= 1080:
-                            resolutions.add('1080p Full HD')
-                        elif h >= 720:
-                            resolutions.add('720p HD')
-                        elif h >= 480:
-                            resolutions.add('480p')
-                        elif h >= 360:
-                            resolutions.add('360p')
+            res_order = ['4K (2160p)', '2K (1440p)', '1080p Full HD', '720p HD', '480p', '360p']
+            available_res = [r for r in res_order if r in resolutions]
 
-                res_order = ['4K (2160p)', '2K (1440p)', '1080p Full HD', '720p HD', '480p', '360p']
-                available_res = [r for r in res_order if r in resolutions]
+            platform = detect_platform(self.url)
 
-                platform = detect_platform(self.url)
+            width = info.get('width')
+            height = info.get('height')
+            if not width or not height:
+                for f in reversed(formats):
+                    if f.get('width') and f.get('height'):
+                        width = f.get('width')
+                        height = f.get('height')
+                        break
 
-                width = info.get('width')
-                height = info.get('height')
-                if not width or not height:
+            # Extract playable direct stream URL for instant in-app player preview
+            direct_url = info.get('url')
+            if not direct_url and formats:
+                for f in reversed(formats):
+                    if f.get('url') and f.get('ext') == 'mp4' and f.get('vcodec') != 'none' and f.get('acodec') != 'none':
+                        direct_url = f.get('url')
+                        break
+                if not direct_url:
                     for f in reversed(formats):
-                        if f.get('width') and f.get('height'):
-                            width = f.get('width')
-                            height = f.get('height')
-                            break
-
-                # Extract playable direct stream URL for instant in-app player preview
-                direct_url = info.get('url')
-                if not direct_url and formats:
-                    for f in reversed(formats):
-                        if f.get('url') and f.get('ext') == 'mp4' and f.get('vcodec') != 'none' and f.get('acodec') != 'none':
+                        if f.get('url') and f.get('ext') == 'mp4' and f.get('vcodec') != 'none':
                             direct_url = f.get('url')
                             break
-                    if not direct_url:
-                        for f in reversed(formats):
-                            if f.get('url') and f.get('ext') == 'mp4' and f.get('vcodec') != 'none':
-                                direct_url = f.get('url')
-                                break
-                    if not direct_url and formats:
-                        direct_url = formats[-1].get('url')
+                if not direct_url and formats:
+                    direct_url = formats[-1].get('url')
 
-                result = {
-                    'url': self.url,
-                    'direct_url': direct_url,
-                    'playable_url': direct_url or self.url,
-                    'title': title,
-                    'uploader': uploader,
-                    'duration': duration,
-                    'duration_str': format_seconds(duration) if duration else "--:--",
-                    'thumbnail': thumbnail,
-                    'platform': platform,
-                    'available_res': available_res,
-                    'has_video': has_video,
-                    'width': width or 1920,
-                    'height': height or 1080
-                }
-                if not self.is_cancelled:
-                    self.info_ready.emit(result)
+            result = {
+                'url': self.url,
+                'direct_url': direct_url,
+                'playable_url': direct_url or self.url,
+                'title': title,
+                'uploader': uploader,
+                'duration': duration,
+                'duration_str': format_seconds(duration) if duration else "--:--",
+                'thumbnail': thumbnail,
+                'platform': platform,
+                'available_res': available_res,
+                'has_video': has_video,
+                'width': width or 1920,
+                'height': height or 1080
+            }
+            if not self.is_cancelled:
+                self.info_ready.emit(result)
         except Exception as e:
             if self.is_cancelled:
                 return
@@ -452,7 +478,14 @@ class DownloadWorker(QThread):
                         speed = downloaded_bytes / dt if dt > 0 else 0
                         speed_str = f"{speed / (1024 * 1024):.1f} MB/s" if speed > 0 else "-- MB/s"
                         pct = (downloaded_bytes / total_bytes * 100.0) if total_bytes > 0 else 100.0
-                        self.progress_updated.emit(pct, speed_str, "--:--", format_bytes(downloaded_bytes), format_bytes(total_bytes))
+                        self.progress_updated.emit({
+                            'percent': pct,
+                            'speed_str': speed_str,
+                            'eta_str': "--:--",
+                            'downloaded_str': format_bytes(downloaded_bytes),
+                            'total_str': format_bytes(total_bytes),
+                            'status': 'downloading'
+                        })
 
                 file_size = os.path.getsize(file_path)
                 self.download_completed.emit({
@@ -517,89 +550,108 @@ class DownloadWorker(QThread):
 
             self.status_message.emit("Запуск загрузки...")
 
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(self.url, download=True)
-                if not info:
-                    raise Exception("Не удалось скачать видео.")
+            info = None
+            dl_err = None
+            used_opts = ydl_opts
+            for attempt_no, cur_opts in enumerate([ydl_opts, {**ydl_opts, 'proxy': ''}]):
+                if self.is_cancelled:
+                    return
+                try:
+                    with yt_dlp.YoutubeDL(cur_opts) as ydl:
+                        info = ydl.extract_info(self.url, download=True)
+                        if info:
+                            used_opts = cur_opts
+                            break
+                except Exception as e:
+                    dl_err = e
+                    err_str = str(e).lower()
+                    if attempt_no == 0 and any(keyword in err_str for keyword in ['ssl', 'proxy', 'tunnel', 'connection refused', 'timed out']):
+                        continue
+                    raise e
 
+            if not info:
+                raise dl_err or Exception("Не удалось скачать видео.")
+
+            with yt_dlp.YoutubeDL(used_opts) as ydl:
                 final_path = ydl.prepare_filename(info)
-                if mode == 'audio_only':
-                    base, _ = os.path.splitext(final_path)
-                    final_path = f"{base}.{audio_fmt}"
-                elif mode != 'video_only' and ydl_opts.get('merge_output_format'):
-                    base, _ = os.path.splitext(final_path)
-                    final_path = f"{base}.{ydl_opts['merge_output_format']}"
 
-                if not os.path.exists(final_path) and self._last_filename and os.path.exists(self._last_filename):
-                    final_path = self._last_filename
+            if mode == 'audio_only':
+                base, _ = os.path.splitext(final_path)
+                final_path = f"{base}.{audio_fmt}"
+            elif mode != 'video_only' and ydl_opts.get('merge_output_format'):
+                base, _ = os.path.splitext(final_path)
+                final_path = f"{base}.{ydl_opts['merge_output_format']}"
 
-                # GIF post processing
-                if mode == 'gif' and os.path.exists(final_path):
-                    self.status_message.emit("Конвертация в GIF...")
-                    gif_path = convert_to_gif(final_path)
-                    if gif_path != final_path:
-                        try:
-                            os.remove(final_path)
-                        except Exception:
-                            pass
-                    final_path = gif_path
+            if not os.path.exists(final_path) and self._last_filename and os.path.exists(self._last_filename):
+                final_path = self._last_filename
 
-                # Discord compression post processing
-                elif mode == 'discord_8mb' and os.path.exists(final_path):
-                    self.status_message.emit("Сжатие для Discord (< 8 МБ)...")
-                    comp_path = compress_to_target_size(final_path, target_mb=7.8)
-                    if comp_path != final_path:
-                        try:
-                            os.remove(final_path)
-                        except Exception:
-                            pass
-                    final_path = comp_path
+            # GIF post processing
+            if mode == 'gif' and os.path.exists(final_path):
+                self.status_message.emit("Конвертация в GIF...")
+                gif_path = convert_to_gif(final_path)
+                if gif_path != final_path:
+                    try:
+                        os.remove(final_path)
+                    except Exception:
+                        pass
+                final_path = gif_path
 
-                # Crop post processing
-                crop_enabled = self.options.get('crop_enabled', False)
-                crop_params = self.options.get('crop_params')
-                if crop_enabled and crop_params and mode != 'audio_only' and os.path.exists(final_path):
-                    self.status_message.emit("Кадрирование видео (FFmpeg Crop)...")
-                    cropped_path = crop_video(final_path, crop_params)
-                    if cropped_path != final_path:
-                        try:
-                            os.remove(final_path)
-                        except Exception:
-                            pass
-                    final_path = cropped_path
+            # Discord compression post processing
+            elif mode == 'discord_8mb' and os.path.exists(final_path):
+                self.status_message.emit("Сжатие для Discord (< 8 МБ)...")
+                comp_path = compress_to_target_size(final_path, target_mb=7.8)
+                if comp_path != final_path:
+                    try:
+                        os.remove(final_path)
+                    except Exception:
+                        pass
+                final_path = comp_path
 
-                # Smooth FPS post processing
-                smooth_enabled = self.options.get('smooth_enabled', False)
-                smooth_fps = self.options.get('smooth_fps', 60)
-                smooth_model = self.options.get('smooth_model', 'auto')
-                if smooth_enabled and mode not in ['audio_only', 'gif'] and os.path.exists(final_path):
-                    self.status_message.emit(f"AI Увеличение плавности ({smooth_fps} FPS)...")
-                    smooth_path = interpolate_video(
-                        final_path,
-                        target_fps=smooth_fps,
-                        model=smooth_model,
-                        status_callback=lambda msg: self.status_message.emit(msg.upper())
-                    )
-                    if smooth_path != final_path:
-                        try:
-                            os.remove(final_path)
-                        except Exception:
-                            pass
-                    final_path = smooth_path
+            # Crop post processing
+            crop_enabled = self.options.get('crop_enabled', False)
+            crop_params = self.options.get('crop_params')
+            if crop_enabled and crop_params and mode != 'audio_only' and os.path.exists(final_path):
+                self.status_message.emit("Кадрирование видео (FFmpeg Crop)...")
+                cropped_path = crop_video(final_path, crop_params)
+                if cropped_path != final_path:
+                    try:
+                        os.remove(final_path)
+                    except Exception:
+                        pass
+                final_path = cropped_path
 
-                file_size = os.path.getsize(final_path) if os.path.exists(final_path) else 0
-                title = info.get('title', Path(final_path).stem if final_path else 'Скачанный файл')
-                thumbnail = info.get('thumbnail')
+            # Smooth FPS post processing
+            smooth_enabled = self.options.get('smooth_enabled', False)
+            smooth_fps = self.options.get('smooth_fps', 60)
+            smooth_model = self.options.get('smooth_model', 'auto')
+            if smooth_enabled and mode not in ['audio_only', 'gif'] and os.path.exists(final_path):
+                self.status_message.emit(f"AI Увеличение плавности ({smooth_fps} FPS)...")
+                smooth_path = interpolate_video(
+                    final_path,
+                    target_fps=smooth_fps,
+                    model=smooth_model,
+                    status_callback=lambda msg: self.status_message.emit(msg.upper())
+                )
+                if smooth_path != final_path:
+                    try:
+                        os.remove(final_path)
+                    except Exception:
+                        pass
+                final_path = smooth_path
 
-                self.download_completed.emit({
-                    'title': title,
-                    'url': self.url,
-                    'file_path': final_path,
-                    'file_size': file_size,
-                    'file_size_str': format_bytes(file_size),
-                    'thumbnail': thumbnail,
-                    'mode': mode
-                })
+            file_size = os.path.getsize(final_path) if os.path.exists(final_path) else 0
+            title = info.get('title', Path(final_path).stem if final_path else 'Скачанный файл')
+            thumbnail = info.get('thumbnail')
+
+            self.download_completed.emit({
+                'title': title,
+                'url': self.url,
+                'file_path': final_path,
+                'file_size': file_size,
+                'file_size_str': format_bytes(file_size),
+                'thumbnail': thumbnail,
+                'mode': mode
+            })
 
         except Exception as e:
             if not self.is_cancelled:
