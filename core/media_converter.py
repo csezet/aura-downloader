@@ -197,12 +197,23 @@ def compress_to_target_size(input_path: str, target_mb: float = 8.0, output_path
         # Budget bitrate targeting ~7.4MB to ensure it reliably stays under target_mb
         effective_target_mb = max(1.0, target_mb - 0.6)
         target_total_bitrate = (effective_target_mb * 8192) / duration
-        audio_bitrate = 96
+        audio_bitrate = 64 if target_total_bitrate < 300 else 96
         video_bitrate = max(40, int(target_total_bitrate - audio_bitrate))
+
+        # Resolution scaling for lower bitrates to maintain picture quality and avoid bloated macroblocks
+        vf_args = []
+        if video_bitrate < 350:
+            vf_args = ["-vf", "scale=trunc(min(iw\\,854)/2)*2:trunc(min(ih\\,480)/2)*2"]
+        elif video_bitrate < 800:
+            vf_args = ["-vf", "scale=trunc(min(iw\\,1280)/2)*2:trunc(min(ih\\,720)/2)*2"]
 
         cmd = [
             "ffmpeg", "-y",
             "-i", input_path,
+        ]
+        if vf_args:
+            cmd.extend(vf_args)
+        cmd.extend([
             "-c:v", "libx264",
             "-b:v", f"{video_bitrate}k",
             "-maxrate", f"{int(video_bitrate * 1.25)}k",
@@ -211,7 +222,7 @@ def compress_to_target_size(input_path: str, target_mb: float = 8.0, output_path
             "-c:a", "aac",
             "-b:a", f"{audio_bitrate}k",
             part_path
-        ]
+        ])
         subprocess.run(
             cmd,
             startupinfo=get_startupinfo(),
@@ -224,15 +235,25 @@ def compress_to_target_size(input_path: str, target_mb: float = 8.0, output_path
         if not os.path.exists(part_path) or os.path.getsize(part_path) == 0:
             raise Exception("Сжатый файл пуст.")
 
-        # Verify actual file size on disk; if exceeded, re-encode with lower bitrate
+        # Verify actual file size on disk; if exceeded target_mb, re-encode with lower bitrate
         actual_mb = os.path.getsize(part_path) / (1024 * 1024)
         if actual_mb > target_mb:
-            lower_bitrate = max(30, int(video_bitrate * (target_mb * 0.9 / actual_mb)))
-            cmd[6] = f"{lower_bitrate}k"
-            cmd[8] = f"{int(lower_bitrate * 1.2)}k"
-            cmd[10] = f"{int(lower_bitrate * 2)}k"
+            lower_bitrate = max(30, int(video_bitrate * (target_mb * 0.88 / actual_mb)))
+            cmd_reencode = [
+                "ffmpeg", "-y",
+                "-i", input_path,
+                "-vf", "scale=trunc(min(iw\\,854)/2)*2:trunc(min(ih\\,480)/2)*2",
+                "-c:v", "libx264",
+                "-b:v", f"{lower_bitrate}k",
+                "-maxrate", f"{int(lower_bitrate * 1.15)}k",
+                "-bufsize", f"{int(lower_bitrate * 1.5)}k",
+                "-preset", "faster",
+                "-c:a", "aac",
+                "-b:a", f"{min(64, audio_bitrate)}k",
+                part_path
+            ]
             subprocess.run(
-                cmd,
+                cmd_reencode,
                 startupinfo=get_startupinfo(),
                 creationflags=CREATE_NO_WINDOW,
                 stdout=subprocess.PIPE,
