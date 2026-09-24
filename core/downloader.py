@@ -653,6 +653,9 @@ class DownloadWorker(QThread):
                         pass
                 final_path = smooth_path
 
+            if self.is_cancelled:
+                return
+
             file_size = os.path.getsize(final_path) if os.path.exists(final_path) else 0
             title = info.get('title', Path(final_path).stem if final_path else 'Скачанный файл')
             thumbnail = info.get('thumbnail')

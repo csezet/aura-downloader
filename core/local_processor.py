@@ -4,8 +4,12 @@ import tempfile
 import subprocess
 from pathlib import Path
 from PySide6.QtCore import QThread, Signal
+import time
 from core.downloader import format_bytes, format_seconds, parse_time_str
-from core.media_converter import convert_to_gif, compress_to_target_size, crop_video, get_crop_filter, get_video_dimensions, get_video_duration
+from core.media_converter import (
+    convert_to_gif, compress_to_target_size, crop_video, get_crop_filter,
+    get_video_dimensions, get_video_duration, get_unique_path
+)
 from core.interpolator import interpolate_video, get_video_fps
 
 CREATE_NO_WINDOW = 0x08000000
@@ -35,19 +39,19 @@ def get_local_media_info(file_path: str) -> dict:
         return None
 
     try:
-        duration = get_video_duration(file_path) or 0
+        duration = get_video_duration(file_path)
     except Exception:
-        duration = 0
+        duration = None
 
     try:
         width, height = get_video_dimensions(file_path)
     except Exception:
-        width, height = 1920, 1080
+        width, height = None, None
 
     try:
-        fps = get_video_fps(file_path) or 30.0
+        fps = get_video_fps(file_path)
     except Exception:
-        fps = 30.0
+        fps = None
 
     try:
         size = os.path.getsize(file_path)
@@ -58,7 +62,7 @@ def get_local_media_info(file_path: str) -> dict:
     try:
         temp_dir = tempfile.gettempdir()
         thumb_path = os.path.join(temp_dir, f"aura_thumb_{abs(hash(file_path))}.jpg")
-        seek_sec = "00:00:00.5" if duration > 1 else "00:00:00"
+        seek_sec = "00:00:00.5" if (duration and duration > 1) else "00:00:00"
         cmd = [
             "ffmpeg", "-y",
             "-ss", seek_sec,
@@ -79,24 +83,60 @@ def get_local_media_info(file_path: str) -> dict:
     except Exception:
         thumb_path = None
 
+    dims_str = f"{width}×{height}" if (width and height) else "Разрешение неизвестно"
+    fps_str = f", {int(round(fps))} FPS" if fps else ""
+
     return {
         'url': file_path,
         'file_path': file_path,
         'is_local': True,
         'title': Path(file_path).name,
-        'uploader': f"Локальное видео ({width}×{height}, {int(round(fps))} FPS)",
-        'duration': duration,
+        'uploader': f"Локальное видео ({dims_str}{fps_str})",
+        'duration': duration or 0,
         'duration_str': format_seconds(duration) if duration else "--:--",
         'thumbnail': thumb_path,
         'platform': 'Local Video',
-        'available_res': [f"{width}x{height}"],
+        'available_res': [f"{width}x{height}"] if (width and height) else [],
         'has_video': True,
-        'width': width,
-        'height': height,
-        'fps': fps,
+        'width': width or 1920,
+        'height': height or 1080,
+        'fps': fps or 30.0,
         'file_size': size,
         'file_size_str': format_bytes(size)
     }
+
+def run_ffmpeg_cancellable(cmd: list, temp_output: str, is_cancelled_cb=None) -> bool:
+    proc = subprocess.Popen(
+        cmd,
+        startupinfo=get_startupinfo(),
+        creationflags=CREATE_NO_WINDOW,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+    while proc.poll() is None:
+        if is_cancelled_cb and is_cancelled_cb():
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            if temp_output and os.path.exists(temp_output):
+                try:
+                    os.remove(temp_output)
+                except Exception:
+                    pass
+            return False
+        time.sleep(0.1)
+
+    stdout, stderr = proc.communicate()
+    if proc.returncode != 0:
+        if temp_output and os.path.exists(temp_output):
+            try:
+                os.remove(temp_output)
+            except Exception:
+                pass
+        raise Exception(f"FFmpeg error: {stderr.decode(errors='replace')[:200]}")
+    return True
 
 
 def process_single_local_file(file_path: str, options: dict, save_dir: str, status_cb=None, progress_cb=None, is_cancelled_cb=None) -> dict:
@@ -134,7 +174,8 @@ def process_single_local_file(file_path: str, options: dict, save_dir: str, stat
         end_sec = parse_time_str(trim_end)
         crop_filter = get_crop_filter(current_path, crop_params)
 
-        out_path = os.path.join(save_dir, f"{base_name}_trim_crop.mp4")
+        out_path = get_unique_path(os.path.join(save_dir, f"{base_name}_trim_crop.mp4"))
+        part_path = f"{out_path}.tmp.mp4"
         cmd = ["ffmpeg", "-y"]
         if start_sec > 0:
             cmd.extend(["-ss", str(start_sec)])
@@ -143,16 +184,14 @@ def process_single_local_file(file_path: str, options: dict, save_dir: str, stat
         cmd.extend(["-i", current_path])
         if crop_filter:
             cmd.extend(["-vf", crop_filter])
-        cmd.extend(["-c:v", "libx264", "-crf", "18", "-preset", "faster", "-c:a", "copy", out_path])
+        cmd.extend(["-c:v", "libx264", "-crf", "18", "-preset", "faster", "-c:a", "copy", part_path])
 
-        subprocess.run(
-            cmd,
-            startupinfo=get_startupinfo(),
-            creationflags=CREATE_NO_WINDOW,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True
-        )
+        if not run_ffmpeg_cancellable(cmd, part_path, is_cancelled_cb):
+            return None
+
+        if os.path.exists(out_path):
+            os.remove(out_path)
+        os.rename(part_path, out_path)
         current_path = out_path
 
     elif has_trim:
@@ -163,22 +202,21 @@ def process_single_local_file(file_path: str, options: dict, save_dir: str, stat
         start_sec = parse_time_str(trim_start) or 0
         end_sec = parse_time_str(trim_end)
 
-        trimmed_path = os.path.join(save_dir, f"{base_name}_trim.mp4")
+        trimmed_path = get_unique_path(os.path.join(save_dir, f"{base_name}_trim.mp4"))
+        part_path = f"{trimmed_path}.tmp.mp4"
         cmd = ["ffmpeg", "-y"]
         if start_sec > 0:
             cmd.extend(["-ss", str(start_sec)])
         if end_sec is not None and end_sec > start_sec:
             cmd.extend(["-to", str(end_sec)])
-        cmd.extend(["-i", current_path, "-c:v", "libx264", "-crf", "18", "-preset", "faster", "-c:a", "copy", trimmed_path])
+        cmd.extend(["-i", current_path, "-c:v", "libx264", "-crf", "18", "-preset", "faster", "-c:a", "copy", part_path])
 
-        subprocess.run(
-            cmd,
-            startupinfo=get_startupinfo(),
-            creationflags=CREATE_NO_WINDOW,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True
-        )
+        if not run_ffmpeg_cancellable(cmd, part_path, is_cancelled_cb):
+            return None
+
+        if os.path.exists(trimmed_path):
+            os.remove(trimmed_path)
+        os.rename(part_path, trimmed_path)
         current_path = trimmed_path
 
     elif has_crop:
@@ -215,11 +253,20 @@ def process_single_local_file(file_path: str, options: dict, save_dir: str, stat
                     pass
             current_path = smooth_path
 
+    if is_cancelled_cb and is_cancelled_cb():
+        if current_path != file_path and os.path.exists(current_path):
+            try:
+                os.remove(current_path)
+            except Exception:
+                pass
+        return None
+
     # 4. Mode formatting
     if mode == 'audio_only':
         if status_cb:
             status_cb(f"Извлечение аудио [{audio_fmt.upper()}] {base_name}...")
-        out_audio = os.path.join(save_dir, f"{base_name}.{audio_fmt}")
+        out_audio = get_unique_path(os.path.join(save_dir, f"{base_name}.{audio_fmt}"))
+        part_path = f"{out_audio}.tmp.{audio_fmt}"
         cmd = ["ffmpeg", "-y", "-i", current_path, "-vn"]
         if audio_fmt == 'mp3':
             cmd.extend(["-c:a", "libmp3lame", "-b:a", "320k"])
@@ -231,9 +278,19 @@ def process_single_local_file(file_path: str, options: dict, save_dir: str, stat
             cmd.extend(["-c:a", "pcm_s16le"])
         else:
             cmd.extend(["-c:a", "copy"])
-        cmd.append(out_audio)
+        cmd.append(part_path)
 
-        subprocess.run(cmd, startupinfo=get_startupinfo(), creationflags=CREATE_NO_WINDOW, check=True)
+        if not run_ffmpeg_cancellable(cmd, part_path, is_cancelled_cb):
+            if current_path != file_path and os.path.exists(current_path):
+                try:
+                    os.remove(current_path)
+                except Exception:
+                    pass
+            return None
+
+        if os.path.exists(out_audio):
+            os.remove(out_audio)
+        os.rename(part_path, out_audio)
         final_output = out_audio
 
     elif mode == 'gif':
@@ -251,25 +308,33 @@ def process_single_local_file(file_path: str, options: dict, save_dir: str, stat
     elif mode == 'video_only':
         if status_cb:
             status_cb(f"Удаление аудиодорожки {base_name}...")
-        out_no_audio = os.path.join(save_dir, f"{base_name}_mute.mp4")
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", current_path, "-c:v", "copy", "-an", out_no_audio],
-            startupinfo=get_startupinfo(),
-            creationflags=CREATE_NO_WINDOW,
-            check=True
-        )
+        out_no_audio = get_unique_path(os.path.join(save_dir, f"{base_name}_mute.mp4"))
+        part_path = f"{out_no_audio}.tmp.mp4"
+        cmd = ["ffmpeg", "-y", "-i", current_path, "-c:v", "copy", "-an", part_path]
+        if not run_ffmpeg_cancellable(cmd, part_path, is_cancelled_cb):
+            if current_path != file_path and os.path.exists(current_path):
+                try:
+                    os.remove(current_path)
+                except Exception:
+                    pass
+            return None
+
+        if os.path.exists(out_no_audio):
+            os.remove(out_no_audio)
+        os.rename(part_path, out_no_audio)
         final_output = out_no_audio
 
     else:
         # Best / Standard
         if current_path == file_path:
-            final_output = os.path.join(save_dir, f"{base_name}_aura.mp4")
-            subprocess.run(
-                ["ffmpeg", "-y", "-i", current_path, "-c", "copy", final_output],
-                startupinfo=get_startupinfo(),
-                creationflags=CREATE_NO_WINDOW,
-                check=True
-            )
+            final_output = get_unique_path(os.path.join(save_dir, f"{base_name}_aura.mp4"))
+            part_path = f"{final_output}.tmp.mp4"
+            cmd = ["ffmpeg", "-y", "-i", current_path, "-c", "copy", part_path]
+            if not run_ffmpeg_cancellable(cmd, part_path, is_cancelled_cb):
+                return None
+            if os.path.exists(final_output):
+                os.remove(final_output)
+            os.rename(part_path, final_output)
         else:
             final_output = current_path
 
@@ -280,10 +345,18 @@ def process_single_local_file(file_path: str, options: dict, save_dir: str, stat
         except Exception:
             pass
 
-    file_size = os.path.getsize(final_output) if os.path.exists(final_output) else 0
+    if is_cancelled_cb and is_cancelled_cb():
+        if final_output and os.path.exists(final_output) and final_output != file_path:
+            try:
+                os.remove(final_output)
+            except Exception:
+                pass
+        return None
+
+    file_size = os.path.getsize(final_output) if (final_output and os.path.exists(final_output)) else 0
 
     return {
-        'title': Path(final_output).stem,
+        'title': Path(final_output).stem if final_output else base_name,
         'url': file_path,
         'file_path': final_output,
         'file_size': file_size,

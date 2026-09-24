@@ -1027,18 +1027,37 @@ class MainWindow(QMainWindow):
             )
 
     def _on_download_fail(self, error_msg: str):
+        if self.download_worker and getattr(self.download_worker, 'is_cancelled', False):
+            return
         self.download_btn.setEnabled(True)
         self._update_download_button_text()
         self.progress_widget.set_error(error_msg)
 
-    def _cancel_download(self):
-        if self.download_worker and self.download_worker.isRunning():
-            self.download_worker.cancel()
-        if self.metadata_worker and self.metadata_worker.isRunning():
-            self.metadata_worker.cancel()
+    def _on_worker_cancelled(self):
         self.progress_widget.hide_progress()
         self.download_btn.setEnabled(True)
         self._update_download_button_text()
+
+    def _cancel_download(self):
+        worker_running = False
+        if self.download_worker and self.download_worker.isRunning():
+            worker_running = True
+            try:
+                self.download_worker.finished.connect(self._on_worker_cancelled)
+            except Exception:
+                pass
+            self.download_worker.cancel()
+
+        if self.metadata_worker and self.metadata_worker.isRunning():
+            self.metadata_worker.cancel()
+
+        if worker_running:
+            self.download_btn.setEnabled(False)
+            self.download_btn.setText("  ОТМЕНА...")
+            if hasattr(self.progress_widget, 'status_label'):
+                self.progress_widget.status_label.setText("ОТМЕНА...")
+        else:
+            self._on_worker_cancelled()
 
     def _open_batch_dialog(self):
         dialog = BatchDialog(self)

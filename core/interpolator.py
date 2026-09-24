@@ -5,9 +5,13 @@ import zipfile
 import tempfile
 import subprocess
 from pathlib import Path
+import hashlib
 import requests
+from core.media_converter import get_unique_path
 
 CREATE_NO_WINDOW = 0x08000000
+
+EXPECTED_RIFE_SHA256 = "d8e4d772d26cd8006ef0ad0bc82eb191b53c68677d1ae2f42506d74cbbbea606"
 
 def get_startupinfo():
     startupinfo = subprocess.STARTUPINFO()
@@ -16,17 +20,33 @@ def get_startupinfo():
     return startupinfo
 
 def get_tools_dir() -> str:
-    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    tools_dir = os.path.join(base, "tools", "rife")
+    # Standard user data location on Windows: %LOCALAPPDATA%\AuraDownloader\tools\rife
+    local_app_data = os.environ.get('LOCALAPPDATA')
+    if local_app_data:
+        tools_dir = os.path.join(local_app_data, "AuraDownloader", "tools", "rife")
+    else:
+        tools_dir = os.path.join(str(Path.home()), ".aura_downloader", "tools", "rife")
     os.makedirs(tools_dir, exist_ok=True)
     return tools_dir
 
 def get_rife_executable() -> str:
+    # 1. Check user tools dir in %LOCALAPPDATA%
     tools_dir = get_tools_dir()
-    for root, _, files in os.walk(tools_dir):
-        for f in files:
-            if f.lower() == "rife-ncnn-vulkan.exe":
-                return os.path.join(root, f)
+    if os.path.exists(tools_dir):
+        for root, _, files in os.walk(tools_dir):
+            for f in files:
+                if f.lower() == "rife-ncnn-vulkan.exe":
+                    return os.path.join(root, f)
+
+    # 2. Check bundled tools dir in app dir (if deployed with tools)
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    bundled_dir = os.path.join(base, "tools", "rife")
+    if os.path.exists(bundled_dir):
+        for root, _, files in os.walk(bundled_dir):
+            for f in files:
+                if f.lower() == "rife-ncnn-vulkan.exe":
+                    return os.path.join(root, f)
+
     return None
 
 def is_rife_available() -> bool:
@@ -36,47 +56,79 @@ def is_rife_available() -> bool:
 def download_rife_engine(progress_callback=None) -> bool:
     url = "https://github.com/nihui/rife-ncnn-vulkan/releases/download/20221029/rife-ncnn-vulkan-20221029-windows.zip"
     tools_dir = get_tools_dir()
-    zip_path = os.path.join(tools_dir, "rife.zip")
+    zip_part = os.path.join(tools_dir, "rife.zip.part")
 
     try:
         if progress_callback:
             progress_callback("Загрузка AI модели RIFE (~25 МБ)...")
 
-        resp = requests.get(url, stream=True, timeout=30)
+        resp = requests.get(url, stream=True, timeout=40)
         resp.raise_for_status()
 
         total_size = int(resp.headers.get('content-length', 0))
         downloaded = 0
+        hasher = hashlib.sha256()
 
-        with open(zip_path, 'wb') as f:
+        with open(zip_part, 'wb') as f:
             for chunk in resp.iter_content(chunk_size=65536):
                 if chunk:
                     f.write(chunk)
+                    hasher.update(chunk)
                     downloaded += len(chunk)
                     if progress_callback and total_size > 0:
                         pct = int((downloaded / total_size) * 100)
                         progress_callback(f"Загрузка AI модели RIFE: {pct}%...")
 
+        # Verify SHA-256
+        actual_sha256 = hasher.hexdigest().lower()
+        if actual_sha256 != EXPECTED_RIFE_SHA256:
+            if os.path.exists(zip_part):
+                os.remove(zip_part)
+            err_msg = f"Неверная контрольная сумма архива RIFE. Ожидалось {EXPECTED_RIFE_SHA256[:8]}, получено {actual_sha256[:8]}."
+            if progress_callback:
+                progress_callback(err_msg)
+            print(err_msg)
+            return False
+
         if progress_callback:
-            progress_callback("Распаковка AI модели...")
+            progress_callback("Проверка и распаковка AI модели...")
 
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(tools_dir)
+        # Safe extraction into temporary directory with Zip Slip protection
+        with tempfile.TemporaryDirectory() as temp_extract_dir:
+            with zipfile.ZipFile(zip_part, 'r') as zip_ref:
+                for member in zip_ref.infolist():
+                    target_path = os.path.abspath(os.path.join(temp_extract_dir, member.filename))
+                    if not target_path.startswith(os.path.abspath(temp_extract_dir)):
+                        raise Exception("Обнаружена попытка выхода за пределы каталога при распаковке архива (Zip Slip).")
+                zip_ref.extractall(temp_extract_dir)
 
-        if os.path.exists(zip_path):
-            os.remove(zip_path)
+            # Move extracted files to tools_dir
+            for item in os.listdir(temp_extract_dir):
+                s = os.path.join(temp_extract_dir, item)
+                d = os.path.join(tools_dir, item)
+                if os.path.exists(d):
+                    if os.path.isdir(d):
+                        shutil.rmtree(d)
+                    else:
+                        os.remove(d)
+                shutil.move(s, d)
+
+        if os.path.exists(zip_part):
+            os.remove(zip_part)
 
         return is_rife_available()
     except Exception as e:
         print(f"Error downloading RIFE engine: {e}")
-        if os.path.exists(zip_path):
+        if os.path.exists(zip_part):
             try:
-                os.remove(zip_path)
+                os.remove(zip_part)
             except Exception:
                 pass
         return False
 
-def get_video_fps(input_path: str) -> float:
+def get_video_fps(input_path: str):
+    if not input_path or not os.path.exists(input_path):
+        return None
     try:
         cmd = [
             "ffprobe", "-v", "error",
@@ -92,21 +144,29 @@ def get_video_fps(input_path: str) -> float:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            check=True
+            timeout=10
         )
-        val = res.stdout.strip()
-        if '/' in val:
-            num, den = val.split('/')
-            return float(num) / max(1.0, float(den))
-        return float(val) if val else 30.0
+        if res.returncode == 0:
+            val = res.stdout.strip()
+            if '/' in val:
+                num, den = val.split('/')
+                den_f = float(den)
+                if den_f > 0:
+                    return float(num) / den_f
+            elif val:
+                fps = float(val)
+                if fps > 0:
+                    return fps
     except Exception:
-        return 30.0
+        pass
+    return None
 
 def interpolate_with_ffmpeg(input_path: str, target_fps: int = 60, output_path: str = None) -> str:
     if not output_path:
         base, ext = os.path.splitext(input_path)
-        output_path = f"{base}_{target_fps}fps{ext or '.mp4'}"
+        output_path = get_unique_path(f"{base}_{target_fps}fps{ext or '.mp4'}")
 
+    part_path = f"{output_path}.tmp.mp4"
     try:
         # High quality motion-compensated interpolation
         filter_str = f"minterpolate=fps={target_fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1"
@@ -118,7 +178,7 @@ def interpolate_with_ffmpeg(input_path: str, target_fps: int = 60, output_path: 
             "-crf", "18",
             "-preset", "faster",
             "-c:a", "copy",
-            output_path
+            part_path
         ]
         subprocess.run(
             cmd,
@@ -128,8 +188,16 @@ def interpolate_with_ffmpeg(input_path: str, target_fps: int = 60, output_path: 
             stderr=subprocess.PIPE,
             check=True
         )
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        os.rename(part_path, output_path)
         return output_path
     except Exception as e:
+        if os.path.exists(part_path):
+            try:
+                os.remove(part_path)
+            except Exception:
+                pass
         print(f"FFmpeg interpolation error: {e}")
         # Fallback to simple fps filter if MCI fails
         try:
@@ -141,7 +209,7 @@ def interpolate_with_ffmpeg(input_path: str, target_fps: int = 60, output_path: 
                 "-crf", "18",
                 "-preset", "faster",
                 "-c:a", "copy",
-                output_path
+                part_path
             ]
             subprocess.run(
                 cmd,
@@ -151,8 +219,16 @@ def interpolate_with_ffmpeg(input_path: str, target_fps: int = 60, output_path: 
                 stderr=subprocess.PIPE,
                 check=True
             )
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            os.rename(part_path, output_path)
             return output_path
         except Exception:
+            if os.path.exists(part_path):
+                try:
+                    os.remove(part_path)
+                except Exception:
+                    pass
             return input_path
 
 def interpolate_with_rife(input_path: str, target_fps: int = 60, output_path: str = None, status_callback=None) -> str:
@@ -162,9 +238,10 @@ def interpolate_with_rife(input_path: str, target_fps: int = 60, output_path: st
 
     if not output_path:
         base, ext = os.path.splitext(input_path)
-        output_path = f"{base}_{target_fps}fps{ext or '.mp4'}"
+        output_path = get_unique_path(f"{base}_{target_fps}fps{ext or '.mp4'}")
 
-    orig_fps = get_video_fps(input_path)
+    part_path = f"{output_path}.tmp.mp4"
+    orig_fps = get_video_fps(input_path) or 30.0
     multiplier = max(2, int(round(target_fps / max(1.0, orig_fps))))
 
     temp_dir = tempfile.mkdtemp(prefix="aura_rife_")
@@ -245,7 +322,7 @@ def interpolate_with_rife(input_path: str, target_fps: int = 60, output_path: st
             "-pix_fmt", "yuv420p",
             "-crf", "18",
             "-preset", "faster",
-            output_path
+            part_path
         ])
 
         subprocess.run(
@@ -257,9 +334,17 @@ def interpolate_with_rife(input_path: str, target_fps: int = 60, output_path: st
             check=True
         )
 
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        os.rename(part_path, output_path)
         return output_path
 
     except Exception as e:
+        if os.path.exists(part_path):
+            try:
+                os.remove(part_path)
+            except Exception:
+                pass
         print(f"RIFE error: {e}. Falling back to FFmpeg MCI.")
         return interpolate_with_ffmpeg(input_path, target_fps, output_path)
     finally:

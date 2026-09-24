@@ -28,8 +28,6 @@ def build():
         "--noconsole",
         "--windowed",
         f"--icon={str(icon_path)}",
-        "--add-data=assets;assets",
-        "--add-data=tools;tools",
         "--hidden-import=PySide6.QtSvg",
         "--hidden-import=PySide6.QtMultimedia",
         "--hidden-import=PySide6.QtMultimediaWidgets",
@@ -38,8 +36,14 @@ def build():
         "--hidden-import=pefile",
         "--clean",
         "--noconfirm",
-        "main.py"
     ]
+
+    if (project_dir / "assets").exists():
+        cmd.append("--add-data=assets;assets")
+    if (project_dir / "tools").exists():
+        cmd.append("--add-data=tools;tools")
+
+    cmd.append("main.py")
 
     # Check if user requested single file
     if "--onefile" in sys.argv:

@@ -12,15 +12,40 @@ def get_startupinfo():
     startupinfo.wShowWindow = subprocess.SW_HIDE
     return startupinfo
 
+def get_unique_path(target_path: str) -> str:
+    if not os.path.exists(target_path):
+        return target_path
+    base, ext = os.path.splitext(target_path)
+    counter = 1
+    while os.path.exists(f"{base} ({counter}){ext}"):
+        counter += 1
+    return f"{base} ({counter}){ext}"
+
+def check_ffmpeg_available() -> tuple:
+    import shutil
+    ffmpeg = shutil.which("ffmpeg")
+    ffprobe = shutil.which("ffprobe")
+    if not ffmpeg or not ffprobe:
+        return False, "FFmpeg или FFprobe не найдены в системном PATH."
+    try:
+        res = subprocess.run(["ffmpeg", "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+        if res.returncode == 0:
+            first_line = res.stdout.splitlines()[0] if res.stdout else "FFmpeg OK"
+            return True, first_line
+    except Exception as e:
+        return False, f"Ошибка запуска FFmpeg: {e}"
+    return False, "FFmpeg вернул ненулевой код завершения."
+
 def get_video_dimensions(input_path: str) -> tuple:
     if not input_path or not os.path.exists(input_path):
-        return 1920, 1080
+        return None, None
     try:
         import json
+        # Compatible query for width, height across all FFprobe versions
         cmd = [
             "ffprobe", "-v", "error",
             "-select_streams", "v:0",
-            "-show_entries", "stream=width,height,rotation:stream_tags=rotate:stream_side_data=rotation",
+            "-show_entries", "stream=width,height",
             "-of", "json",
             input_path
         ]
@@ -31,45 +56,62 @@ def get_video_dimensions(input_path: str) -> tuple:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            check=True
+            timeout=10
         )
+        if res.returncode != 0:
+            return None, None
+
         data = json.loads(res.stdout)
         streams = data.get("streams", [])
-        if streams:
-            s = streams[0]
-            w = int(s.get("width", 1920))
-            h = int(s.get("height", 1080))
+        if not streams:
+            return None, None
 
-            # Detect rotation from tags, side data, or stream attributes
-            rotate = 0
-            tags = s.get("tags", {})
-            if "rotate" in tags:
-                try:
-                    rotate = int(float(tags["rotate"]))
-                except Exception:
-                    pass
+        s = streams[0]
+        w = int(s["width"]) if "width" in s else None
+        h = int(s["height"]) if "height" in s else None
+        if not w or not h:
+            return None, None
 
-            for sd in s.get("side_data_list", []):
-                if "rotation" in sd:
-                    try:
-                        rotate = int(float(sd["rotation"]))
-                    except Exception:
-                        pass
+        # Safe rotation detection (only if supported, without breaking width/height)
+        rotate = 0
+        try:
+            cmd_rot = [
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream_tags=rotate:stream_side_data=rotation",
+                "-of", "json",
+                input_path
+            ]
+            res_rot = subprocess.run(
+                cmd_rot,
+                startupinfo=get_startupinfo(),
+                creationflags=CREATE_NO_WINDOW,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=5
+            )
+            if res_rot.returncode == 0:
+                data_rot = json.loads(res_rot.stdout)
+                streams_rot = data_rot.get("streams", [])
+                if streams_rot:
+                    s_rot = streams_rot[0]
+                    tags = s_rot.get("tags", {})
+                    if "rotate" in tags:
+                        rotate = int(float(tags["rotate"]))
+                    for sd in s_rot.get("side_data_list", []):
+                        if "rotation" in sd:
+                            rotate = int(float(sd["rotation"]))
+        except Exception:
+            pass
 
-            if "rotation" in s:
-                try:
-                    rotate = int(float(s["rotation"]))
-                except Exception:
-                    pass
+        if abs(rotate) in [90, 270]:
+            w, h = h, w
 
-            # Swap width and height if rotated 90 or 270 degrees (e.g. mobile 9:16 portrait video)
-            if abs(rotate) in [90, 270]:
-                w, h = h, w
-
-            return w, h
+        return w, h
     except Exception:
         pass
-    return 1920, 1080
+    return None, None
 
 def convert_to_gif(input_path: str, output_path: str = None, fps: int = 15, width: int = 480) -> str:
     if not input_path or not os.path.exists(input_path):
@@ -77,15 +119,16 @@ def convert_to_gif(input_path: str, output_path: str = None, fps: int = 15, widt
 
     if not output_path:
         base, _ = os.path.splitext(input_path)
-        output_path = f"{base}.gif"
+        output_path = get_unique_path(f"{base}.gif")
 
+    part_path = f"{output_path}.tmp.gif"
     try:
         filter_complex = f"[0:v] fps={fps},scale={width}:-1:flags=lanczos,split [a][b];[a] palettegen [p];[b][p] paletteuse"
         cmd = [
             "ffmpeg", "-y",
             "-i", input_path,
             "-vf", filter_complex,
-            output_path
+            part_path
         ]
         subprocess.run(
             cmd,
@@ -95,12 +138,22 @@ def convert_to_gif(input_path: str, output_path: str = None, fps: int = 15, widt
             stderr=subprocess.PIPE,
             check=True
         )
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        os.rename(part_path, output_path)
         return output_path
     except Exception as e:
+        if os.path.exists(part_path):
+            try:
+                os.remove(part_path)
+            except Exception:
+                pass
         print(f"GIF conversion error: {e}")
         return input_path
 
-def get_video_duration(input_path: str) -> float:
+def get_video_duration(input_path: str):
+    if not input_path or not os.path.exists(input_path):
+        return None
     try:
         cmd = [
             "ffprobe", "-v", "error",
@@ -115,12 +168,17 @@ def get_video_duration(input_path: str) -> float:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            check=True
+            timeout=10
         )
-        val = res.stdout.strip()
-        return float(val) if val else 60.0
+        if res.returncode == 0:
+            val = res.stdout.strip()
+            if val:
+                dur = float(val)
+                if dur > 0:
+                    return dur
     except Exception:
-        return 60.0
+        pass
+    return None
 
 def compress_to_target_size(input_path: str, target_mb: float = 8.0, output_path: str = None) -> str:
     if not input_path or not os.path.exists(input_path):
@@ -128,14 +186,17 @@ def compress_to_target_size(input_path: str, target_mb: float = 8.0, output_path
 
     if not output_path:
         base, ext = os.path.splitext(input_path)
-        output_path = f"{base}_compressed_{int(target_mb)}MB{ext or '.mp4'}"
+        output_path = get_unique_path(f"{base}_compressed_{int(target_mb)}MB{ext or '.mp4'}")
 
+    part_path = f"{output_path}.tmp.mp4"
     try:
         duration = get_video_duration(input_path)
-        if duration <= 0:
+        if not duration or duration <= 0:
             duration = 60.0
 
-        target_total_bitrate = (target_mb * 8192) / duration
+        # Budget bitrate targeting ~7.4MB to ensure it reliably stays under target_mb
+        effective_target_mb = max(1.0, target_mb - 0.6)
+        target_total_bitrate = (effective_target_mb * 8192) / duration
         audio_bitrate = 96
         video_bitrate = max(40, int(target_total_bitrate - audio_bitrate))
 
@@ -144,12 +205,12 @@ def compress_to_target_size(input_path: str, target_mb: float = 8.0, output_path
             "-i", input_path,
             "-c:v", "libx264",
             "-b:v", f"{video_bitrate}k",
-            "-maxrate", f"{int(video_bitrate * 1.3)}k",
+            "-maxrate", f"{int(video_bitrate * 1.25)}k",
             "-bufsize", f"{int(video_bitrate * 2)}k",
             "-preset", "faster",
             "-c:a", "aac",
             "-b:a", f"{audio_bitrate}k",
-            output_path
+            part_path
         ]
         subprocess.run(
             cmd,
@@ -159,8 +220,36 @@ def compress_to_target_size(input_path: str, target_mb: float = 8.0, output_path
             stderr=subprocess.PIPE,
             check=True
         )
+
+        if not os.path.exists(part_path) or os.path.getsize(part_path) == 0:
+            raise Exception("Сжатый файл пуст.")
+
+        # Verify actual file size on disk; if exceeded, re-encode with lower bitrate
+        actual_mb = os.path.getsize(part_path) / (1024 * 1024)
+        if actual_mb > target_mb:
+            lower_bitrate = max(30, int(video_bitrate * (target_mb * 0.9 / actual_mb)))
+            cmd[6] = f"{lower_bitrate}k"
+            cmd[8] = f"{int(lower_bitrate * 1.2)}k"
+            cmd[10] = f"{int(lower_bitrate * 2)}k"
+            subprocess.run(
+                cmd,
+                startupinfo=get_startupinfo(),
+                creationflags=CREATE_NO_WINDOW,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True
+            )
+
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        os.rename(part_path, output_path)
         return output_path
     except Exception as e:
+        if os.path.exists(part_path):
+            try:
+                os.remove(part_path)
+            except Exception:
+                pass
         print(f"Video compression error: {e}")
         return input_path
 
@@ -209,8 +298,9 @@ def crop_video(input_path: str, crop_params: dict, output_path: str = None) -> s
 
     if not output_path:
         base, ext = os.path.splitext(input_path)
-        output_path = f"{base}_crop{ext or '.mp4'}"
+        output_path = get_unique_path(f"{base}_crop{ext or '.mp4'}")
 
+    part_path = f"{output_path}.tmp.mp4"
     try:
         crop_filter = get_crop_filter(input_path, crop_params)
         if not crop_filter:
@@ -219,7 +309,7 @@ def crop_video(input_path: str, crop_params: dict, output_path: str = None) -> s
         is_gif = input_path.lower().endswith('.gif')
         if is_gif:
             filter_complex = f"[0:v] {crop_filter},split [a][b];[a] palettegen [p];[b][p] paletteuse"
-            cmd = ["ffmpeg", "-y", "-i", input_path, "-vf", filter_complex, output_path]
+            cmd = ["ffmpeg", "-y", "-i", input_path, "-vf", filter_complex, part_path]
         else:
             cmd = [
                 "ffmpeg", "-y",
@@ -229,7 +319,7 @@ def crop_video(input_path: str, crop_params: dict, output_path: str = None) -> s
                 "-crf", "18",
                 "-preset", "faster",
                 "-c:a", "copy",
-                output_path
+                part_path
             ]
 
         subprocess.run(
@@ -240,8 +330,20 @@ def crop_video(input_path: str, crop_params: dict, output_path: str = None) -> s
             stderr=subprocess.PIPE,
             check=True
         )
+
+        if not os.path.exists(part_path) or os.path.getsize(part_path) == 0:
+            raise Exception("Кадрированный файл пуст.")
+
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        os.rename(part_path, output_path)
         return output_path
     except Exception as e:
+        if os.path.exists(part_path):
+            try:
+                os.remove(part_path)
+            except Exception:
+                pass
         print(f"Video crop error: {e}")
         return input_path
 
