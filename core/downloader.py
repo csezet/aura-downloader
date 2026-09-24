@@ -10,7 +10,8 @@ import yt_dlp
 from yt_dlp.extractor.instagram import InstagramIE
 from core.settings import settings
 from core.cookies_helper import get_cookies_config
-from core.media_converter import convert_to_gif, compress_to_target_size, crop_video
+import tempfile
+from core.media_converter import convert_to_gif, compress_to_target_size, crop_video, get_unique_path, get_video_duration
 from core.interpolator import interpolate_video
 
 def format_bytes(bytes_val):
@@ -392,6 +393,7 @@ class DownloadWorker(QThread):
                 self._last_filename = d.get('filename')
 
     def run(self):
+        staging_dir = None
         try:
             mode = self.options.get('mode', 'best')
             audio_fmt = self.options.get('audio_fmt', 'mp3').lower()
@@ -402,7 +404,97 @@ class DownloadWorker(QThread):
             trim_end = self.options.get('trim_end', '')
 
             os.makedirs(self.save_dir, exist_ok=True)
-            out_template = os.path.join(self.save_dir, '%(title)s [%(id)s].%(ext)s')
+
+            # Direct Image / Instagram Photo or Direct Video Download
+            target_url = self.options.get('direct_media_url') or self.url or ""
+            target_clean = target_url.lower().split('?')[0]
+
+            is_explicit_video = bool(self.options.get('is_video') or (self.options.get('media_type') == 'video'))
+            is_explicit_photo = bool(self.options.get('is_photo') or (self.options.get('media_type') == 'photo'))
+
+            is_photo = (is_explicit_photo or any(target_clean.endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.webp'])) and not is_explicit_video
+            is_direct_video = is_explicit_video and ('cdninstagram' in target_url or 'instagram.com' in target_url or any(target_clean.endswith(ext) for ext in ['.mp4', '.mkv', '.webm']))
+
+            if is_photo or is_direct_video:
+                media_kind = "видео" if is_direct_video else "фотографию"
+                media_ext = "mp4" if is_direct_video else "jpg"
+                self.status_message.emit(f"Скачивание {media_kind}...")
+                headers = {
+                    'User-Agent': DEFAULT_HTTP_HEADERS['User-Agent'],
+                    'Referer': 'https://www.instagram.com/'
+                }
+                resp = requests.get(target_url, headers=headers, stream=True, timeout=25)
+                resp.raise_for_status()
+                total_bytes = int(resp.headers.get('content-length', 0))
+                downloaded_bytes = 0
+                t0 = time.time()
+
+                title = self.options.get('title') or ("Instagram_Video" if is_direct_video else "Instagram_Photo")
+                clean_title = re.sub(r'[^\w\-]', '_', title)
+                file_path = get_unique_path(os.path.join(self.save_dir, f"{clean_title}.{media_ext}"))
+                part_path = f"{file_path}.part"
+
+                try:
+                    with open(part_path, 'wb') as f:
+                        for chunk in resp.iter_content(chunk_size=65536):
+                            if self.is_cancelled:
+                                raise Exception("Загрузка отменена.")
+                            f.write(chunk)
+                            downloaded_bytes += len(chunk)
+                            dt = time.time() - t0
+                            speed = downloaded_bytes / dt if dt > 0 else 0
+                            speed_str = f"{speed / (1024 * 1024):.1f} MB/s" if speed > 0 else "-- MB/s"
+                            pct = (downloaded_bytes / total_bytes * 100.0) if total_bytes > 0 else 100.0
+                            self.progress_updated.emit({
+                                'percent': pct,
+                                'speed_str': speed_str,
+                                'eta_str': "--:--",
+                                'downloaded_str': format_bytes(downloaded_bytes),
+                                'total_str': format_bytes(total_bytes),
+                                'status': 'downloading'
+                            })
+
+                    if self.is_cancelled:
+                        raise Exception("Загрузка отменена.")
+
+                    # Validate downloaded file content
+                    if is_direct_video:
+                        if not get_video_duration(part_path):
+                            raise Exception("Скачанный файл не содержит валидного видеопотока (возможно CDN вернул ошибку).")
+                    else:
+                        try:
+                            from PIL import Image
+                            with Image.open(part_path) as img:
+                                img.verify()
+                        except Exception:
+                            raise Exception("Скачанный файл не является корректным изображением.")
+
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                    os.rename(part_path, file_path)
+                except Exception as ex:
+                    if os.path.exists(part_path):
+                        try:
+                            os.remove(part_path)
+                        except Exception:
+                            pass
+                    raise ex
+
+                file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+                self.download_completed.emit({
+                    'title': title,
+                    'url': self.url,
+                    'file_path': file_path,
+                    'file_size': file_size,
+                    'file_size_str': format_bytes(file_size),
+                    'thumbnail': file_path if not is_direct_video else None,
+                    'mode': 'MP4' if is_direct_video else 'JPG'
+                })
+                return
+
+            # Network video download via yt-dlp using isolated staging folder to prevent collision
+            staging_dir = tempfile.mkdtemp(prefix=".aura_staging_", dir=self.save_dir)
+            out_template = os.path.join(staging_dir, '%(title)s [%(id)s].%(ext)s')
 
             ydl_opts = {
                 'outtmpl': out_template,
@@ -411,7 +503,8 @@ class DownloadWorker(QThread):
                 'no_warnings': True,
                 'ignoreerrors': False,
                 'windowsfilenames': True,
-                'overwrites': True,
+                'overwrites': False,
+                'nooverwrites': True,
                 'geo_bypass': True,
                 'http_headers': DEFAULT_HTTP_HEADERS,
                 'extractor_args': DEFAULT_EXTRACTOR_ARGS,
@@ -443,75 +536,6 @@ class DownloadWorker(QThread):
                     'subtitleslangs': settings.get('subtitles_langs', ['ru', 'en']),
                     'subtitlesformat': 'srt/best',
                 })
-
-            # Direct Image / Instagram Photo Download
-            is_photo = self.options.get('is_photo', False) or (self.url and any(self.url.lower().split('?')[0].endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.webp'])) or 'cdninstagram' in self.url
-            if is_photo:
-                self.status_message.emit("Скачивание фотографии...")
-                target_url = self.options.get('direct_media_url') or self.url
-                headers = {
-                    'User-Agent': DEFAULT_HTTP_HEADERS['User-Agent'],
-                    'Referer': 'https://www.instagram.com/'
-                }
-                resp = requests.get(target_url, headers=headers, stream=True, timeout=15)
-                resp.raise_for_status()
-                total_bytes = int(resp.headers.get('content-length', 0))
-                downloaded_bytes = 0
-                t0 = time.time()
-
-                title = self.options.get('title') or "Instagram_Photo"
-                clean_title = re.sub(r'[^\w\-]', '_', title)
-                file_path = os.path.join(self.save_dir, f"{clean_title}.jpg")
-                counter = 1
-                base, ext_part = os.path.splitext(file_path)
-                while os.path.exists(file_path):
-                    file_path = f"{base}_{counter}{ext_part}"
-                    counter += 1
-
-                part_path = f"{file_path}.part"
-                try:
-                    with open(part_path, 'wb') as f:
-                        for chunk in resp.iter_content(chunk_size=65536):
-                            if self.is_cancelled:
-                                raise Exception("Загрузка отменена.")
-                            f.write(chunk)
-                            downloaded_bytes += len(chunk)
-                            dt = time.time() - t0
-                            speed = downloaded_bytes / dt if dt > 0 else 0
-                            speed_str = f"{speed / (1024 * 1024):.1f} MB/s" if speed > 0 else "-- MB/s"
-                            pct = (downloaded_bytes / total_bytes * 100.0) if total_bytes > 0 else 100.0
-                            self.progress_updated.emit({
-                                'percent': pct,
-                                'speed_str': speed_str,
-                                'eta_str': "--:--",
-                                'downloaded_str': format_bytes(downloaded_bytes),
-                                'total_str': format_bytes(total_bytes),
-                                'status': 'downloading'
-                            })
-
-                    if os.path.exists(part_path):
-                        if os.path.exists(file_path):
-                            os.remove(file_path)
-                        os.rename(part_path, file_path)
-                except Exception as ex:
-                    if os.path.exists(part_path):
-                        try:
-                            os.remove(part_path)
-                        except Exception:
-                            pass
-                    raise ex
-
-                file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
-                self.download_completed.emit({
-                    'title': title,
-                    'url': self.url,
-                    'file_path': file_path,
-                    'file_size': file_size,
-                    'file_size_str': format_bytes(file_size),
-                    'thumbnail': file_path,
-                    'mode': 'JPG'
-                })
-                return
 
             if mode == 'audio_only':
                 ydl_opts.update({
@@ -555,7 +579,6 @@ class DownloadWorker(QThread):
                     'postprocessors': [{'key': 'FFmpegMetadata', 'add_metadata': True}]
                 })
             else:
-                # Default "Best" Maximum Quality: Highest video resolution + best audio merged into MP4
                 ydl_opts.update({
                     'format': 'bestvideo+bestaudio/best',
                     'merge_output_format': 'mp4',
@@ -656,6 +679,22 @@ class DownloadWorker(QThread):
             if self.is_cancelled:
                 return
 
+            if not os.path.exists(final_path):
+                # Search inside staging_dir for any matching media file if name changed
+                for f in os.listdir(staging_dir):
+                    candidate = os.path.join(staging_dir, f)
+                    if os.path.isfile(candidate) and not candidate.endswith('.part'):
+                        final_path = candidate
+                        break
+
+            if not os.path.exists(final_path):
+                raise Exception("Файл не был сохранен или был удален.")
+
+            # Move atomically from staging to target save_dir with anti-overwrite protection
+            final_dest = get_unique_path(os.path.join(self.save_dir, os.path.basename(final_path)))
+            shutil.move(final_path, final_dest)
+            final_path = final_dest
+
             file_size = os.path.getsize(final_path) if os.path.exists(final_path) else 0
             title = info.get('title', Path(final_path).stem if final_path else 'Скачанный файл')
             thumbnail = info.get('thumbnail')
@@ -673,6 +712,9 @@ class DownloadWorker(QThread):
         except Exception as e:
             if not self.is_cancelled:
                 self.download_error.emit(str(e))
+        finally:
+            if staging_dir and os.path.exists(staging_dir):
+                shutil.rmtree(staging_dir, ignore_errors=True)
 
 
 class GalleryDownloadWorker(QThread):
@@ -698,6 +740,7 @@ class GalleryDownloadWorker(QThread):
             return
 
         results = []
+        errors = []
         headers = {
             'User-Agent': DEFAULT_HTTP_HEADERS['User-Agent'],
             'Referer': 'https://www.instagram.com/'
@@ -708,7 +751,7 @@ class GalleryDownloadWorker(QThread):
                 break
 
             media_type = item.get('media_type', 'photo')
-            is_video = item.get('is_video', False)
+            is_video = bool(item.get('is_video', False) or media_type == 'video')
             uploader = item.get('uploader', 'Instagram')
             item_id = item.get('id', str(i + 1))
             ext = 'mp4' if is_video else 'jpg'
@@ -716,14 +759,7 @@ class GalleryDownloadWorker(QThread):
             clean_uploader = re.sub(r'[^\w\-]', '_', uploader)
             clean_id = re.sub(r'[^\w\-]', '_', str(item_id))
             filename = f"Instagram_{clean_uploader}_{clean_id}.{ext}"
-            file_path = os.path.join(self.save_dir, filename)
-
-            # Ensure unique filename
-            counter = 1
-            base, ext_part = os.path.splitext(file_path)
-            while os.path.exists(file_path):
-                file_path = f"{base}_{counter}{ext_part}"
-                counter += 1
+            file_path = get_unique_path(os.path.join(self.save_dir, filename))
 
             self.status_message.emit(f"Скачивание {i + 1}/{total_items}: {filename}")
             if is_video:
@@ -771,6 +807,19 @@ class GalleryDownloadWorker(QThread):
                 if not os.path.exists(part_path) or os.path.getsize(part_path) == 0:
                     raise Exception(f"Файл {filename} пуст или не был скачан.")
 
+                # Content verification
+                if is_video:
+                    if not get_video_duration(part_path):
+                        raise Exception(f"Файл {filename} не содержит валидного видеопотока.")
+                else:
+                    try:
+                        from PIL import Image
+                        with Image.open(part_path) as img:
+                            img.verify()
+                    except Exception:
+                        raise Exception(f"Файл {filename} не является корректным изображением.")
+
+                file_path = get_unique_path(file_path)
                 if os.path.exists(file_path):
                     os.remove(file_path)
                 os.rename(part_path, file_path)
@@ -784,7 +833,7 @@ class GalleryDownloadWorker(QThread):
                     'file_size': file_size,
                     'file_size_str': format_bytes(file_size),
                     'mode': 'MP4' if is_video else 'JPG',
-                    'thumbnail': file_path
+                    'thumbnail': file_path if not is_video else None
                 }
                 results.append(result_item)
                 self.item_completed.emit(result_item)
@@ -795,10 +844,15 @@ class GalleryDownloadWorker(QThread):
                         os.remove(part_path)
                     except Exception:
                         pass
-                self.download_error.emit(f"Ошибка при скачивании {filename}: {e}")
+                err_msg = f"{filename}: {e}"
+                errors.append(err_msg)
+                self.download_error.emit(f"Ошибка при скачивании: {err_msg}")
 
-        if not self.is_cancelled and results:
-            total_sz = sum(r['file_size'] for r in results)
-            self.progress_updated.emit(100.0, "0 MB/s", "00:00", format_bytes(total_sz), format_bytes(total_sz))
-            self.batch_completed.emit(results)
+        if not self.is_cancelled:
+            if results:
+                total_sz = sum(r['file_size'] for r in results)
+                self.progress_updated.emit(100.0, "0 MB/s", "00:00", format_bytes(total_sz), format_bytes(total_sz))
+                self.batch_completed.emit(results)
+            elif errors:
+                self.download_error.emit("\n".join(errors))
 

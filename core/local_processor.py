@@ -106,37 +106,44 @@ def get_local_media_info(file_path: str) -> dict:
     }
 
 def run_ffmpeg_cancellable(cmd: list, temp_output: str, is_cancelled_cb=None) -> bool:
-    proc = subprocess.Popen(
-        cmd,
-        startupinfo=get_startupinfo(),
-        creationflags=CREATE_NO_WINDOW,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE
-    )
-    while proc.poll() is None:
-        if is_cancelled_cb and is_cancelled_cb():
-            proc.terminate()
-            try:
-                proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+    with tempfile.TemporaryFile(mode='w+b') as err_file:
+        proc = subprocess.Popen(
+            cmd,
+            startupinfo=get_startupinfo(),
+            creationflags=CREATE_NO_WINDOW,
+            stdout=subprocess.DEVNULL,
+            stderr=err_file
+        )
+        while proc.poll() is None:
+            if is_cancelled_cb and is_cancelled_cb():
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=2)
+                    except Exception:
+                        pass
+                if temp_output and os.path.exists(temp_output):
+                    try:
+                        os.remove(temp_output)
+                    except Exception:
+                        pass
+                return False
+            time.sleep(0.1)
+
+        if proc.returncode != 0:
             if temp_output and os.path.exists(temp_output):
                 try:
                     os.remove(temp_output)
                 except Exception:
                     pass
-            return False
-        time.sleep(0.1)
-
-    stdout, stderr = proc.communicate()
-    if proc.returncode != 0:
-        if temp_output and os.path.exists(temp_output):
-            try:
-                os.remove(temp_output)
-            except Exception:
-                pass
-        raise Exception(f"FFmpeg error: {stderr.decode(errors='replace')[:200]}")
-    return True
+            err_file.seek(0)
+            err_data = err_file.read()
+            err_text = err_data[-2000:].decode(errors='replace').strip() if err_data else "Unknown error"
+            raise Exception(f"FFmpeg error: {err_text}")
+        return True
 
 
 def process_single_local_file(file_path: str, options: dict, save_dir: str, status_cb=None, progress_cb=None, is_cancelled_cb=None) -> dict:

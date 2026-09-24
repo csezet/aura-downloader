@@ -768,6 +768,8 @@ class MainWindow(QMainWindow):
                     'available_res': ['Оригинал (JPG)'] if not is_vid else ['1080p Full HD'],
                     'has_video': is_vid,
                     'is_photo': not is_vid,
+                    'is_video': is_vid,
+                    'media_type': 'video' if is_vid else 'photo',
                     'width': 1080,
                     'height': 1350
                 }
@@ -963,6 +965,14 @@ class MainWindow(QMainWindow):
         else:
             if active_video and active_video.get('is_photo'):
                 options['is_photo'] = True
+                options['is_video'] = False
+                options['media_type'] = 'photo'
+                options['direct_media_url'] = active_video.get('direct_media_url')
+                options['title'] = active_video.get('title')
+            elif active_video and (active_video.get('is_video') or active_video.get('has_video')):
+                options['is_photo'] = False
+                options['is_video'] = True
+                options['media_type'] = 'video'
                 options['direct_media_url'] = active_video.get('direct_media_url')
                 options['title'] = active_video.get('title')
             self.download_worker = DownloadWorker(target_url, options, save_dir)
