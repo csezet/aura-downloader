@@ -8,7 +8,7 @@ import time
 from core.downloader import format_bytes, format_seconds, parse_time_str
 from core.media_converter import (
     convert_to_gif, compress_to_target_size, crop_video, get_crop_filter,
-    get_video_dimensions, get_video_duration, get_unique_path
+    get_video_dimensions, get_video_duration, get_unique_path, run_ffmpeg_cancellable
 )
 from core.interpolator import interpolate_video, get_video_fps
 
@@ -98,52 +98,13 @@ def get_local_media_info(file_path: str) -> dict:
         'platform': 'Local Video',
         'available_res': [f"{width}x{height}"] if (width and height) else [],
         'has_video': True,
-        'width': width or 1920,
-        'height': height or 1080,
-        'fps': fps or 30.0,
+        'width': width,
+        'height': height,
+        'fps': fps,
         'file_size': size,
         'file_size_str': format_bytes(size)
     }
 
-def run_ffmpeg_cancellable(cmd: list, temp_output: str, is_cancelled_cb=None) -> bool:
-    with tempfile.TemporaryFile(mode='w+b') as err_file:
-        proc = subprocess.Popen(
-            cmd,
-            startupinfo=get_startupinfo(),
-            creationflags=CREATE_NO_WINDOW,
-            stdout=subprocess.DEVNULL,
-            stderr=err_file
-        )
-        while proc.poll() is None:
-            if is_cancelled_cb and is_cancelled_cb():
-                proc.terminate()
-                try:
-                    proc.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    try:
-                        proc.wait(timeout=2)
-                    except Exception:
-                        pass
-                if temp_output and os.path.exists(temp_output):
-                    try:
-                        os.remove(temp_output)
-                    except Exception:
-                        pass
-                return False
-            time.sleep(0.1)
-
-        if proc.returncode != 0:
-            if temp_output and os.path.exists(temp_output):
-                try:
-                    os.remove(temp_output)
-                except Exception:
-                    pass
-            err_file.seek(0)
-            err_data = err_file.read()
-            err_text = err_data[-2000:].decode(errors='replace').strip() if err_data else "Unknown error"
-            raise Exception(f"FFmpeg error: {err_text}")
-        return True
 
 
 def process_single_local_file(file_path: str, options: dict, save_dir: str, status_cb=None, progress_cb=None, is_cancelled_cb=None) -> dict:
@@ -231,7 +192,14 @@ def process_single_local_file(file_path: str, options: dict, save_dir: str, stat
             return None
         if status_cb:
             status_cb(f"Кадрирование {base_name} (Crop)...")
-        cropped_path = crop_video(current_path, crop_params)
+        cropped_path = crop_video(current_path, crop_params, is_cancelled_cb=is_cancelled_cb)
+        if not cropped_path:
+            if current_path != file_path and os.path.exists(current_path):
+                try:
+                    os.remove(current_path)
+                except Exception:
+                    pass
+            return None
         if cropped_path != current_path:
             if current_path != file_path:
                 try:
@@ -250,8 +218,16 @@ def process_single_local_file(file_path: str, options: dict, save_dir: str, stat
             current_path,
             target_fps=smooth_fps,
             model=smooth_model,
-            status_callback=lambda msg: status_cb(msg.upper()) if status_cb else None
+            status_callback=lambda msg: status_cb(msg.upper()) if status_cb else None,
+            is_cancelled_cb=is_cancelled_cb
         )
+        if not smooth_path:
+            if current_path != file_path and os.path.exists(current_path):
+                try:
+                    os.remove(current_path)
+                except Exception:
+                    pass
+            return None
         if smooth_path != current_path:
             if current_path != file_path:
                 try:
@@ -303,13 +279,27 @@ def process_single_local_file(file_path: str, options: dict, save_dir: str, stat
     elif mode == 'gif':
         if status_cb:
             status_cb(f"Конвертация {base_name} в GIF...")
-        gif_path = convert_to_gif(current_path)
+        gif_path = convert_to_gif(current_path, is_cancelled_cb=is_cancelled_cb)
+        if not gif_path:
+            if current_path != file_path and os.path.exists(current_path):
+                try:
+                    os.remove(current_path)
+                except Exception:
+                    pass
+            return None
         final_output = gif_path
 
     elif mode == 'discord_8mb':
         if status_cb:
             status_cb(f"Сжатие {base_name} для Discord (< 8 МБ)...")
-        comp_path = compress_to_target_size(current_path, target_mb=7.8)
+        comp_path = compress_to_target_size(current_path, target_mb=7.8, is_cancelled_cb=is_cancelled_cb)
+        if not comp_path:
+            if current_path != file_path and os.path.exists(current_path):
+                try:
+                    os.remove(current_path)
+                except Exception:
+                    pass
+            return None
         final_output = comp_path
 
     elif mode == 'video_only':

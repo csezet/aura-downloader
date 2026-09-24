@@ -125,7 +125,13 @@ class VideoCardWidget(QFrame):
         info_layout.addWidget(self.title_label)
 
         # Author / Stats
-        uploader = data.get('uploader') or f"Локальное видео ({data.get('width', 1920)}×{data.get('height', 1080)}, {int(data.get('fps', 30))} FPS)"
+        if data.get('uploader'):
+            uploader = data.get('uploader')
+        elif data.get('width') and data.get('height'):
+            fps_part = f", {int(data.get('fps'))} FPS" if data.get('fps') else ""
+            uploader = f"Локальное видео ({data.get('width')}×{data.get('height')}{fps_part})"
+        else:
+            uploader = "Локальное видео"
         self.author_label = QLabel(f"{uploader}")
         self.author_label.setStyleSheet("font-size: 10px; color: #A1A1AA;")
         info_layout.addWidget(self.author_label)

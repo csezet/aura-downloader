@@ -848,10 +848,15 @@ class GalleryDownloadWorker(QThread):
                 errors.append(err_msg)
                 self.download_error.emit(f"Ошибка при скачивании: {err_msg}")
 
+        self.results = results
+        self.errors = errors
+
         if not self.is_cancelled:
             if results:
                 total_sz = sum(r['file_size'] for r in results)
-                self.progress_updated.emit(100.0, "0 MB/s", "00:00", format_bytes(total_sz), format_bytes(total_sz))
+                pct = 100.0 if not errors else ((len(results) / total_items) * 100.0)
+                speed_txt = "0 MB/s" if not errors else f"ЧАСТИЧНО ({len(results)}/{total_items})"
+                self.progress_updated.emit(pct, speed_txt, "00:00", format_bytes(total_sz), format_bytes(total_sz))
                 self.batch_completed.emit(results)
             elif errors:
                 self.download_error.emit("\n".join(errors))

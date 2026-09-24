@@ -17,6 +17,7 @@ from core.downloader import MetadataWorker, DownloadWorker, GalleryDownloadWorke
 from core.local_processor import get_local_media_info, is_video_file, LocalProcessWorker, LocalBatchProcessWorker
 from core.unified_batch_worker import UnifiedBatchWorker
 from core.clipboard import ClipboardWatcher
+from core.media_converter import check_ffmpeg_available
 from assets.styles import get_stylesheet
 from assets.icons import get_svg_icon
 from ui.window_effects import apply_acrylic_effect
@@ -306,6 +307,53 @@ class MainWindow(QMainWindow):
         input_bar.addWidget(self.settings_btn)
 
         content_layout.addLayout(input_bar)
+
+        # FFmpeg Availability Warning Banner
+        self.ffmpeg_banner = QFrame()
+        self.ffmpeg_banner.setStyleSheet("""
+            QFrame {
+                background-color: rgba(239, 68, 68, 0.15);
+                border: 1px solid rgba(239, 68, 68, 0.4);
+                border-radius: 8px;
+                padding: 4px 8px;
+            }
+        """)
+        ffmpeg_layout = QHBoxLayout(self.ffmpeg_banner)
+        ffmpeg_layout.setContentsMargins(10, 6, 10, 6)
+        ffmpeg_layout.setSpacing(10)
+
+        warn_icon = QLabel("⚠️")
+        warn_icon.setStyleSheet("font-size: 14px; background: transparent; border: none;")
+        ffmpeg_layout.addWidget(warn_icon)
+
+        self.ffmpeg_warn_label = QLabel("FFmpeg не обнаружен в системе. Операции конвертации, сжатия и обрезки будут ограничены.")
+        self.ffmpeg_warn_label.setStyleSheet("color: #FCA5A5; font-size: 12px; font-weight: 500; background: transparent; border: none;")
+        self.ffmpeg_warn_label.setWordWrap(True)
+        ffmpeg_layout.addWidget(self.ffmpeg_warn_label, stretch=1)
+
+        close_warn_btn = QPushButton("✕")
+        close_warn_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                border: none;
+                color: #FCA5A5;
+                font-weight: bold;
+                font-size: 12px;
+                max-width: 20px;
+            }
+            QPushButton:hover {
+                color: #FFFFFF;
+            }
+        """)
+        close_warn_btn.clicked.connect(lambda: self.ffmpeg_banner.setVisible(False))
+        ffmpeg_layout.addWidget(close_warn_btn)
+
+        content_layout.addWidget(self.ffmpeg_banner)
+
+        ffmpeg_ok, ffmpeg_detail = check_ffmpeg_available()
+        self.ffmpeg_banner.setVisible(not ffmpeg_ok)
+        if not ffmpeg_ok:
+            self.ffmpeg_warn_label.setText(f"⚠️ {ffmpeg_detail}. Конвертация, сжатие и обрезка будут ограничены.")
 
         # 3. Mode Selection Bar
         self.modes_card = QFrame()
@@ -998,13 +1046,18 @@ class MainWindow(QMainWindow):
     def _on_batch_success(self, results: list):
         self.download_btn.setEnabled(True)
         self._update_download_button_text()
+        errors = getattr(self.download_worker, 'errors', [])
+        total = getattr(self.download_worker, 'total', len(results) + len(errors))
         last_res = results[-1] if results else {'file_path': settings.get("download_dir"), 'file_size_str': f"{len(results)} файлов"}
         is_all_photos = all(r.get('mode') in ['JPG', 'PNG', 'WEBP'] for r in results) if results else False
         last_res['mode'] = f"Галерея ({len(results)} фото)" if is_all_photos else f"Пакет ({len(results)} шт)"
-        self.progress_widget.complete(last_res)
+        self.progress_widget.complete(last_res, errors=errors if errors else None)
 
         if hasattr(self, 'notification_manager'):
-            notice_title = f"Скачивание завершено ({len(results)} фото)" if is_all_photos else f"Очередь завершена ({len(results)} видео)"
+            if errors:
+                notice_title = f"Завершено частично: {len(results)}/{total} (ошибок: {len(errors)})"
+            else:
+                notice_title = f"Скачивание завершено ({len(results)} фото)" if is_all_photos else f"Очередь завершена ({len(results)} видео)"
             self.notification_manager.show_download_complete(
                 title=notice_title,
                 file_path=last_res.get('file_path')

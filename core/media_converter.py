@@ -17,7 +17,7 @@ def get_unique_path(target_path: str) -> str:
         return target_path
     base, ext = os.path.splitext(target_path)
     counter = 1
-    while os.path.exists(f"{base} ({counter}){ext}"):
+    while os.path.exists(f"{base} ({counter}){ext}") and counter < 10000:
         counter += 1
     return f"{base} ({counter}){ext}"
 
@@ -35,6 +35,46 @@ def check_ffmpeg_available() -> tuple:
     except Exception as e:
         return False, f"Ошибка запуска FFmpeg: {e}"
     return False, "FFmpeg вернул ненулевой код завершения."
+
+def run_ffmpeg_cancellable(cmd: list, temp_output: str = None, is_cancelled_cb=None) -> bool:
+    with tempfile.TemporaryFile(mode='w+b') as err_file:
+        proc = subprocess.Popen(
+            cmd,
+            startupinfo=get_startupinfo(),
+            creationflags=CREATE_NO_WINDOW,
+            stdout=subprocess.DEVNULL,
+            stderr=err_file
+        )
+        while proc.poll() is None:
+            if is_cancelled_cb and is_cancelled_cb():
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=2)
+                    except Exception:
+                        pass
+                if temp_output and os.path.exists(temp_output):
+                    try:
+                        os.remove(temp_output)
+                    except Exception:
+                        pass
+                return False
+            time.sleep(0.1)
+
+        if proc.returncode != 0:
+            if temp_output and os.path.exists(temp_output):
+                try:
+                    os.remove(temp_output)
+                except Exception:
+                    pass
+            err_file.seek(0)
+            err_data = err_file.read()
+            err_text = err_data[-2000:].decode(errors='replace').strip() if err_data else "Unknown error"
+            raise Exception(f"FFmpeg error: {err_text}")
+        return True
 
 def get_video_dimensions(input_path: str) -> tuple:
     if not input_path or not os.path.exists(input_path):
@@ -113,7 +153,9 @@ def get_video_dimensions(input_path: str) -> tuple:
         pass
     return None, None
 
-def convert_to_gif(input_path: str, output_path: str = None, fps: int = 15, width: int = 480) -> str:
+def convert_to_gif(input_path: str, output_path: str = None, fps: int = 15, width: int = 480, is_cancelled_cb=None) -> str:
+    if is_cancelled_cb and is_cancelled_cb():
+        return None
     if not input_path or not os.path.exists(input_path):
         return input_path
 
@@ -130,14 +172,12 @@ def convert_to_gif(input_path: str, output_path: str = None, fps: int = 15, widt
             "-vf", filter_complex,
             part_path
         ]
-        subprocess.run(
-            cmd,
-            startupinfo=get_startupinfo(),
-            creationflags=CREATE_NO_WINDOW,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True
-        )
+        if not run_ffmpeg_cancellable(cmd, part_path, is_cancelled_cb):
+            return None
+
+        if not os.path.exists(part_path) or os.path.getsize(part_path) == 0:
+            raise Exception("Файл GIF пуст или не был создан.")
+
         if os.path.exists(output_path):
             os.remove(output_path)
         os.rename(part_path, output_path)
@@ -148,8 +188,7 @@ def convert_to_gif(input_path: str, output_path: str = None, fps: int = 15, widt
                 os.remove(part_path)
             except Exception:
                 pass
-        print(f"GIF conversion error: {e}")
-        return input_path
+        raise e
 
 def get_video_duration(input_path: str):
     if not input_path or not os.path.exists(input_path):
@@ -180,86 +219,109 @@ def get_video_duration(input_path: str):
         pass
     return None
 
-def compress_to_target_size(input_path: str, target_mb: float = 8.0, output_path: str = None) -> str:
+def compress_to_target_size(input_path: str, target_mb: float = 8.0, output_path: str = None, is_cancelled_cb=None) -> str:
+    if is_cancelled_cb and is_cancelled_cb():
+        return None
     if not input_path or not os.path.exists(input_path):
-        return input_path
+        raise FileNotFoundError(f"Файл для сжатия не найден: {input_path}")
 
     if not output_path:
         base, ext = os.path.splitext(input_path)
         output_path = get_unique_path(f"{base}_compressed_{int(target_mb)}MB{ext or '.mp4'}")
 
     part_path = f"{output_path}.tmp.mp4"
+    max_bytes = int(target_mb * 1024 * 1024)
+
     try:
         duration = get_video_duration(input_path)
         if not duration or duration <= 0:
             duration = 60.0
 
-        # Budget bitrate targeting ~7.4MB to ensure it reliably stays under target_mb
-        effective_target_mb = max(1.0, target_mb - 0.6)
+        # Pass 1: Initial bitrate budget (target 88% of limit to leave headroom)
+        effective_target_mb = max(0.8, target_mb * 0.88)
         target_total_bitrate = (effective_target_mb * 8192) / duration
-        audio_bitrate = 64 if target_total_bitrate < 300 else 96
-        video_bitrate = max(40, int(target_total_bitrate - audio_bitrate))
+        audio_bitrate = 48 if target_total_bitrate < 250 else (64 if target_total_bitrate < 400 else 96)
+        video_bitrate = max(35, int(target_total_bitrate - audio_bitrate))
 
-        # Resolution scaling for lower bitrates to maintain picture quality and avoid bloated macroblocks
+        # Resolution scaling for lower bitrates to maintain quality and avoid oversized output
         vf_args = []
-        if video_bitrate < 350:
+        if video_bitrate < 300:
+            vf_args = ["-vf", "scale=trunc(min(iw\\,640)/2)*2:trunc(min(ih\\,360)/2)*2"]
+        elif video_bitrate < 500:
             vf_args = ["-vf", "scale=trunc(min(iw\\,854)/2)*2:trunc(min(ih\\,480)/2)*2"]
-        elif video_bitrate < 800:
+        elif video_bitrate < 900:
             vf_args = ["-vf", "scale=trunc(min(iw\\,1280)/2)*2:trunc(min(ih\\,720)/2)*2"]
 
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", input_path,
-        ]
+        cmd = ["ffmpeg", "-y", "-i", input_path]
         if vf_args:
             cmd.extend(vf_args)
         cmd.extend([
             "-c:v", "libx264",
             "-b:v", f"{video_bitrate}k",
-            "-maxrate", f"{int(video_bitrate * 1.25)}k",
-            "-bufsize", f"{int(video_bitrate * 2)}k",
+            "-maxrate", f"{int(video_bitrate * 1.2)}k",
+            "-bufsize", f"{int(video_bitrate * 1.5)}k",
             "-preset", "faster",
             "-c:a", "aac",
             "-b:a", f"{audio_bitrate}k",
             part_path
         ])
-        subprocess.run(
-            cmd,
-            startupinfo=get_startupinfo(),
-            creationflags=CREATE_NO_WINDOW,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True
-        )
+
+        if not run_ffmpeg_cancellable(cmd, part_path, is_cancelled_cb):
+            return None
 
         if not os.path.exists(part_path) or os.path.getsize(part_path) == 0:
             raise Exception("Сжатый файл пуст.")
 
-        # Verify actual file size on disk; if exceeded target_mb, re-encode with lower bitrate
-        actual_mb = os.path.getsize(part_path) / (1024 * 1024)
-        if actual_mb > target_mb:
-            lower_bitrate = max(30, int(video_bitrate * (target_mb * 0.88 / actual_mb)))
+        # Pass 2: Re-encode if size strictly exceeds limit
+        if os.path.getsize(part_path) > max_bytes:
+            actual_bytes = os.path.getsize(part_path)
+            ratio = max_bytes / actual_bytes
+            lower_bitrate = max(25, int(video_bitrate * ratio * 0.85))
             cmd_reencode = [
                 "ffmpeg", "-y",
                 "-i", input_path,
-                "-vf", "scale=trunc(min(iw\\,854)/2)*2:trunc(min(ih\\,480)/2)*2",
+                "-vf", "scale=trunc(min(iw\\,640)/2)*2:trunc(min(ih\\,360)/2)*2",
                 "-c:v", "libx264",
                 "-b:v", f"{lower_bitrate}k",
                 "-maxrate", f"{int(lower_bitrate * 1.15)}k",
-                "-bufsize", f"{int(lower_bitrate * 1.5)}k",
+                "-bufsize", f"{int(lower_bitrate * 1.4)}k",
                 "-preset", "faster",
                 "-c:a", "aac",
-                "-b:a", f"{min(64, audio_bitrate)}k",
+                "-b:a", "48k",
                 part_path
             ]
-            subprocess.run(
-                cmd_reencode,
-                startupinfo=get_startupinfo(),
-                creationflags=CREATE_NO_WINDOW,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=True
-            )
+            if not run_ffmpeg_cancellable(cmd_reencode, part_path, is_cancelled_cb):
+                return None
+
+        # Pass 3: Fallback pass if still oversized
+        if os.path.exists(part_path) and os.path.getsize(part_path) > max_bytes:
+            actual_bytes = os.path.getsize(part_path)
+            ratio = max_bytes / actual_bytes
+            aggressive_bitrate = max(20, int(lower_bitrate * ratio * 0.80))
+            cmd_reencode3 = [
+                "ffmpeg", "-y",
+                "-i", input_path,
+                "-vf", "scale=trunc(min(iw\\,480)/2)*2:trunc(min(ih\\,270)/2)*2",
+                "-c:v", "libx264",
+                "-b:v", f"{aggressive_bitrate}k",
+                "-maxrate", f"{int(aggressive_bitrate * 1.1)}k",
+                "-bufsize", f"{int(aggressive_bitrate * 1.2)}k",
+                "-preset", "fast",
+                "-c:a", "aac",
+                "-b:a", "32k",
+                part_path
+            ]
+            if not run_ffmpeg_cancellable(cmd_reencode3, part_path, is_cancelled_cb):
+                return None
+
+        # Final Strict Limit Check
+        if not os.path.exists(part_path):
+            raise Exception("Файл сжатия не сформирован.")
+
+        final_sz = os.path.getsize(part_path)
+        if final_sz > max_bytes:
+            os.remove(part_path)
+            raise Exception(f"Не удалось сжать видео до лимита {target_mb:.1f} МБ (размер {final_sz / (1024*1024):.2f} МБ). Уменьшите длительность ролика.")
 
         if os.path.exists(output_path):
             os.remove(output_path)
@@ -271,14 +333,15 @@ def compress_to_target_size(input_path: str, target_mb: float = 8.0, output_path
                 os.remove(part_path)
             except Exception:
                 pass
-        print(f"Video compression error: {e}")
-        return input_path
+        raise e
 
 def get_crop_filter(input_path: str, crop_params: dict) -> str:
     if not input_path or not crop_params:
         return ""
     try:
         real_w, real_h = get_video_dimensions(input_path)
+        if not real_w or not real_h:
+            return ""
 
         if 'x_norm' in crop_params:
             x_norm = max(0.0, min(1.0, float(crop_params.get('x_norm', 0.0))))
@@ -313,7 +376,9 @@ def get_crop_filter(input_path: str, crop_params: dict) -> str:
         print(f"Error calculating crop filter: {e}")
         return ""
 
-def crop_video(input_path: str, crop_params: dict, output_path: str = None) -> str:
+def crop_video(input_path: str, crop_params: dict, output_path: str = None, is_cancelled_cb=None) -> str:
+    if is_cancelled_cb and is_cancelled_cb():
+        return None
     if not input_path or not os.path.exists(input_path) or not crop_params:
         return input_path
 
@@ -343,14 +408,8 @@ def crop_video(input_path: str, crop_params: dict, output_path: str = None) -> s
                 part_path
             ]
 
-        subprocess.run(
-            cmd,
-            startupinfo=get_startupinfo(),
-            creationflags=CREATE_NO_WINDOW,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True
-        )
+        if not run_ffmpeg_cancellable(cmd, part_path, is_cancelled_cb):
+            return None
 
         if not os.path.exists(part_path) or os.path.getsize(part_path) == 0:
             raise Exception("Кадрированный файл пуст.")
@@ -365,8 +424,7 @@ def crop_video(input_path: str, crop_params: dict, output_path: str = None) -> s
                 os.remove(part_path)
             except Exception:
                 pass
-        print(f"Video crop error: {e}")
-        return input_path
+        raise e
 
 def cleanup_aura_temp_files(max_age_hours: float = 24.0) -> int:
     """Cleans up leftover aura temp files (proxies, thumbs, cropped previews) older than max_age_hours."""

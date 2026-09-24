@@ -9,6 +9,7 @@ class UnifiedBatchWorker(QThread):
     progress_updated = Signal(dict)
     item_completed = Signal(dict)
     batch_completed = Signal(list)
+    batch_summary = Signal(dict)
     download_error = Signal(str)
     status_message = Signal(str)
 
@@ -19,6 +20,9 @@ class UnifiedBatchWorker(QThread):
         self.save_dir = save_dir
         self.is_cancelled = False
         self._current_worker = None
+        self.results = []
+        self.errors = []
+        self.total = len(self.items)
 
     def cancel(self):
         self.is_cancelled = True
@@ -136,8 +140,20 @@ class UnifiedBatchWorker(QThread):
                 errors.append(f"{item_title}: {e}")
                 self.status_message.emit(f"[{idx+1}/{total}] ОШИБКА: {e}")
 
+        self.results = results
+        self.errors = errors
+        self.total = total
+
         if not self.is_cancelled:
-            if results:
+            summary = {
+                'results': results,
+                'errors': errors,
+                'total': total,
+                'success_count': len(results),
+                'error_count': len(errors),
+                'is_partial': len(errors) > 0 and len(results) > 0
+            }
+            if results and not errors:
                 self.progress_updated.emit({
                     'percent': 100.0,
                     'speed_str': "ГОТОВО",
@@ -147,7 +163,21 @@ class UnifiedBatchWorker(QThread):
                     'status': 'finished'
                 })
                 self.batch_completed.emit(results)
+                self.batch_summary.emit(summary)
+            elif results and errors:
+                pct = (len(results) / total) * 100.0
+                self.progress_updated.emit({
+                    'percent': pct,
+                    'speed_str': f"ЧАСТИЧНО ({len(results)}/{total})",
+                    'eta_str': "00:00",
+                    'downloaded_str': f"{len(results)}/{total} (ошибок: {len(errors)})",
+                    'total_str': f"{total} в очереди",
+                    'status': 'finished_with_errors'
+                })
+                self.batch_completed.emit(results)
+                self.batch_summary.emit(summary)
             elif errors:
                 self.download_error.emit("\n".join(errors))
+                self.batch_summary.emit(summary)
             else:
                 self.download_error.emit("Очередь пуста или отменена.")

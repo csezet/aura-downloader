@@ -57,7 +57,11 @@ class VideoQueueItem(QFrame):
         self.title_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         info_layout.addWidget(self.title_lbl)
 
-        meta_text = f"⏱ {data.get('duration_str', '--:--')} | {data.get('width', 1920)}x{data.get('height', 1080)} | {data.get('file_size_str', '')}"
+        if data.get('width') and data.get('height'):
+            res_str = f"{data.get('width')}x{data.get('height')}"
+        else:
+            res_str = "--x--"
+        meta_text = f"⏱ {data.get('duration_str', '--:--')} | {res_str} | {data.get('file_size_str', '')}"
         self.meta_lbl = QLabel(meta_text)
         self.meta_lbl.setStyleSheet("font-size: 9px; color: #A1A1AA; font-family: 'Consolas', monospace;")
         info_layout.addWidget(self.meta_lbl)

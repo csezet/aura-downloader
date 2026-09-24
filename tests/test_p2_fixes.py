@@ -23,19 +23,15 @@ class TestStage3P2Fixes(unittest.TestCase):
         try:
             executed_cmds = []
 
-            def mock_subp_run(cmd, *args, **kwargs):
+            def mock_cancellable(cmd, part_path, is_cancelled_cb=None):
                 executed_cmds.append(cmd)
-                # simulate writing to output part file
-                out_file = cmd[-1]
-                with open(out_file, 'wb') as f:
+                with open(part_path, 'wb') as f:
                     f.write(b"x" * int(7.0 * 1024 * 1024))
-                res = MagicMock()
-                res.returncode = 0
-                return res
+                return True
 
             # Case 1: Standard 60-second video
             with patch('core.media_converter.get_video_duration', return_value=60.0), \
-                 patch('subprocess.run', side_effect=mock_subp_run):
+                 patch('core.media_converter.run_ffmpeg_cancellable', side_effect=mock_cancellable):
                 out = compress_to_target_size(tmp_video_path, target_mb=8.0)
                 self.assertTrue(out.endswith(".mp4"))
                 self.assertTrue(os.path.exists(out))
@@ -45,7 +41,7 @@ class TestStage3P2Fixes(unittest.TestCase):
             # Case 2: Long 300-second video (should add resolution downscaling)
             executed_cmds.clear()
             with patch('core.media_converter.get_video_duration', return_value=300.0), \
-                 patch('subprocess.run', side_effect=mock_subp_run):
+                 patch('core.media_converter.run_ffmpeg_cancellable', side_effect=mock_cancellable):
                 out = compress_to_target_size(tmp_video_path, target_mb=8.0)
                 self.assertTrue(any("-vf" in cmd for cmd in executed_cmds))
                 if os.path.exists(out):
@@ -55,10 +51,10 @@ class TestStage3P2Fixes(unittest.TestCase):
             if os.path.exists(tmp_video_path):
                 os.remove(tmp_video_path)
 
-    def test_compress_non_existent_file(self):
-        """Test compress_to_target_size returns input_path safely when file does not exist."""
-        result = compress_to_target_size("non_existent_12345.mp4")
-        self.assertEqual(result, "non_existent_12345.mp4")
+    def test_compress_non_existent_file_raises_error(self):
+        """Test compress_to_target_size raises FileNotFoundError when file does not exist (does not silently return input_path)."""
+        with self.assertRaises(FileNotFoundError):
+            compress_to_target_size("non_existent_12345.mp4")
 
 
 if __name__ == '__main__':

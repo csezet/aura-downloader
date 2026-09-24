@@ -110,11 +110,16 @@ class ProgressWidget(QFrame):
 
         self.metrics_label.setText(f"SPEED: {speed} // {downloaded} / {total} // ETA: {eta}")
 
-    def complete(self, result: dict):
+    def complete(self, result: dict, errors: list = None):
         self.progress_bar.setValue(100)
-        self.percent_label.setText("100%")
-        self.status_label.setText("ГОТОВО!")
-        self.metrics_label.setText(f"ФАЙЛ СОХРАНЕН // {result.get('file_size_str', '')}")
+        if errors:
+            self.percent_label.setText("⚠")
+            self.status_label.setText("ЧАСТИЧНО ЗАВЕРШЕНО")
+            self.metrics_label.setText(f"СОХРАНЕНО: {result.get('file_size_str', '')} // СБОЕВ: {len(errors)}")
+        else:
+            self.percent_label.setText("100%")
+            self.status_label.setText("ГОТОВО!")
+            self.metrics_label.setText(f"ФАЙЛ СОХРАНЕН // {result.get('file_size_str', '')}")
 
         self._current_file_path = result.get('file_path')
         self.cancel_btn.setVisible(False)

@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import shutil
 import zipfile
 import tempfile
@@ -7,7 +8,7 @@ import subprocess
 from pathlib import Path
 import hashlib
 import requests
-from core.media_converter import get_unique_path
+from core.media_converter import get_unique_path, run_ffmpeg_cancellable
 
 CREATE_NO_WINDOW = 0x08000000
 
@@ -161,7 +162,7 @@ def get_video_fps(input_path: str):
         pass
     return None
 
-def interpolate_with_ffmpeg(input_path: str, target_fps: int = 60, output_path: str = None) -> str:
+def interpolate_with_ffmpeg(input_path: str, target_fps: int = 60, output_path: str = None, is_cancelled_cb=None) -> str:
     if not output_path:
         base, ext = os.path.splitext(input_path)
         output_path = get_unique_path(f"{base}_{target_fps}fps{ext or '.mp4'}")
@@ -180,19 +181,16 @@ def interpolate_with_ffmpeg(input_path: str, target_fps: int = 60, output_path: 
             "-c:a", "copy",
             part_path
         ]
-        subprocess.run(
-            cmd,
-            startupinfo=get_startupinfo(),
-            creationflags=CREATE_NO_WINDOW,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True
-        )
+        if not run_ffmpeg_cancellable(cmd, part_path, is_cancelled_cb):
+            return None
+
         if os.path.exists(output_path):
             os.remove(output_path)
         os.rename(part_path, output_path)
         return output_path
     except Exception as e:
+        if is_cancelled_cb and is_cancelled_cb():
+            return None
         if os.path.exists(part_path):
             try:
                 os.remove(part_path)
@@ -211,14 +209,8 @@ def interpolate_with_ffmpeg(input_path: str, target_fps: int = 60, output_path: 
                 "-c:a", "copy",
                 part_path
             ]
-            subprocess.run(
-                cmd,
-                startupinfo=get_startupinfo(),
-                creationflags=CREATE_NO_WINDOW,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=True
-            )
+            if not run_ffmpeg_cancellable(cmd, part_path, is_cancelled_cb):
+                return None
             if os.path.exists(output_path):
                 os.remove(output_path)
             os.rename(part_path, output_path)
@@ -231,10 +223,10 @@ def interpolate_with_ffmpeg(input_path: str, target_fps: int = 60, output_path: 
                     pass
             return input_path
 
-def interpolate_with_rife(input_path: str, target_fps: int = 60, output_path: str = None, status_callback=None) -> str:
+def interpolate_with_rife(input_path: str, target_fps: int = 60, output_path: str = None, status_callback=None, is_cancelled_cb=None) -> str:
     rife_exe = get_rife_executable()
     if not rife_exe or not os.path.exists(rife_exe):
-        return interpolate_with_ffmpeg(input_path, target_fps, output_path)
+        return interpolate_with_ffmpeg(input_path, target_fps, output_path, is_cancelled_cb=is_cancelled_cb)
 
     if not output_path:
         base, ext = os.path.splitext(input_path)
@@ -253,30 +245,25 @@ def interpolate_with_rife(input_path: str, target_fps: int = 60, output_path: st
     os.makedirs(frames_out, exist_ok=True)
 
     try:
+        if is_cancelled_cb and is_cancelled_cb():
+            return None
+
         # 1. Extract audio
         if status_callback:
             status_callback("Извлечение аудио...")
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", input_path, "-vn", "-c:a", "copy", audio_path],
-            startupinfo=get_startupinfo(),
-            creationflags=CREATE_NO_WINDOW,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
+        cmd_audio = ["ffmpeg", "-y", "-i", input_path, "-vn", "-c:a", "copy", audio_path]
+        run_ffmpeg_cancellable(cmd_audio, audio_path, is_cancelled_cb)
+        if is_cancelled_cb and is_cancelled_cb():
+            return None
         has_audio = os.path.exists(audio_path) and os.path.getsize(audio_path) > 0
 
         # 2. Extract frames
         if status_callback:
             status_callback("Извлечение кадров видео...")
         extract_pattern = os.path.join(frames_in, "frame_%08d.png")
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", input_path, "-qscale:v", "1", extract_pattern],
-            startupinfo=get_startupinfo(),
-            creationflags=CREATE_NO_WINDOW,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True
-        )
+        cmd_extract = ["ffmpeg", "-y", "-i", input_path, "-qscale:v", "1", extract_pattern]
+        if not run_ffmpeg_cancellable(cmd_extract, None, is_cancelled_cb):
+            return None
 
         # 3. Run RIFE NCNN Vulkan
         if status_callback:
@@ -290,15 +277,32 @@ def interpolate_with_rife(input_path: str, target_fps: int = 60, output_path: st
             "-n", str(int(multiplier * orig_fps))
         ]
 
-        subprocess.run(
-            cmd_rife,
-            cwd=rife_dir,
-            startupinfo=get_startupinfo(),
-            creationflags=CREATE_NO_WINDOW,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True
-        )
+        with tempfile.TemporaryFile(mode='w+b') as err_file:
+            proc = subprocess.Popen(
+                cmd_rife,
+                cwd=rife_dir,
+                startupinfo=get_startupinfo(),
+                creationflags=CREATE_NO_WINDOW,
+                stdout=subprocess.DEVNULL,
+                stderr=err_file
+            )
+            while proc.poll() is None:
+                if is_cancelled_cb and is_cancelled_cb():
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                    return None
+                time.sleep(0.1)
+            if proc.returncode != 0:
+                err_file.seek(0)
+                err_data = err_file.read()
+                err_text = err_data[-1000:].decode(errors='replace').strip() if err_data else "RIFE failed"
+                raise Exception(f"RIFE error: {err_text}")
+
+        if is_cancelled_cb and is_cancelled_cb():
+            return None
 
         # 4. Assemble video back
         if status_callback:
@@ -306,7 +310,6 @@ def interpolate_with_rife(input_path: str, target_fps: int = 60, output_path: st
 
         out_pattern = os.path.join(frames_out, "%08d.png")
         if not os.path.exists(os.path.join(frames_out, "00000001.png")):
-            # Check naming
             out_pattern = os.path.join(frames_out, "frame_%08d.png")
 
         actual_fps = multiplier * orig_fps
@@ -325,14 +328,8 @@ def interpolate_with_rife(input_path: str, target_fps: int = 60, output_path: st
             part_path
         ])
 
-        subprocess.run(
-            cmd_merge,
-            startupinfo=get_startupinfo(),
-            creationflags=CREATE_NO_WINDOW,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True
-        )
+        if not run_ffmpeg_cancellable(cmd_merge, part_path, is_cancelled_cb):
+            return None
 
         if os.path.exists(output_path):
             os.remove(output_path)
@@ -340,23 +337,25 @@ def interpolate_with_rife(input_path: str, target_fps: int = 60, output_path: st
         return output_path
 
     except Exception as e:
+        if is_cancelled_cb and is_cancelled_cb():
+            return None
         if os.path.exists(part_path):
             try:
                 os.remove(part_path)
             except Exception:
                 pass
         print(f"RIFE error: {e}. Falling back to FFmpeg MCI.")
-        return interpolate_with_ffmpeg(input_path, target_fps, output_path)
+        return interpolate_with_ffmpeg(input_path, target_fps, output_path, is_cancelled_cb=is_cancelled_cb)
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
-def interpolate_video(input_path: str, target_fps: int = 60, model: str = 'auto', output_path: str = None, status_callback=None) -> str:
+def interpolate_video(input_path: str, target_fps: int = 60, model: str = 'auto', output_path: str = None, status_callback=None, is_cancelled_cb=None) -> str:
     if not input_path or not os.path.exists(input_path):
         return input_path
 
     if model == 'rife' or (model == 'auto' and is_rife_available()):
-        return interpolate_with_rife(input_path, target_fps=target_fps, output_path=output_path, status_callback=status_callback)
+        return interpolate_with_rife(input_path, target_fps=target_fps, output_path=output_path, status_callback=status_callback, is_cancelled_cb=is_cancelled_cb)
     else:
         if status_callback:
             status_callback(f"Аппаратное увеличение плавности ({target_fps} FPS)...")
-        return interpolate_with_ffmpeg(input_path, target_fps=target_fps, output_path=output_path)
+        return interpolate_with_ffmpeg(input_path, target_fps=target_fps, output_path=output_path, is_cancelled_cb=is_cancelled_cb)
