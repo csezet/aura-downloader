@@ -468,26 +468,40 @@ class DownloadWorker(QThread):
                     file_path = f"{base}_{counter}{ext_part}"
                     counter += 1
 
-                with open(file_path, 'wb') as f:
-                    for chunk in resp.iter_content(chunk_size=65536):
-                        if self.is_cancelled:
-                            raise Exception("Загрузка отменена.")
-                        f.write(chunk)
-                        downloaded_bytes += len(chunk)
-                        dt = time.time() - t0
-                        speed = downloaded_bytes / dt if dt > 0 else 0
-                        speed_str = f"{speed / (1024 * 1024):.1f} MB/s" if speed > 0 else "-- MB/s"
-                        pct = (downloaded_bytes / total_bytes * 100.0) if total_bytes > 0 else 100.0
-                        self.progress_updated.emit({
-                            'percent': pct,
-                            'speed_str': speed_str,
-                            'eta_str': "--:--",
-                            'downloaded_str': format_bytes(downloaded_bytes),
-                            'total_str': format_bytes(total_bytes),
-                            'status': 'downloading'
-                        })
+                part_path = f"{file_path}.part"
+                try:
+                    with open(part_path, 'wb') as f:
+                        for chunk in resp.iter_content(chunk_size=65536):
+                            if self.is_cancelled:
+                                raise Exception("Загрузка отменена.")
+                            f.write(chunk)
+                            downloaded_bytes += len(chunk)
+                            dt = time.time() - t0
+                            speed = downloaded_bytes / dt if dt > 0 else 0
+                            speed_str = f"{speed / (1024 * 1024):.1f} MB/s" if speed > 0 else "-- MB/s"
+                            pct = (downloaded_bytes / total_bytes * 100.0) if total_bytes > 0 else 100.0
+                            self.progress_updated.emit({
+                                'percent': pct,
+                                'speed_str': speed_str,
+                                'eta_str': "--:--",
+                                'downloaded_str': format_bytes(downloaded_bytes),
+                                'total_str': format_bytes(total_bytes),
+                                'status': 'downloading'
+                            })
 
-                file_size = os.path.getsize(file_path)
+                    if os.path.exists(part_path):
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+                        os.rename(part_path, file_path)
+                except Exception as ex:
+                    if os.path.exists(part_path):
+                        try:
+                            os.remove(part_path)
+                        except Exception:
+                            pass
+                    raise ex
+
+                file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
                 self.download_completed.emit({
                     'title': title,
                     'url': self.url,
@@ -709,16 +723,21 @@ class GalleryDownloadWorker(QThread):
                 counter += 1
 
             self.status_message.emit(f"Скачивание {i + 1}/{total_items}: {filename}")
-            download_url = item.get('best_image') or item.get('url')
+            if is_video:
+                download_url = item.get('url') or item.get('best_image')
+            else:
+                download_url = item.get('best_image') or item.get('url')
+
+            part_path = f"{file_path}.part"
 
             try:
-                resp = requests.get(download_url, headers=headers, stream=True, timeout=20)
+                resp = requests.get(download_url, headers=headers, stream=True, timeout=25)
                 resp.raise_for_status()
                 total_bytes = int(resp.headers.get('content-length', 0))
                 downloaded_bytes = 0
                 t0 = time.time()
 
-                with open(file_path, 'wb') as f:
+                with open(part_path, 'wb') as f:
                     for chunk in resp.iter_content(chunk_size=65536):
                         if self.is_cancelled:
                             break
@@ -739,16 +758,24 @@ class GalleryDownloadWorker(QThread):
                         )
 
                 if self.is_cancelled:
-                    if os.path.exists(file_path):
+                    if os.path.exists(part_path):
                         try:
-                            os.remove(file_path)
+                            os.remove(part_path)
                         except Exception:
                             pass
                     break
 
+                if not os.path.exists(part_path) or os.path.getsize(part_path) == 0:
+                    raise Exception(f"Файл {filename} пуст или не был скачан.")
+
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                os.rename(part_path, file_path)
+
                 file_size = os.path.getsize(file_path)
+                default_title = f"Instagram {'Видео' if is_video else 'Фото'} #{i + 1}"
                 result_item = {
-                    'title': item.get('title') or f"Instagram Фото #{i + 1}",
+                    'title': item.get('title') or default_title,
                     'url': download_url,
                     'file_path': file_path,
                     'file_size': file_size,
@@ -760,6 +787,11 @@ class GalleryDownloadWorker(QThread):
                 self.item_completed.emit(result_item)
 
             except Exception as e:
+                if os.path.exists(part_path):
+                    try:
+                        os.remove(part_path)
+                    except Exception:
+                        pass
                 self.download_error.emit(f"Ошибка при скачивании {filename}: {e}")
 
         if not self.is_cancelled and results:

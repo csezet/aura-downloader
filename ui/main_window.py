@@ -15,6 +15,7 @@ from core.settings import settings
 from core.history import history
 from core.downloader import MetadataWorker, DownloadWorker, GalleryDownloadWorker
 from core.local_processor import get_local_media_info, is_video_file, LocalProcessWorker, LocalBatchProcessWorker
+from core.unified_batch_worker import UnifiedBatchWorker
 from core.clipboard import ClipboardWatcher
 from assets.styles import get_stylesheet
 from assets.icons import get_svg_icon
@@ -752,12 +753,13 @@ class MainWindow(QMainWindow):
             # Display cards for all selected items in main cards_list
             for item in selected:
                 is_vid = item.get('is_video', False)
+                media_url = item.get('url') if is_vid else (item.get('best_image') or item.get('url'))
                 info = {
-                    'url': item.get('url') or item.get('best_image'),
-                    'direct_url': item.get('best_image') or item.get('url'),
-                    'direct_media_url': item.get('best_image') or item.get('url'),
-                    'playable_url': item.get('url'),
-                    'title': item.get('title') or f"Instagram Фото #{item.get('index', 1)}",
+                    'url': media_url,
+                    'direct_url': media_url,
+                    'direct_media_url': media_url,
+                    'playable_url': media_url,
+                    'title': item.get('title') or f"Instagram {'Видео' if is_vid else 'Фото'} #{item.get('index', 1)}",
                     'uploader': item.get('uploader') or gallery_data.get('uploader') or 'Instagram',
                     'duration': 0,
                     'duration_str': 'ФОТО' if not is_vid else 'ВИДЕО',
@@ -942,7 +944,7 @@ class MainWindow(QMainWindow):
         self.download_btn.setEnabled(False)
 
         if len(selected_queue) > 1:
-            self.download_worker = LocalBatchProcessWorker(selected_queue, options, save_dir)
+            self.download_worker = UnifiedBatchWorker(selected_queue, options, save_dir)
             self._track_worker(self.download_worker)
             self.download_worker.progress_updated.connect(self.progress_widget.update_progress)
             self.download_worker.item_completed.connect(self._on_queue_item_completed)
