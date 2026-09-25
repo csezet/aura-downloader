@@ -534,10 +534,35 @@ def crop_video(input_path: str, crop_params: dict, output_path: str = None, is_c
                 pass
         raise e
 
-def cleanup_aura_temp_files(max_age_hours: float = 24.0, extra_dirs: list = None) -> int:
+def is_recovery_staging_dir(staging_path: str) -> bool:
+    """
+    Checks if a staging directory contains preserved data for recovery.
+    Protected from automated deletion if .aura_recovery.json exists or
+    if it contains valid completed media files without .part files.
+    """
+    try:
+        marker = os.path.join(staging_path, ".aura_recovery.json")
+        if os.path.exists(marker):
+            return True
+        files = os.listdir(staging_path)
+        has_part = any(f.endswith('.part') for f in files)
+        if has_part:
+            return False
+        media_exts = ('.mp4', '.mkv', '.avi', '.webm', '.mov', '.mp3', '.flac', '.wav', '.aac', '.opus', '.srt', '.vtt')
+        has_media = any(f.endswith(media_exts) for f in files)
+        if has_media:
+            return True
+    except Exception:
+        return True  # If unable to inspect, safer to preserve than delete
+    return False
+
+
+def cleanup_aura_temp_files(max_age_hours: float = 24.0, extra_dirs: list = None, include_recovery: bool = False) -> int:
     """
     Cleans up leftover aura temp files (proxies, thumbs, cropped previews)
     and orphaned .aura_staging_* directories older than max_age_hours.
+    Preserved recovery directories containing .aura_recovery.json or completed media
+    are strictly protected from automated deletion unless include_recovery=True.
     """
     now = time.time()
     cutoff = now - (max_age_hours * 3600)
@@ -570,8 +595,10 @@ def cleanup_aura_temp_files(max_age_hours: float = 24.0, extra_dirs: list = None
                         if mtime < cutoff or max_age_hours <= 0:
                             os.remove(entry.path)
                             cleaned_count += 1
-                    # Clean orphaned staging directories
+                    # Clean orphaned staging directories (skip protected recovery folders)
                     elif entry.is_dir() and entry.name.startswith(".aura_staging_"):
+                        if not include_recovery and is_recovery_staging_dir(entry.path):
+                            continue
                         mtime = entry.stat().st_mtime
                         if mtime < cutoff or max_age_hours <= 0:
                             shutil.rmtree(entry.path, ignore_errors=True)

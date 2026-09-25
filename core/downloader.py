@@ -11,6 +11,7 @@ from yt_dlp.extractor.instagram import InstagramIE
 from core.settings import settings
 from core.cookies_helper import get_cookies_config
 import tempfile
+import json
 from core.media_converter import (
     convert_to_gif, compress_to_target_size, crop_video, get_unique_path,
     get_unique_base_for_group, get_video_duration, probe_video_stream, get_ffmpeg_path
@@ -775,11 +776,38 @@ class DownloadWorker(QThread):
                     except Exception as rb_err:
                         rollback_errors.append(f"{os.path.basename(transferred_dest)}: {rb_err}")
 
+                # Write recovery marker with metadata before reporting error
+                try:
+                    recovery_marker_path = os.path.join(staging_dir, ".aura_recovery.json")
+                    recovery_files = []
+                    if os.path.exists(staging_dir):
+                        for item_name in os.listdir(staging_dir):
+                            if item_name == ".aura_recovery.json":
+                                continue
+                            item_p = os.path.join(staging_dir, item_name)
+                            if os.path.isfile(item_p):
+                                recovery_files.append({
+                                    'name': item_name,
+                                    'size': os.path.getsize(item_p)
+                                })
+                    recovery_info = {
+                        'timestamp': time.time(),
+                        'error': str(move_exc),
+                        'save_dir': self.save_dir,
+                        'files': recovery_files,
+                        'url': self.url
+                    }
+                    with open(recovery_marker_path, 'w', encoding='utf-8') as rf:
+                        json.dump(recovery_info, rf, indent=2, ensure_ascii=False)
+                except Exception as meta_err:
+                    print(f"Failed to write recovery marker: {meta_err}")
+
                 if not rollback_errors:
                     # Rollback succeeded completely! All files are safely in staging_dir
                     raise Exception(
                         f"Сбой переноса файлов: {move_exc}. "
-                        f"Файлы возвращены и сохранены во временном каталоге для восстановления: {staging_dir}"
+                        f"Файлы защищены и сохранены во временном каталоге для восстановления: {staging_dir}. "
+                        f"Вы можете открыть эту папку в Проводнике и скопировать готовые файлы."
                     )
                 else:
                     # Partial rollback failure
@@ -788,7 +816,8 @@ class DownloadWorker(QThread):
                     raise Exception(
                         f"Критический сбой переноса файлов: {move_exc}. "
                         f"Не удалось полностью откатить перемещение ({', '.join(rollback_errors)}). "
-                        f"Файлы в целевой папке: {still_at_dest}; во временной папке: {still_in_staging}"
+                        f"Файлы в целевой папке: {still_at_dest}; во временной папке: {still_in_staging}. "
+                        f"Файлы защищены от автоматической очистки для ручного восстановления."
                     )
 
             final_path = final_dest
