@@ -42,8 +42,20 @@ def build():
 
     if (project_dir / "assets").exists():
         cmd.append("--add-data=assets;assets")
-    if (project_dir / "tools").exists():
+    
+    tools_dir = project_dir / "tools"
+    has_bundled_ffmpeg = (tools_dir / "ffmpeg.exe").exists() and (tools_dir / "ffprobe.exe").exists()
+    if has_bundled_ffmpeg:
+        print("Bundled Tools: tools/ffmpeg.exe and tools/ffprobe.exe detected! Packaging into distribution.")
         cmd.append("--add-data=tools;tools")
+    else:
+        print("=" * 60)
+        print("⚠️ ВНИМАНИЕ: tools/ffmpeg.exe или tools/ffprobe.exe не найдены.")
+        print("Готовая сборка Aura Downloader потребует наличия FFmpeg в системном PATH")
+        print("или ручного копирования ffmpeg.exe и ffprobe.exe в папку tools/.")
+        print("=" * 60)
+        if tools_dir.exists():
+            cmd.append("--add-data=tools;tools")
 
     cmd.append("main.py")
 

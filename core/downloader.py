@@ -11,7 +11,10 @@ from yt_dlp.extractor.instagram import InstagramIE
 from core.settings import settings
 from core.cookies_helper import get_cookies_config
 import tempfile
-from core.media_converter import convert_to_gif, compress_to_target_size, crop_video, get_unique_path, get_video_duration, probe_video_stream, get_ffmpeg_path
+from core.media_converter import (
+    convert_to_gif, compress_to_target_size, crop_video, get_unique_path,
+    get_unique_base_for_group, get_video_duration, probe_video_stream, get_ffmpeg_path
+)
 from core.interpolator import interpolate_video
 
 def format_bytes(bytes_val):
@@ -394,6 +397,7 @@ class DownloadWorker(QThread):
 
     def run(self):
         staging_dir = None
+        download_succeeded = False
         try:
             mode = self.options.get('mode', 'best')
             audio_fmt = self.options.get('audio_fmt', 'mp3').lower()
@@ -633,6 +637,16 @@ class DownloadWorker(QThread):
             if not os.path.exists(final_path) and self._last_filename and os.path.exists(self._last_filename):
                 final_path = self._last_filename
 
+            if not os.path.exists(final_path) and staging_dir and os.path.exists(staging_dir):
+                for f in os.listdir(staging_dir):
+                    candidate = os.path.join(staging_dir, f)
+                    if os.path.isfile(candidate) and not candidate.endswith('.part') and not any(candidate.endswith(ext) for ext in ['.srt', '.vtt', '.lrc', '.ass']):
+                        final_path = candidate
+                        break
+
+            # Record initial stem of the downloaded media file before any crop/compress/interpolate
+            raw_downloaded_stem = Path(final_path).stem if final_path else ""
+
             if self.is_cancelled:
                 return
 
@@ -706,38 +720,48 @@ class DownloadWorker(QThread):
                 # Search inside staging_dir for any matching media file if name changed
                 for f in os.listdir(staging_dir):
                     candidate = os.path.join(staging_dir, f)
-                    if os.path.isfile(candidate) and not candidate.endswith('.part'):
+                    if os.path.isfile(candidate) and not candidate.endswith('.part') and not any(candidate.endswith(ext) for ext in ['.srt', '.vtt', '.lrc', '.ass']):
                         final_path = candidate
                         break
 
             if not os.path.exists(final_path):
                 raise Exception("Файл не был сохранен или был удален.")
 
-            orig_media_stem = Path(final_path).stem
+            final_ext = Path(final_path).suffix
+            final_media_stem = Path(final_path).stem
 
-            # Move atomically from staging to target save_dir with anti-overwrite protection
-            final_dest = get_unique_path(os.path.join(self.save_dir, os.path.basename(final_path)))
-            shutil.move(final_path, final_dest)
-            dest_media_stem = Path(final_dest).stem
-
-            # Move any sidecar files (subtitles .srt/.vtt, thumbnails, etc.) from staging_dir to save_dir
+            # Collect all sidecar files in staging_dir (subtitles .srt/.vtt, etc.)
+            sidecar_files = []
             if os.path.exists(staging_dir):
-                for f in os.listdir(staging_dir):
-                    sidecar_src = os.path.join(staging_dir, f)
-                    if not os.path.isfile(sidecar_src) or sidecar_src.endswith('.part') or sidecar_src == final_path:
+                for f in sorted(os.listdir(staging_dir)):
+                    full_p = os.path.join(staging_dir, f)
+                    if not os.path.isfile(full_p) or full_p.endswith('.part') or full_p == final_path:
                         continue
-                    if f.startswith(orig_media_stem):
-                        suffix = f[len(orig_media_stem):]
-                        sidecar_dest_name = f"{dest_media_stem}{suffix}"
+                    if raw_downloaded_stem and f.startswith(raw_downloaded_stem):
+                        sub_suffix = f[len(raw_downloaded_stem):]
+                    elif f.startswith(final_media_stem):
+                        sub_suffix = f[len(final_media_stem):]
                     else:
-                        sidecar_dest_name = f
-                    sidecar_dest = get_unique_path(os.path.join(self.save_dir, sidecar_dest_name))
-                    try:
-                        shutil.move(sidecar_src, sidecar_dest)
-                    except Exception as err:
-                        print(f"Warning moving sidecar file {f}: {err}")
+                        sub_suffix = f".{f}"
+                    sidecar_files.append((full_p, sub_suffix))
+
+            # Compute a shared collision-free base stem for both final video and all its sidecars
+            sidecar_suffixes = [s[1] for s in sidecar_files]
+            unique_stem = get_unique_base_for_group(self.save_dir, final_media_stem, final_ext, sidecar_suffixes)
+            final_dest = os.path.join(self.save_dir, f"{unique_stem}{final_ext}")
+
+            # Prepare plan of all files to move
+            moves_plan = [(final_path, final_dest)]
+            for src_p, sub_suffix in sidecar_files:
+                dest_p = os.path.join(self.save_dir, f"{unique_stem}{sub_suffix}")
+                moves_plan.append((src_p, dest_p))
+
+            # Execute moves as an atomic batch. If any move fails, raise exception!
+            for src_p, dest_p in moves_plan:
+                shutil.move(src_p, dest_p)
 
             final_path = final_dest
+            download_succeeded = True
 
             file_size = os.path.getsize(final_path) if os.path.exists(final_path) else 0
             title = info.get('title', Path(final_path).stem if final_path else 'Скачанный файл')
@@ -758,7 +782,11 @@ class DownloadWorker(QThread):
                 self.download_error.emit(str(e))
         finally:
             if staging_dir and os.path.exists(staging_dir):
-                shutil.rmtree(staging_dir, ignore_errors=True)
+                if download_succeeded:
+                    try:
+                        shutil.rmtree(staging_dir, ignore_errors=True)
+                    except Exception:
+                        pass
 
 
 class GalleryDownloadWorker(QThread):

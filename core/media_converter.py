@@ -23,25 +23,67 @@ def get_unique_path(target_path: str) -> str:
         counter += 1
     return f"{base} ({counter}){ext}"
 
+def get_unique_base_for_group(save_dir: str, stem: str, primary_ext: str, sidecar_suffixes: list) -> str:
+    """
+    Finds a base filename stem such that both the primary media file
+    '{stem}{primary_ext}' and all its sidecar files '{stem}{sidecar_suffix}'
+    can be written without colliding with any existing file in save_dir.
+    """
+    candidate_stem = stem
+    counter = 1
+    def has_collision(test_stem):
+        if os.path.exists(os.path.join(save_dir, f"{test_stem}{primary_ext}")):
+            return True
+        for s_suffix in sidecar_suffixes:
+            if os.path.exists(os.path.join(save_dir, f"{test_stem}{s_suffix}")):
+                return True
+        return False
+
+    while has_collision(candidate_stem) and counter < 10000:
+        candidate_stem = f"{stem} ({counter})"
+        counter += 1
+    return candidate_stem
+
 def get_ffmpeg_path() -> str:
-    base_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    bundled = os.path.join(base_dir, "tools", "ffmpeg.exe")
-    if os.path.isfile(bundled):
-        return bundled
-    local_app = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "ffmpeg.exe")
-    if os.path.isfile(local_app):
-        return os.path.abspath(local_app)
+    candidates = []
+    # 1. Bundled PyInstaller _MEIPASS
+    if hasattr(sys, '_MEIPASS'):
+        candidates.append(os.path.join(sys._MEIPASS, "tools", "ffmpeg.exe"))
+        candidates.append(os.path.join(sys._MEIPASS, "ffmpeg.exe"))
+    # 2. Frozen executable directory (PyInstaller onedir)
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(sys.executable)
+        candidates.append(os.path.join(exe_dir, "tools", "ffmpeg.exe"))
+        candidates.append(os.path.join(exe_dir, "ffmpeg.exe"))
+    # 3. Development / source project tools directory
+    proj_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidates.append(os.path.join(proj_dir, "tools", "ffmpeg.exe"))
+    candidates.append(os.path.join(proj_dir, "ffmpeg.exe"))
+
+    for c in candidates:
+        if os.path.isfile(c):
+            return os.path.abspath(c)
+
     which_path = shutil.which("ffmpeg")
     return which_path if which_path else "ffmpeg"
 
 def get_ffprobe_path() -> str:
-    base_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    bundled = os.path.join(base_dir, "tools", "ffprobe.exe")
-    if os.path.isfile(bundled):
-        return bundled
-    local_app = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "ffprobe.exe")
-    if os.path.isfile(local_app):
-        return os.path.abspath(local_app)
+    candidates = []
+    if hasattr(sys, '_MEIPASS'):
+        candidates.append(os.path.join(sys._MEIPASS, "tools", "ffprobe.exe"))
+        candidates.append(os.path.join(sys._MEIPASS, "ffprobe.exe"))
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(sys.executable)
+        candidates.append(os.path.join(exe_dir, "tools", "ffprobe.exe"))
+        candidates.append(os.path.join(exe_dir, "ffprobe.exe"))
+    proj_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidates.append(os.path.join(proj_dir, "tools", "ffprobe.exe"))
+    candidates.append(os.path.join(proj_dir, "ffprobe.exe"))
+
+    for c in candidates:
+        if os.path.isfile(c):
+            return os.path.abspath(c)
+
     which_path = shutil.which("ffprobe")
     return which_path if which_path else "ffprobe"
 
@@ -520,7 +562,7 @@ def get_video_codec(input_path: str) -> str:
         return ""
     try:
         cmd = [
-            "ffprobe", "-v", "error",
+            get_ffprobe_path(), "-v", "error",
             "-select_streams", "v:0",
             "-show_entries", "stream=codec_name",
             "-of", "default=noprint_wrappers=1:nokey=1",
@@ -562,7 +604,7 @@ def get_or_create_preview_proxy(input_path: str) -> str:
             return proxy_path
 
         cmd = [
-            "ffmpeg", "-y",
+            get_ffmpeg_path(), "-y",
             "-i", input_path,
             "-c:v", "libx264",
             "-preset", "ultrafast",

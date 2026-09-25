@@ -8,7 +8,8 @@ import time
 from core.downloader import format_bytes, format_seconds, parse_time_str
 from core.media_converter import (
     convert_to_gif, compress_to_target_size, crop_video, get_crop_filter,
-    get_video_dimensions, get_video_duration, get_unique_path, run_ffmpeg_cancellable
+    get_video_dimensions, get_video_duration, get_unique_path, run_ffmpeg_cancellable,
+    get_ffmpeg_path
 )
 from core.interpolator import interpolate_video, get_video_fps
 
@@ -64,7 +65,7 @@ def get_local_media_info(file_path: str) -> dict:
         thumb_path = os.path.join(temp_dir, f"aura_thumb_{abs(hash(file_path))}.jpg")
         seek_sec = "00:00:00.5" if (duration and duration > 1) else "00:00:00"
         cmd = [
-            "ffmpeg", "-y",
+            get_ffmpeg_path(), "-y",
             "-ss", seek_sec,
             "-i", file_path,
             "-vframes", "1",

@@ -148,9 +148,27 @@ class ProgressWidget(QFrame):
         self.open_file_btn.setVisible(True)
         self.open_dir_btn.setVisible(True)
 
-    def set_error(self, err_msg: str):
+    def complete_failed(self, errors: list = None, total: int = None, has_retry: bool = False):
+        err_list = errors or []
+        total_count = total or len(err_list)
+        self.progress_bar.setValue(0)
+        self.percent_label.setText("0%")
+        self.status_label.setText("ОШИБКА ОЧЕРЕДИ")
+        self.metrics_label.setText(f"СОХРАНЕНО: 0/{total_count} // СБОЕВ: {len(err_list)}")
+        err_tooltip = "Ошибки при обработке очереди:\n" + "\n".join(f"• {e}" for e in err_list)
+        self.status_label.setToolTip(err_tooltip)
+        self.metrics_label.setToolTip(err_tooltip)
+        self.retry_btn.setVisible(has_retry)
+        self.cancel_btn.setVisible(True)
+        self.cancel_btn.setText("✕ ЗАКРЫТЬ")
+        self.open_file_btn.setVisible(False)
+        self.open_dir_btn.setVisible(False)
+        self.setVisible(True)
+
+    def set_error(self, err_msg: str, has_retry: bool = False):
         self.status_label.setText("ОШИБКА")
         self.metrics_label.setText(err_msg[:80] if err_msg else "Ошибка получения информации")
+        self.retry_btn.setVisible(has_retry)
         self.cancel_btn.setVisible(True)
         self.cancel_btn.setText("✕ ЗАКРЫТЬ")
         self.open_file_btn.setVisible(False)

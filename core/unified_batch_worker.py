@@ -167,7 +167,9 @@ class UnifiedBatchWorker(QThread):
                 'total': total,
                 'success_count': len(results),
                 'error_count': len(errors),
-                'is_partial': len(errors) > 0 and len(results) > 0
+                'is_partial': len(errors) > 0 and len(results) > 0,
+                'is_all_failed': len(results) == 0 and len(errors) > 0,
+                'is_full_success': len(results) > 0 and len(errors) == 0
             }
             if results and not errors:
                 self.progress_updated.emit({
@@ -193,6 +195,14 @@ class UnifiedBatchWorker(QThread):
                 self.batch_completed.emit(results)
                 self.batch_summary.emit(summary)
             elif errors:
+                self.progress_updated.emit({
+                    'percent': 0.0,
+                    'speed_str': "СБОЙ ОЧЕРЕДИ",
+                    'eta_str': "00:00",
+                    'downloaded_str': f"0/{total} (ошибок: {len(errors)})",
+                    'total_str': f"{total} в очереди",
+                    'status': 'error'
+                })
                 self.download_error.emit("\n".join(errors))
                 self.batch_summary.emit(summary)
             else:

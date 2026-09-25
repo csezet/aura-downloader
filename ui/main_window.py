@@ -995,12 +995,12 @@ class MainWindow(QMainWindow):
         self.download_btn.setEnabled(False)
 
         if len(selected_queue) > 1:
+            self._last_failed_items = []
             self.download_worker = UnifiedBatchWorker(selected_queue, options, save_dir)
             self._track_worker(self.download_worker)
             self.download_worker.progress_updated.connect(self.progress_widget.update_progress)
             self.download_worker.item_completed.connect(self._on_queue_item_completed)
-            self.download_worker.batch_completed.connect(self._on_batch_success)
-            self.download_worker.download_error.connect(self._on_download_fail)
+            self.download_worker.batch_summary.connect(self._on_batch_summary)
             self.download_worker.status_message.connect(lambda msg: self.progress_widget.status_label.setText(msg.upper()))
             self.download_worker.start()
             return
@@ -1044,36 +1044,69 @@ class MainWindow(QMainWindow):
             thumbnail=result.get('thumbnail')
         )
 
-    def _on_batch_success(self, results: list):
+    def _on_batch_summary(self, summary: dict):
         self.download_btn.setEnabled(True)
         self._update_download_button_text()
-        errors = getattr(self.download_worker, 'errors', [])
-        self._last_failed_items = getattr(self.download_worker, 'failed_items', [])
-        total = getattr(self.download_worker, 'total', len(results) + len(errors))
+
+        results = summary.get('results', [])
+        errors = summary.get('errors', [])
+        failed_items = summary.get('failed_items', [])
+        total = summary.get('total', len(results) + len(errors))
+        success_count = summary.get('success_count', len(results))
+        self._last_failed_items = list(failed_items)
+
+        # 1. Total failure (0 / N)
+        if success_count == 0:
+            self.progress_widget.complete_failed(
+                errors=errors,
+                total=total,
+                has_retry=bool(failed_items)
+            )
+            return
+
+        # 2. Partial or Full Success
         last_res = results[-1] if results else {'file_path': settings.get("download_dir"), 'file_size_str': f"{len(results)} файлов"}
-        last_res['success_count'] = len(results)
+        last_res['success_count'] = success_count
         last_res['total_count'] = total
         is_all_photos = all(r.get('mode') in ['JPG', 'PNG', 'WEBP'] for r in results) if results else False
         last_res['mode'] = f"Галерея ({len(results)} фото)" if is_all_photos else f"Пакет ({len(results)} шт)"
-        self.progress_widget.complete(last_res, errors=errors if errors else None, total=total, has_retry=bool(self._last_failed_items))
 
-        if hasattr(self, 'notification_manager'):
-            if errors:
-                notice_title = f"Завершено частично: {len(results)}/{total} (ошибок: {len(errors)})"
-            else:
+        if errors:
+            self.progress_widget.complete(last_res, errors=errors, total=total, has_retry=bool(failed_items))
+            if hasattr(self, 'notification_manager'):
+                self.notification_manager.show_download_complete(
+                    title=f"Завершено частично: {success_count}/{total} (ошибок: {len(errors)})",
+                    file_path=last_res.get('file_path')
+                )
+        else:
+            self.progress_widget.complete(last_res, errors=None, total=total, has_retry=False)
+            if hasattr(self, 'notification_manager'):
                 notice_title = f"Скачивание завершено ({len(results)} фото)" if is_all_photos else f"Очередь завершена ({len(results)} видео)"
-            self.notification_manager.show_download_complete(
-                title=notice_title,
-                file_path=last_res.get('file_path')
-            )
+                self.notification_manager.show_download_complete(
+                    title=notice_title,
+                    file_path=last_res.get('file_path')
+                )
+
+    def _on_batch_success(self, results: list):
+        errors = getattr(self.download_worker, 'errors', [])
+        failed_items = getattr(self.download_worker, 'failed_items', [])
+        self._on_batch_summary({
+            'results': results,
+            'errors': errors,
+            'failed_items': failed_items,
+            'total': len(results) + len(errors),
+            'success_count': len(results)
+        })
 
     def _retry_failed_batch_items(self):
         items_to_retry = getattr(self, '_last_failed_items', [])
         if not items_to_retry:
             return
+        import copy
+        retry_queue = copy.deepcopy(items_to_retry)
         self._last_failed_items = []
         save_dir = settings.get("download_dir")
-        options = {
+        fallback_options = {
             'mode': self.current_mode,
             'res': self.res_combo.currentText() if self.current_mode in ['custom', 'video_only'] else None,
             'audio_fmt': self.audio_fmt_combo.currentText().split()[0].lower() if self.current_mode == 'audio_only' else 'mp3',
@@ -1081,12 +1114,11 @@ class MainWindow(QMainWindow):
         }
         self.progress_widget.start_progress("⚡ ПОВТОРНАЯ ОБРАБОТКА...")
         self.download_btn.setEnabled(False)
-        self.download_worker = UnifiedBatchWorker(items_to_retry, options, save_dir)
+        self.download_worker = UnifiedBatchWorker(retry_queue, fallback_options, save_dir)
         self._track_worker(self.download_worker)
         self.download_worker.progress_updated.connect(self.progress_widget.update_progress)
         self.download_worker.item_completed.connect(self._on_queue_item_completed)
-        self.download_worker.batch_completed.connect(self._on_batch_success)
-        self.download_worker.download_error.connect(self._on_download_fail)
+        self.download_worker.batch_summary.connect(self._on_batch_summary)
         self.download_worker.status_message.connect(lambda msg: self.progress_widget.status_label.setText(msg.upper()))
         self.download_worker.start()
 
@@ -1121,6 +1153,8 @@ class MainWindow(QMainWindow):
             return
         self.download_btn.setEnabled(True)
         self._update_download_button_text()
+        if isinstance(self.download_worker, UnifiedBatchWorker):
+            return
         self.progress_widget.set_error(error_msg)
 
     def _on_worker_cancelled(self):

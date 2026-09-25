@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 import hashlib
 import requests
-from core.media_converter import get_unique_path, run_ffmpeg_cancellable
+from core.media_converter import get_unique_path, run_ffmpeg_cancellable, get_ffprobe_path, get_ffmpeg_path
 
 CREATE_NO_WINDOW = 0x08000000
 
@@ -132,7 +132,7 @@ def get_video_fps(input_path: str):
         return None
     try:
         cmd = [
-            "ffprobe", "-v", "error",
+            get_ffprobe_path(), "-v", "error",
             "-select_streams", "v:0",
             "-show_entries", "stream=r_frame_rate",
             "-of", "default=noprint_wrappers=1:nokey=1",
