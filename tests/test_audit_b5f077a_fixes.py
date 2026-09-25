@@ -147,6 +147,8 @@ class TestAuditB5F077AFixes(unittest.TestCase):
             staging_dirs = [os.path.join(save_dir, d) for d in os.listdir(save_dir) if d.startswith(".aura_staging_")]
             self.assertEqual(len(staging_dirs), 1)
             self.assertTrue(os.path.exists(os.path.join(staging_dirs[0], "File.ru.srt")))
+            self.assertTrue(os.path.exists(os.path.join(staging_dirs[0], "File.mp4")), "File.mp4 must be rolled back into staging")
+            self.assertFalse(os.path.exists(os.path.join(save_dir, "File.mp4")), "save_dir must not retain orphaned video")
         finally:
             shutil.rmtree(save_dir, ignore_errors=True)
 

@@ -398,6 +398,7 @@ class DownloadWorker(QThread):
     def run(self):
         staging_dir = None
         download_succeeded = False
+        preserve_staging_for_recovery = False
         try:
             mode = self.options.get('mode', 'best')
             audio_fmt = self.options.get('audio_fmt', 'mp3').lower()
@@ -756,9 +757,39 @@ class DownloadWorker(QThread):
                 dest_p = os.path.join(self.save_dir, f"{unique_stem}{sub_suffix}")
                 moves_plan.append((src_p, dest_p))
 
-            # Execute moves as an atomic batch. If any move fails, raise exception!
-            for src_p, dest_p in moves_plan:
-                shutil.move(src_p, dest_p)
+            # Transactional group move with reverse rollback on failure.
+            # Ensures that video and sidecars remain together either in save_dir or rolled back to staging_dir.
+            moved_pairs = []
+            try:
+                for src_p, dest_p in moves_plan:
+                    shutil.move(src_p, dest_p)
+                    moved_pairs.append((src_p, dest_p))
+            except Exception as move_exc:
+                preserve_staging_for_recovery = True
+                # Attempt reverse rollback: restore already transferred files back to staging_dir
+                rollback_errors = []
+                for orig_src, transferred_dest in reversed(moved_pairs):
+                    try:
+                        if os.path.exists(transferred_dest):
+                            shutil.move(transferred_dest, orig_src)
+                    except Exception as rb_err:
+                        rollback_errors.append(f"{os.path.basename(transferred_dest)}: {rb_err}")
+
+                if not rollback_errors:
+                    # Rollback succeeded completely! All files are safely in staging_dir
+                    raise Exception(
+                        f"Сбой переноса файлов: {move_exc}. "
+                        f"Файлы возвращены и сохранены во временном каталоге для восстановления: {staging_dir}"
+                    )
+                else:
+                    # Partial rollback failure
+                    still_at_dest = [d for _, d in moved_pairs if os.path.exists(d)]
+                    still_in_staging = [s for s, _ in moves_plan if os.path.exists(s)]
+                    raise Exception(
+                        f"Критический сбой переноса файлов: {move_exc}. "
+                        f"Не удалось полностью откатить перемещение ({', '.join(rollback_errors)}). "
+                        f"Файлы в целевой папке: {still_at_dest}; во временной папке: {still_in_staging}"
+                    )
 
             final_path = final_dest
             download_succeeded = True
@@ -782,11 +813,15 @@ class DownloadWorker(QThread):
                 self.download_error.emit(str(e))
         finally:
             if staging_dir and os.path.exists(staging_dir):
-                if download_succeeded:
-                    try:
-                        shutil.rmtree(staging_dir, ignore_errors=True)
-                    except Exception:
-                        pass
+                if not preserve_staging_for_recovery:
+                    for _ in range(3):
+                        try:
+                            shutil.rmtree(staging_dir, ignore_errors=True)
+                            if not os.path.exists(staging_dir):
+                                break
+                            time.sleep(0.05)
+                        except Exception:
+                            pass
 
 
 class GalleryDownloadWorker(QThread):

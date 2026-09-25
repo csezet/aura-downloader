@@ -534,27 +534,55 @@ def crop_video(input_path: str, crop_params: dict, output_path: str = None, is_c
                 pass
         raise e
 
-def cleanup_aura_temp_files(max_age_hours: float = 24.0) -> int:
-    """Cleans up leftover aura temp files (proxies, thumbs, cropped previews) older than max_age_hours."""
-    temp_dir = tempfile.gettempdir()
+def cleanup_aura_temp_files(max_age_hours: float = 24.0, extra_dirs: list = None) -> int:
+    """
+    Cleans up leftover aura temp files (proxies, thumbs, cropped previews)
+    and orphaned .aura_staging_* directories older than max_age_hours.
+    """
     now = time.time()
     cutoff = now - (max_age_hours * 3600)
     cleaned_count = 0
 
-    prefixes = ("aura_proxy_", "aura_thumb_", "aura_crop_", "sample_")
+    scan_dirs = {tempfile.gettempdir()}
     try:
-        for entry in os.scandir(temp_dir):
-            try:
-                if entry.name.startswith(prefixes) and (entry.name.endswith(".mp4") or entry.name.endswith(".jpg") or entry.name.endswith(".png")):
-                    mtime = entry.stat().st_mtime
-                    if mtime < cutoff or max_age_hours <= 0:
-                        os.remove(entry.path)
-                        cleaned_count += 1
-            except Exception:
-                pass
-    except Exception as e:
-        print(f"Error during temp cleanup: {e}")
+        from core.settings import settings
+        dl_dir = settings.get("download_dir")
+        if dl_dir and os.path.isdir(dl_dir):
+            scan_dirs.add(dl_dir)
+    except Exception:
+        pass
+
+    if extra_dirs:
+        for d in extra_dirs:
+            if d and os.path.isdir(d):
+                scan_dirs.add(d)
+
+    prefixes = ("aura_proxy_", "aura_thumb_", "aura_crop_", "sample_")
+    for target_dir in scan_dirs:
+        try:
+            for entry in os.scandir(target_dir):
+                try:
+                    # Clean temporary proxy/thumb/crop files
+                    if entry.is_file() and entry.name.startswith(prefixes) and (
+                        entry.name.endswith(".mp4") or entry.name.endswith(".jpg") or entry.name.endswith(".png")
+                    ):
+                        mtime = entry.stat().st_mtime
+                        if mtime < cutoff or max_age_hours <= 0:
+                            os.remove(entry.path)
+                            cleaned_count += 1
+                    # Clean orphaned staging directories
+                    elif entry.is_dir() and entry.name.startswith(".aura_staging_"):
+                        mtime = entry.stat().st_mtime
+                        if mtime < cutoff or max_age_hours <= 0:
+                            shutil.rmtree(entry.path, ignore_errors=True)
+                            cleaned_count += 1
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     return cleaned_count
+
 
 
 def get_video_codec(input_path: str) -> str:
