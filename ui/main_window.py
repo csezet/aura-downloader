@@ -534,6 +534,20 @@ class MainWindow(QMainWindow):
         # 9. Full-Window Animated Drop Overlay
         self.drop_overlay = DropOverlay(self.central_container)
 
+        # 10. Check for preserved recovery sessions on launch
+        try:
+            from core.media_converter import get_recovery_sessions
+            sessions = get_recovery_sessions()
+            if sessions:
+                count = len(sessions)
+                QTimer.singleShot(1200, lambda: self.show_toast(
+                    f"📁 Найдено сохранённых сессий восстановления: {count}. Файлы доступны в папке загрузок.",
+                    "info",
+                    duration=7000
+                ))
+        except Exception:
+            pass
+
     def _setup_clipboard(self):
         self.clipboard_watcher = ClipboardWatcher(self)
         self.clipboard_watcher.url_detected.connect(self._on_clipboard_url)
@@ -1026,10 +1040,13 @@ class MainWindow(QMainWindow):
                 options['title'] = active_video.get('title')
             self.download_worker = DownloadWorker(target_url, options, save_dir)
 
+        self._last_single_recovery_dir = None
         self._track_worker(self.download_worker)
         self.download_worker.progress_updated.connect(self.progress_widget.update_progress)
         self.download_worker.download_completed.connect(self._on_download_success)
         self.download_worker.download_error.connect(self._on_download_fail)
+        if hasattr(self.download_worker, 'recovery_available'):
+            self.download_worker.recovery_available.connect(lambda info: setattr(self, '_last_single_recovery_dir', info.get('staging_dir')))
         self.download_worker.status_message.connect(lambda msg: self.progress_widget.status_label.setText(msg.upper()))
         self.download_worker.start()
 
@@ -1051,6 +1068,7 @@ class MainWindow(QMainWindow):
         results = summary.get('results', [])
         errors = summary.get('errors', [])
         failed_items = summary.get('failed_items', [])
+        recovery_dirs = summary.get('recovery_dirs', [])
         total = summary.get('total', len(results) + len(errors))
         success_count = summary.get('success_count', len(results))
         self._last_failed_items = list(failed_items)
@@ -1060,7 +1078,8 @@ class MainWindow(QMainWindow):
             self.progress_widget.complete_failed(
                 errors=errors,
                 total=total,
-                has_retry=bool(failed_items)
+                has_retry=bool(failed_items),
+                recovery_dirs=recovery_dirs
             )
             return
 
@@ -1072,7 +1091,7 @@ class MainWindow(QMainWindow):
         last_res['mode'] = f"Галерея ({len(results)} фото)" if is_all_photos else f"Пакет ({len(results)} шт)"
 
         if errors:
-            self.progress_widget.complete(last_res, errors=errors, total=total, has_retry=bool(failed_items))
+            self.progress_widget.complete(last_res, errors=errors, total=total, has_retry=bool(failed_items), recovery_dirs=recovery_dirs)
             if hasattr(self, 'notification_manager'):
                 self.notification_manager.show_download_complete(
                     title=f"Завершено частично: {success_count}/{total} (ошибок: {len(errors)})",
@@ -1155,7 +1174,8 @@ class MainWindow(QMainWindow):
         self._update_download_button_text()
         if isinstance(self.download_worker, UnifiedBatchWorker):
             return
-        self.progress_widget.set_error(error_msg)
+        recovery_dir = getattr(self, '_last_single_recovery_dir', None)
+        self.progress_widget.set_error(error_msg, recovery_dir=recovery_dir)
 
     def _on_worker_cancelled(self):
         self.progress_widget.hide_progress()

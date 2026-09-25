@@ -340,6 +340,7 @@ class DownloadWorker(QThread):
     download_completed = Signal(dict)
     download_error = Signal(str)
     status_message = Signal(str)
+    recovery_available = Signal(dict)
 
     def __init__(self, url, options, save_dir):
         super().__init__()
@@ -791,6 +792,7 @@ class DownloadWorker(QThread):
                                     'size': os.path.getsize(item_p)
                                 })
                     recovery_info = {
+                        'staging_dir': staging_dir,
                         'timestamp': time.time(),
                         'error': str(move_exc),
                         'save_dir': self.save_dir,
@@ -799,6 +801,7 @@ class DownloadWorker(QThread):
                     }
                     with open(recovery_marker_path, 'w', encoding='utf-8') as rf:
                         json.dump(recovery_info, rf, indent=2, ensure_ascii=False)
+                    self.recovery_available.emit(recovery_info)
                 except Exception as meta_err:
                     print(f"Failed to write recovery marker: {meta_err}")
 

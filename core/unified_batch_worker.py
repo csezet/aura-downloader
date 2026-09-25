@@ -122,6 +122,7 @@ class UnifiedBatchWorker(QThread):
                     worker = DownloadWorker(path_or_url, cur_opts, self.save_dir)
                     self._current_worker = worker
 
+                    item_recovery_dir = None
                     def on_done(res):
                         nonlocal item_result
                         item_result = res
@@ -130,10 +131,18 @@ class UnifiedBatchWorker(QThread):
                         nonlocal item_error
                         item_error = err
 
+                    def on_rec(info):
+                        nonlocal item_recovery_dir
+                        item_recovery_dir = info.get('staging_dir')
+
                     worker.progress_updated.connect(forward_item_progress)
                     worker.status_message.connect(lambda msg: self.status_message.emit(f"[{idx+1}/{total}] {msg}"))
                     worker.download_completed.connect(on_done)
                     worker.download_error.connect(on_err)
+                    try:
+                        worker.recovery_available.connect(on_rec)
+                    except Exception:
+                        pass
 
                     # Run synchronously on this batch thread
                     worker.run()
@@ -147,7 +156,10 @@ class UnifiedBatchWorker(QThread):
                     self.item_completed.emit(item_result)
                 elif item_error:
                     errors.append(f"{item_title}: {item_error}")
-                    failed_items.append(item)
+                    item_rec = dict(item)
+                    if item_recovery_dir:
+                        item_rec['recovery_dir'] = item_recovery_dir
+                    failed_items.append(item_rec)
                     self.status_message.emit(f"[{idx+1}/{total}] ОШИБКА: {item_error}")
             except Exception as e:
                 errors.append(f"{item_title}: {e}")
@@ -160,10 +172,12 @@ class UnifiedBatchWorker(QThread):
         self.total = total
 
         if not self.is_cancelled:
+            recovery_dirs = [it.get('recovery_dir') for it in failed_items if it.get('recovery_dir')]
             summary = {
                 'results': results,
                 'errors': errors,
                 'failed_items': failed_items,
+                'recovery_dirs': recovery_dirs,
                 'total': total,
                 'success_count': len(results),
                 'error_count': len(errors),

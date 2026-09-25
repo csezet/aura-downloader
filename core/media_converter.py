@@ -3,6 +3,7 @@ import sys
 import time
 import shutil
 import tempfile
+import json
 import subprocess
 from pathlib import Path
 
@@ -537,24 +538,90 @@ def crop_video(input_path: str, crop_params: dict, output_path: str = None, is_c
 def is_recovery_staging_dir(staging_path: str) -> bool:
     """
     Checks if a staging directory contains preserved data for recovery.
-    Protected from automated deletion if .aura_recovery.json exists or
-    if it contains valid completed media files without .part files.
+    Protected from automated deletion if:
+    1. .aura_recovery.json marker exists, OR
+    2. At least one completed media file (mp4, mkv, srt, etc., case-insensitive) exists,
+       even if an unfinished .part file is present alongside it.
+    Directories containing only .part files or no completed media are cleaned up.
     """
     try:
         marker = os.path.join(staging_path, ".aura_recovery.json")
         if os.path.exists(marker):
             return True
         files = os.listdir(staging_path)
-        has_part = any(f.endswith('.part') for f in files)
-        if has_part:
-            return False
         media_exts = ('.mp4', '.mkv', '.avi', '.webm', '.mov', '.mp3', '.flac', '.wav', '.aac', '.opus', '.srt', '.vtt')
-        has_media = any(f.endswith(media_exts) for f in files)
-        if has_media:
+        completed_media = [
+            f for f in files
+            if not f.lower().endswith('.part') and any(f.lower().endswith(ext) for ext in media_exts)
+        ]
+        if completed_media:
             return True
     except Exception:
         return True  # If unable to inspect, safer to preserve than delete
     return False
+
+
+def get_recovery_sessions(target_dirs: list = None) -> list:
+    """
+    Scans download directories for preserved .aura_staging_* folders.
+    Returns list of metadata dicts with path, timestamp, error, save_dir, and files list.
+    """
+    scan_dirs = set()
+    try:
+        from core.settings import settings
+        dl_dir = settings.get("download_dir")
+        if dl_dir and os.path.isdir(dl_dir):
+            scan_dirs.add(dl_dir)
+    except Exception:
+        pass
+    if target_dirs:
+        for d in target_dirs:
+            if d and os.path.isdir(d):
+                scan_dirs.add(d)
+
+    sessions = []
+    for d in scan_dirs:
+        try:
+            for entry in os.scandir(d):
+                if entry.is_dir() and entry.name.startswith(".aura_staging_"):
+                    if is_recovery_staging_dir(entry.path):
+                        marker = os.path.join(entry.path, ".aura_recovery.json")
+                        info = {}
+                        if os.path.exists(marker):
+                            try:
+                                with open(marker, "r", encoding="utf-8") as rf:
+                                    info = json.load(rf)
+                            except Exception:
+                                pass
+                        
+                        files_list = info.get('files')
+                        if not files_list:
+                            files_list = []
+                            try:
+                                for f in os.listdir(entry.path):
+                                    if not f.startswith('.'):
+                                        fp = os.path.join(entry.path, f)
+                                        files_list.append({
+                                            'name': f,
+                                            'size': os.path.getsize(fp) if os.path.isfile(fp) else 0
+                                        })
+                            except Exception:
+                                pass
+
+                        sessions.append({
+                            'path': entry.path,
+                            'timestamp': info.get('timestamp', entry.stat().st_mtime),
+                            'error': info.get('error', 'Восстановимые файлы'),
+                            'save_dir': info.get('save_dir', d),
+                            'url': info.get('url', ''),
+                            'files': files_list
+                        })
+        except Exception:
+            pass
+
+    # Sort newest first
+    sessions.sort(key=lambda s: s.get('timestamp', 0), reverse=True)
+    return sessions
 
 
 def cleanup_aura_temp_files(max_age_hours: float = 24.0, extra_dirs: list = None, include_recovery: bool = False) -> int:

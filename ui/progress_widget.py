@@ -92,16 +92,22 @@ class ProgressWidget(QFrame):
         self.anim_opacity.setEasingCurve(QEasingCurve.OutCubic)
 
     def start_progress(self, message="⚡ СКАЧИВАНИЕ..."):
+        self._current_file_path = None
+        self._recovery_dir = None
         self.progress_bar.setValue(0)
         self.percent_label.setText("0.0%")
         self.status_label.setText(message)
         self.status_label.setToolTip("")
         self.metrics_label.setText("ПОДГОТОВКА...")
         self.metrics_label.setToolTip("")
+        self.setToolTip("")
         self.retry_btn.setVisible(False)
         self.cancel_btn.setVisible(True)
+        self.cancel_btn.setText("✕ ОТМЕНА")
         self.open_file_btn.setVisible(False)
         self.open_dir_btn.setVisible(False)
+        self.open_dir_btn.setText("📂 ПАПКА")
+        self.open_dir_btn.setToolTip("")
         
         self.setVisible(True)
         self.anim_opacity.stop()
@@ -121,7 +127,10 @@ class ProgressWidget(QFrame):
 
         self.metrics_label.setText(f"SPEED: {speed} // {downloaded} / {total} // ETA: {eta}")
 
-    def complete(self, result: dict, errors: list = None, total: int = None, has_retry: bool = False):
+    def complete(self, result: dict, errors: list = None, total: int = None, has_retry: bool = False, recovery_dirs: list = None):
+        self._current_file_path = result.get('file_path') if isinstance(result, dict) else None
+        self._recovery_dir = recovery_dirs[0] if (recovery_dirs and len(recovery_dirs) > 0 and os.path.exists(recovery_dirs[0])) else None
+
         if errors:
             success_count = result.get('success_count', 0) if isinstance(result, dict) else 0
             total_count = total or (success_count + len(errors))
@@ -131,9 +140,17 @@ class ProgressWidget(QFrame):
             self.status_label.setText("ЧАСТИЧНО ЗАВЕРШЕНО")
             self.metrics_label.setText(f"СОХРАНЕНО: {success_count}/{total_count} // СБОЕВ: {len(errors)}")
             err_tooltip = "Ошибки при обработке очереди:\n" + "\n".join(f"• {e}" for e in errors)
+            if recovery_dirs:
+                err_tooltip += "\n\n📁 Каталоги восстановления:\n" + "\n".join(f"• {d}" for d in recovery_dirs)
             self.status_label.setToolTip(err_tooltip)
             self.metrics_label.setToolTip(err_tooltip)
+            self.setToolTip(err_tooltip)
             self.retry_btn.setVisible(has_retry)
+            self.cancel_btn.setVisible(True)
+            self.cancel_btn.setText("✕ ЗАКРЫТЬ")
+            self.open_file_btn.setVisible(bool(self._current_file_path and os.path.exists(self._current_file_path)))
+            self.open_dir_btn.setVisible(True)
+            self.open_dir_btn.setText("📂 ПАПКА")
         else:
             self.progress_bar.setValue(100)
             self.percent_label.setText("100%")
@@ -141,14 +158,17 @@ class ProgressWidget(QFrame):
             self.metrics_label.setText(f"ФАЙЛ СОХРАНЕН // {result.get('file_size_str', '')}")
             self.status_label.setToolTip("")
             self.metrics_label.setToolTip("")
+            self.setToolTip("")
             self.retry_btn.setVisible(False)
+            self.cancel_btn.setVisible(False)
+            self.open_file_btn.setVisible(True)
+            self.open_dir_btn.setVisible(True)
+            self.open_dir_btn.setText("📂 ПАПКА")
 
-        self._current_file_path = result.get('file_path')
-        self.cancel_btn.setVisible(False)
-        self.open_file_btn.setVisible(True)
-        self.open_dir_btn.setVisible(True)
+    def complete_failed(self, errors: list = None, total: int = None, has_retry: bool = False, recovery_dirs: list = None):
+        self._current_file_path = None
+        self._recovery_dir = recovery_dirs[0] if (recovery_dirs and len(recovery_dirs) > 0 and os.path.exists(recovery_dirs[0])) else None
 
-    def complete_failed(self, errors: list = None, total: int = None, has_retry: bool = False):
         err_list = errors or []
         total_count = total or len(err_list)
         self.progress_bar.setValue(0)
@@ -156,23 +176,60 @@ class ProgressWidget(QFrame):
         self.status_label.setText("ОШИБКА ОЧЕРЕДИ")
         self.metrics_label.setText(f"СОХРАНЕНО: 0/{total_count} // СБОЕВ: {len(err_list)}")
         err_tooltip = "Ошибки при обработке очереди:\n" + "\n".join(f"• {e}" for e in err_list)
+        if recovery_dirs:
+            err_tooltip += "\n\n📁 Каталоги восстановления:\n" + "\n".join(f"• {d}" for d in recovery_dirs)
         self.status_label.setToolTip(err_tooltip)
         self.metrics_label.setToolTip(err_tooltip)
+        self.setToolTip(err_tooltip)
         self.retry_btn.setVisible(has_retry)
         self.cancel_btn.setVisible(True)
         self.cancel_btn.setText("✕ ЗАКРЫТЬ")
         self.open_file_btn.setVisible(False)
-        self.open_dir_btn.setVisible(False)
+
+        if self._recovery_dir and os.path.exists(self._recovery_dir):
+            self.open_dir_btn.setVisible(True)
+            self.open_dir_btn.setText("📂 ВОССТАНОВЛЕНИЕ")
+            self.open_dir_btn.setToolTip(f"Открыть папку с сохранёнными файлами:\n{self._recovery_dir}")
+        else:
+            self.open_dir_btn.setVisible(False)
+
         self.setVisible(True)
 
-    def set_error(self, err_msg: str, has_retry: bool = False):
-        self.status_label.setText("ОШИБКА")
-        self.metrics_label.setText(err_msg[:80] if err_msg else "Ошибка получения информации")
+    def set_error(self, err_msg: str, has_retry: bool = False, recovery_dir: str = None):
+        self._current_file_path = None
+        self._recovery_dir = recovery_dir if (recovery_dir and os.path.exists(recovery_dir)) else None
+
+        if self._recovery_dir:
+            self.status_label.setText("ОШИБКА (ФАЙЛЫ СОХРАНЕНЫ)")
+            folder_name = os.path.basename(self._recovery_dir)
+            self.metrics_label.setText(f"Сохранено в: {folder_name} (нажмите 📂 ОТКРЫТЬ ПАПКУ)")
+        else:
+            self.status_label.setText("ОШИБКА")
+            self.metrics_label.setText(err_msg[:80] if err_msg else "Ошибка получения информации")
+
+        full_tooltip = err_msg or ""
+        if self._recovery_dir:
+            full_tooltip = (
+                f"{err_msg}\n\n"
+                f"📁 Папка восстановления: {self._recovery_dir}\n"
+                f"Нажмите кнопку '📂 ОТКРЫТЬ ПАПКУ', чтобы открыть каталог в Проводнике и скопировать файлы."
+            )
+        self.status_label.setToolTip(full_tooltip)
+        self.metrics_label.setToolTip(full_tooltip)
+        self.setToolTip(full_tooltip)
+
         self.retry_btn.setVisible(has_retry)
         self.cancel_btn.setVisible(True)
         self.cancel_btn.setText("✕ ЗАКРЫТЬ")
         self.open_file_btn.setVisible(False)
-        self.open_dir_btn.setVisible(False)
+
+        if self._recovery_dir and os.path.exists(self._recovery_dir):
+            self.open_dir_btn.setVisible(True)
+            self.open_dir_btn.setText("📂 ОТКРЫТЬ ПАПКУ")
+            self.open_dir_btn.setToolTip(f"Открыть папку с сохранёнными файлами:\n{self._recovery_dir}")
+        else:
+            self.open_dir_btn.setVisible(False)
+
         self.progress_bar.setValue(0)
         self.percent_label.setText("✕")
         self.setVisible(True)
@@ -194,9 +251,19 @@ class ProgressWidget(QFrame):
 
     def _open_file(self):
         if self._current_file_path and os.path.exists(self._current_file_path):
-            os.startfile(self._current_file_path)
+            try:
+                os.startfile(self._current_file_path)
+            except Exception:
+                pass
 
     def _open_dir(self):
-        if self._current_file_path and os.path.exists(self._current_file_path):
-            dir_path = os.path.dirname(self._current_file_path)
-            os.startfile(dir_path)
+        target_dir = None
+        if self._recovery_dir and os.path.exists(self._recovery_dir):
+            target_dir = self._recovery_dir
+        elif self._current_file_path and os.path.exists(self._current_file_path):
+            target_dir = os.path.dirname(self._current_file_path) if os.path.isfile(self._current_file_path) else self._current_file_path
+        if target_dir and os.path.exists(target_dir):
+            try:
+                os.startfile(target_dir)
+            except Exception:
+                pass

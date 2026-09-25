@@ -1,7 +1,9 @@
 import os
+import shutil
+import time
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFileDialog,
-    QSlider, QComboBox, QFrame, QWidget
+    QSlider, QComboBox, QFrame, QWidget, QScrollArea, QMessageBox
 )
 from PySide6.QtCore import Qt, Signal, QThread, QSize
 from core.settings import settings
@@ -358,6 +360,13 @@ class SettingsModal(QDialog):
         self.btn_update_ytdlp.clicked.connect(self._update_ytdlp)
         util_row.addWidget(self.btn_update_ytdlp, stretch=1)
 
+        self.btn_recovery = QPushButton("📁 ВОССТАНОВЛЕНИЕ")
+        self.btn_recovery.setProperty("class", "GlassButton")
+        self.btn_recovery.setStyleSheet(self.btn_clear_cache.styleSheet())
+        self.btn_recovery.clicked.connect(self._open_recovery_dialog)
+        util_row.addWidget(self.btn_recovery, stretch=1)
+        self._refresh_recovery_button()
+
         c3_layout.addLayout(util_row)
 
         self.util_status_lbl = QLabel("")
@@ -390,11 +399,128 @@ class SettingsModal(QDialog):
         if idx < len(formats):
             settings.set("audio_format", formats[idx])
 
+    def _refresh_recovery_button(self):
+        try:
+            from core.media_converter import get_recovery_sessions
+            sessions = get_recovery_sessions()
+            count = len(sessions)
+            self.btn_recovery.setText(f"📁 ВОССТАНОВЛЕНИЕ ({count})")
+            self.btn_recovery.setEnabled(count > 0)
+        except Exception:
+            pass
+
+    def _open_recovery_dialog(self):
+        from core.media_converter import get_recovery_sessions
+        sessions = get_recovery_sessions()
+        if not sessions:
+            QMessageBox.information(self, "Восстановление файлов", "Сохранённых сессий восстановления не обнаружено.")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Сохранённые сессии восстановления")
+        dialog.setMinimumWidth(560)
+        dialog.setMinimumHeight(340)
+        dialog.setStyleSheet("""
+            QDialog { background-color: #121217; color: #EDEDED; }
+            QLabel { color: #EDEDED; }
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 6px;
+                padding: 4px 10px;
+                color: #EDEDED;
+                font-weight: 600;
+                font-size: 11px;
+            }
+            QPushButton:hover { background-color: rgba(255, 255, 255, 0.16); }
+            QScrollArea { border: none; background: transparent; }
+        """)
+
+        d_layout = QVBoxLayout(dialog)
+        d_layout.setContentsMargins(16, 16, 16, 16)
+        d_layout.setSpacing(12)
+
+        header = QLabel("📁 Сохранённые файлы после сбоев перемещения:")
+        header.setStyleSheet("font-weight: 700; font-size: 13px; color: #FFFFFF;")
+        d_layout.addWidget(header)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setSpacing(8)
+
+        for s in sessions:
+            card = QFrame()
+            card.setStyleSheet("background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; padding: 8px;")
+            card_layout = QVBoxLayout(card)
+
+            path = s.get('path', '')
+            files_info = ", ".join(f.get('name', '') for f in s.get('files', []))
+            dt_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(s.get('timestamp', time.time())))
+
+            lbl_title = QLabel(f"📅 {dt_str} // {len(s.get('files', []))} файлов")
+            lbl_title.setStyleSheet("font-weight: 700; color: #60A5FA; font-size: 11px;")
+            card_layout.addWidget(lbl_title)
+
+            lbl_files = QLabel(f"Файлы: {files_info}")
+            lbl_files.setStyleSheet("color: #D1D5DB; font-size: 11px;")
+            lbl_files.setWordWrap(True)
+            card_layout.addWidget(lbl_files)
+
+            lbl_err = QLabel(f"Причина: {s.get('error', '')}")
+            lbl_err.setStyleSheet("color: #9CA3AF; font-size: 10px;")
+            lbl_err.setWordWrap(True)
+            card_layout.addWidget(lbl_err)
+
+            btn_row = QHBoxLayout()
+            btn_open = QPushButton("📂 Открыть в Проводнике")
+            btn_open.clicked.connect(lambda _, p=path: os.startfile(p) if os.path.exists(p) else None)
+            btn_row.addWidget(btn_open)
+
+            def make_delete_handler(p_to_del, card_widget):
+                def handler():
+                    reply = QMessageBox.question(
+                        dialog,
+                        "Удаление",
+                        f"Удалить сохранённую папку {os.path.basename(p_to_del)}?",
+                        QMessageBox.Yes | QMessageBox.No
+                    )
+                    if reply == QMessageBox.Yes:
+                        shutil.rmtree(p_to_del, ignore_errors=True)
+                        card_widget.setVisible(False)
+                        self._refresh_recovery_button()
+                return handler
+
+            btn_del = QPushButton("🗑️ Удалить")
+            btn_del.setStyleSheet("color: #EF4444;")
+            btn_del.clicked.connect(make_delete_handler(path, card))
+            btn_row.addWidget(btn_del)
+
+            btn_row.addStretch()
+            card_layout.addLayout(btn_row)
+            scroll_layout.addWidget(card)
+
+        scroll_layout.addStretch()
+        scroll.setWidget(scroll_content)
+        d_layout.addWidget(scroll)
+
+        btn_close = QPushButton("Закрыть")
+        btn_close.clicked.connect(dialog.accept)
+        d_layout.addWidget(btn_close, alignment=Qt.AlignRight)
+
+        dialog.exec()
+        self._refresh_recovery_button()
+
     def _clear_cache(self):
         count = cleanup_aura_temp_files(max_age_hours=0)
-        self.util_status_lbl.setText(f"✓ Временные файлы очищены ({count} шт.)")
+        from core.media_converter import get_recovery_sessions
+        rec_sessions = get_recovery_sessions()
+        rec_msg = f" (восстановления: {len(rec_sessions)} защищено)" if rec_sessions else ""
+        self.util_status_lbl.setText(f"✓ Временные файлы очищены ({count} шт.){rec_msg}")
         self.util_status_lbl.setStyleSheet("font-size: 11px; color: #4ADE80; font-weight: 600;")
         self.util_status_lbl.setVisible(True)
+        self._refresh_recovery_button()
 
     def _update_ytdlp(self):
         self.btn_update_ytdlp.setEnabled(False)
