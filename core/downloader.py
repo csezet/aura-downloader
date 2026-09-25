@@ -777,13 +777,12 @@ class DownloadWorker(QThread):
                     except Exception as rb_err:
                         rollback_errors.append(f"{os.path.basename(transferred_dest)}: {rb_err}")
 
-                # Write recovery marker with metadata before reporting error
-                try:
-                    recovery_marker_path = os.path.join(staging_dir, ".aura_recovery.json")
-                    recovery_files = []
-                    if os.path.exists(staging_dir):
+                # Form recovery_info and register session before attempting marker write
+                recovery_files = []
+                if os.path.exists(staging_dir):
+                    try:
                         for item_name in os.listdir(staging_dir):
-                            if item_name == ".aura_recovery.json":
+                            if item_name.startswith(".aura_recovery"):
                                 continue
                             item_p = os.path.join(staging_dir, item_name)
                             if os.path.isfile(item_p):
@@ -791,24 +790,55 @@ class DownloadWorker(QThread):
                                     'name': item_name,
                                     'size': os.path.getsize(item_p)
                                 })
-                    recovery_info = {
-                        'staging_dir': staging_dir,
-                        'timestamp': time.time(),
-                        'error': str(move_exc),
-                        'save_dir': self.save_dir,
-                        'files': recovery_files,
-                        'url': self.url
-                    }
-                    with open(recovery_marker_path, 'w', encoding='utf-8') as rf:
+                    except Exception:
+                        pass
+
+                recovery_info = {
+                    'staging_dir': staging_dir,
+                    'timestamp': time.time(),
+                    'error': str(move_exc),
+                    'save_dir': self.save_dir,
+                    'files': recovery_files,
+                    'url': self.url,
+                    'marker_written': False,
+                    'marker_error': None
+                }
+
+                # Register in settings recovery registry
+                try:
+                    settings.register_recovery_session(staging_dir)
+                except Exception as reg_err:
+                    print(f"Failed to register recovery session: {reg_err}")
+
+                # Atomic marker write attempt
+                marker_written = False
+                marker_error = None
+                try:
+                    recovery_marker_path = os.path.join(staging_dir, ".aura_recovery.json")
+                    tmp_marker_path = os.path.join(staging_dir, f".aura_recovery_tmp_{int(time.time()*1000)}.json")
+                    with open(tmp_marker_path, 'w', encoding='utf-8') as rf:
                         json.dump(recovery_info, rf, indent=2, ensure_ascii=False)
-                    self.recovery_available.emit(recovery_info)
+                    os.replace(tmp_marker_path, recovery_marker_path)
+                    marker_written = True
                 except Exception as meta_err:
+                    marker_error = str(meta_err)
                     print(f"Failed to write recovery marker: {meta_err}")
+
+                recovery_info['marker_written'] = marker_written
+                recovery_info['marker_error'] = marker_error
+
+                # ALWAYS emit recovery_available if staging_dir exists!
+                if os.path.exists(staging_dir):
+                    self.recovery_available.emit(recovery_info)
+
+                marker_notice = ""
+                if not marker_written:
+                    marker_notice = " (служебную метку сохранить не удалось, но файлы сохранены)"
 
                 if not rollback_errors:
                     # Rollback succeeded completely! All files are safely in staging_dir
                     raise Exception(
-                        f"Сбой переноса файлов: {move_exc}. "
+                        f"Сбой переноса файлов: {move_exc}{marker_notice}. "
                         f"Файлы защищены и сохранены во временном каталоге для восстановления: {staging_dir}. "
                         f"Вы можете открыть эту папку в Проводнике и скопировать готовые файлы."
                     )
@@ -817,7 +847,7 @@ class DownloadWorker(QThread):
                     still_at_dest = [d for _, d in moved_pairs if os.path.exists(d)]
                     still_in_staging = [s for s, _ in moves_plan if os.path.exists(s)]
                     raise Exception(
-                        f"Критический сбой переноса файлов: {move_exc}. "
+                        f"Критический сбой переноса файлов: {move_exc}{marker_notice}. "
                         f"Не удалось полностью откатить перемещение ({', '.join(rollback_errors)}). "
                         f"Файлы в целевой папке: {still_at_dest}; во временной папке: {still_in_staging}. "
                         f"Файлы защищены от автоматической очистки для ручного восстановления."

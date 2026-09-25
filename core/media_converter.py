@@ -563,28 +563,67 @@ def is_recovery_staging_dir(staging_path: str) -> bool:
 
 def get_recovery_sessions(target_dirs: list = None) -> list:
     """
-    Scans download directories for preserved .aura_staging_* folders.
-    Returns list of metadata dicts with path, timestamp, error, save_dir, and files list.
+    Scans known download directories and registry for preserved .aura_staging_* folders.
+    Returns list of metadata dicts with path, timestamp, error, save_dir, files list,
+    and is_accessible flag.
     """
     scan_dirs = set()
+    registry_paths = set()
+    settings_ref = None
     try:
         from core.settings import settings
+        settings_ref = settings
         dl_dir = settings.get("download_dir")
-        if dl_dir and os.path.isdir(dl_dir):
-            scan_dirs.add(dl_dir)
+        if dl_dir:
+            scan_dirs.add(os.path.normpath(dl_dir))
+        known = settings.get("known_download_dirs", [])
+        for kd in known:
+            if kd:
+                scan_dirs.add(os.path.normpath(kd))
+        for rp in settings.get("recovery_registry", []):
+            if rp:
+                registry_paths.add(os.path.normpath(rp))
     except Exception:
         pass
+
     if target_dirs:
         for d in target_dirs:
-            if d and os.path.isdir(d):
-                scan_dirs.add(d)
+            if d:
+                scan_dirs.add(os.path.normpath(d))
 
     sessions = []
+    seen_paths = set()
+
+    # 1. Scan directory roots
     for d in scan_dirs:
+        if not os.path.isdir(d):
+            drive_or_root = os.path.splitdrive(d)[0] or os.path.dirname(d)
+            if drive_or_root and not os.path.exists(drive_or_root):
+                sessions.append({
+                    'path': d,
+                    'timestamp': time.time(),
+                    'error': f"Диск недоступен: {d}",
+                    'save_dir': d,
+                    'url': '',
+                    'files': [],
+                    'is_accessible': False
+                })
+            continue
+
         try:
             for entry in os.scandir(d):
                 if entry.is_dir() and entry.name.startswith(".aura_staging_"):
+                    norm_entry = os.path.normpath(entry.path)
+                    if norm_entry in seen_paths:
+                        continue
                     if is_recovery_staging_dir(entry.path):
+                        seen_paths.add(norm_entry)
+                        if settings_ref:
+                            try:
+                                settings_ref.register_recovery_session(norm_entry)
+                            except Exception:
+                                pass
+
                         marker = os.path.join(entry.path, ".aura_recovery.json")
                         info = {}
                         if os.path.exists(marker):
@@ -593,7 +632,7 @@ def get_recovery_sessions(target_dirs: list = None) -> list:
                                     info = json.load(rf)
                             except Exception:
                                 pass
-                        
+
                         files_list = info.get('files')
                         if not files_list:
                             files_list = []
@@ -609,15 +648,72 @@ def get_recovery_sessions(target_dirs: list = None) -> list:
                                 pass
 
                         sessions.append({
-                            'path': entry.path,
+                            'path': norm_entry,
                             'timestamp': info.get('timestamp', entry.stat().st_mtime),
                             'error': info.get('error', 'Восстановимые файлы'),
                             'save_dir': info.get('save_dir', d),
                             'url': info.get('url', ''),
-                            'files': files_list
+                            'files': files_list,
+                            'is_accessible': True
                         })
         except Exception:
             pass
+
+    # 2. Check any remaining registered staging paths that weren't inside scan_dirs
+    for rp in registry_paths:
+        if rp in seen_paths:
+            continue
+        seen_paths.add(rp)
+        parent_dir = os.path.dirname(rp)
+        drive_or_root = os.path.splitdrive(rp)[0]
+        if drive_or_root and not os.path.exists(drive_or_root):
+            sessions.append({
+                'path': rp,
+                'timestamp': time.time(),
+                'error': f"Диск недоступен: {rp}",
+                'save_dir': parent_dir,
+                'url': '',
+                'files': [],
+                'is_accessible': False
+            })
+        elif os.path.isdir(rp) and is_recovery_staging_dir(rp):
+            marker = os.path.join(rp, ".aura_recovery.json")
+            info = {}
+            if os.path.exists(marker):
+                try:
+                    with open(marker, "r", encoding="utf-8") as rf:
+                        info = json.load(rf)
+                except Exception:
+                    pass
+            files_list = info.get('files')
+            if not files_list:
+                files_list = []
+                try:
+                    for f in os.listdir(rp):
+                        if not f.startswith('.'):
+                            fp = os.path.join(rp, f)
+                            files_list.append({
+                                'name': f,
+                                'size': os.path.getsize(fp) if os.path.isfile(fp) else 0
+                            })
+                except Exception:
+                    pass
+
+            sessions.append({
+                'path': rp,
+                'timestamp': info.get('timestamp', os.path.getmtime(rp)),
+                'error': info.get('error', 'Восстановимые файлы'),
+                'save_dir': info.get('save_dir', parent_dir),
+                'url': info.get('url', ''),
+                'files': files_list,
+                'is_accessible': True
+            })
+        elif not os.path.exists(rp):
+            if settings_ref:
+                try:
+                    settings_ref.unregister_recovery_session(rp)
+                except Exception:
+                    pass
 
     # Sort newest first
     sessions.sort(key=lambda s: s.get('timestamp', 0), reverse=True)

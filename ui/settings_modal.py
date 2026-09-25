@@ -456,17 +456,28 @@ class SettingsModal(QDialog):
             card_layout = QVBoxLayout(card)
 
             path = s.get('path', '')
-            files_info = ", ".join(f.get('name', '') for f in s.get('files', []))
+            is_accessible = s.get('is_accessible', True)
+            files_info = ", ".join(f.get('name', '') for f in s.get('files', [])) if s.get('files') else "(нет файлов)"
             dt_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(s.get('timestamp', time.time())))
 
-            lbl_title = QLabel(f"📅 {dt_str} // {len(s.get('files', []))} файлов")
-            lbl_title.setStyleSheet("font-weight: 700; color: #60A5FA; font-size: 11px;")
+            if not is_accessible:
+                lbl_title = QLabel(f"⚠️ ДИСК НЕДОСТУПЕН // {dt_str}")
+                lbl_title.setStyleSheet("font-weight: 700; color: #F59E0B; font-size: 11px;")
+            else:
+                lbl_title = QLabel(f"📅 {dt_str} // {len(s.get('files', []))} файлов")
+                lbl_title.setStyleSheet("font-weight: 700; color: #60A5FA; font-size: 11px;")
             card_layout.addWidget(lbl_title)
 
-            lbl_files = QLabel(f"Файлы: {files_info}")
-            lbl_files.setStyleSheet("color: #D1D5DB; font-size: 11px;")
-            lbl_files.setWordWrap(True)
-            card_layout.addWidget(lbl_files)
+            lbl_path = QLabel(f"Путь: {path}")
+            lbl_path.setStyleSheet("color: #9CA3AF; font-size: 10px; font-family: monospace;")
+            lbl_path.setWordWrap(True)
+            card_layout.addWidget(lbl_path)
+
+            if is_accessible:
+                lbl_files = QLabel(f"Файлы: {files_info}")
+                lbl_files.setStyleSheet("color: #D1D5DB; font-size: 11px;")
+                lbl_files.setWordWrap(True)
+                card_layout.addWidget(lbl_files)
 
             lbl_err = QLabel(f"Причина: {s.get('error', '')}")
             lbl_err.setStyleSheet("color: #9CA3AF; font-size: 10px;")
@@ -475,10 +486,11 @@ class SettingsModal(QDialog):
 
             btn_row = QHBoxLayout()
             btn_open = QPushButton("📂 Открыть в Проводнике")
+            btn_open.setEnabled(is_accessible and os.path.exists(path))
             btn_open.clicked.connect(lambda _, p=path: os.startfile(p) if os.path.exists(p) else None)
             btn_row.addWidget(btn_open)
 
-            def make_delete_handler(p_to_del, card_widget):
+            def make_delete_handler(p_to_del, card_widget, accessible):
                 def handler():
                     reply = QMessageBox.question(
                         dialog,
@@ -487,14 +499,27 @@ class SettingsModal(QDialog):
                         QMessageBox.Yes | QMessageBox.No
                     )
                     if reply == QMessageBox.Yes:
-                        shutil.rmtree(p_to_del, ignore_errors=True)
-                        card_widget.setVisible(False)
-                        self._refresh_recovery_button()
+                        if accessible and os.path.exists(p_to_del):
+                            shutil.rmtree(p_to_del, ignore_errors=True)
+                            if not os.path.exists(p_to_del):
+                                settings.unregister_recovery_session(p_to_del)
+                                card_widget.setVisible(False)
+                                self._refresh_recovery_button()
+                            else:
+                                QMessageBox.warning(
+                                    dialog,
+                                    "Ошибка удаления",
+                                    f"Не удалось удалить папку {os.path.basename(p_to_del)} (возможно, файлы открыты в другой программе)."
+                                )
+                        else:
+                            settings.unregister_recovery_session(p_to_del)
+                            card_widget.setVisible(False)
+                            self._refresh_recovery_button()
                 return handler
 
-            btn_del = QPushButton("🗑️ Удалить")
+            btn_del = QPushButton("🗑️ Удалить" if is_accessible else "🗑️ Удалить из списка")
             btn_del.setStyleSheet("color: #EF4444;")
-            btn_del.clicked.connect(make_delete_handler(path, card))
+            btn_del.clicked.connect(make_delete_handler(path, card, is_accessible))
             btn_row.addWidget(btn_del)
 
             btn_row.addStretch()
