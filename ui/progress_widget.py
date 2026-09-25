@@ -8,6 +8,7 @@ from ui.animations import SmoothProgressBar
 
 class ProgressWidget(QFrame):
     cancelled = Signal()
+    retry_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -54,6 +55,13 @@ class ProgressWidget(QFrame):
         bottom_layout.addStretch()
 
         # Action Buttons
+        self.retry_btn = QPushButton("↺ ПОВТОРИТЬ СБОИ")
+        self.retry_btn.setProperty("class", "GlassButton")
+        self.retry_btn.setStyleSheet("color: #F59E0B; padding: 2px 8px; font-size: 10px; font-weight: 700;")
+        self.retry_btn.clicked.connect(self.retry_requested.emit)
+        self.retry_btn.setVisible(False)
+        bottom_layout.addWidget(self.retry_btn)
+
         self.cancel_btn = QPushButton("✕ ОТМЕНА")
         self.cancel_btn.setProperty("class", "GlassButton")
         self.cancel_btn.setStyleSheet("color: #EF4444; padding: 2px 8px; font-size: 10px; font-weight: 700;")
@@ -90,6 +98,7 @@ class ProgressWidget(QFrame):
         self.status_label.setToolTip("")
         self.metrics_label.setText("ПОДГОТОВКА...")
         self.metrics_label.setToolTip("")
+        self.retry_btn.setVisible(False)
         self.cancel_btn.setVisible(True)
         self.open_file_btn.setVisible(False)
         self.open_dir_btn.setVisible(False)
@@ -112,7 +121,7 @@ class ProgressWidget(QFrame):
 
         self.metrics_label.setText(f"SPEED: {speed} // {downloaded} / {total} // ETA: {eta}")
 
-    def complete(self, result: dict, errors: list = None, total: int = None):
+    def complete(self, result: dict, errors: list = None, total: int = None, has_retry: bool = False):
         if errors:
             success_count = result.get('success_count', 0) if isinstance(result, dict) else 0
             total_count = total or (success_count + len(errors))
@@ -124,6 +133,7 @@ class ProgressWidget(QFrame):
             err_tooltip = "Ошибки при обработке очереди:\n" + "\n".join(f"• {e}" for e in errors)
             self.status_label.setToolTip(err_tooltip)
             self.metrics_label.setToolTip(err_tooltip)
+            self.retry_btn.setVisible(has_retry)
         else:
             self.progress_bar.setValue(100)
             self.percent_label.setText("100%")
@@ -131,6 +141,7 @@ class ProgressWidget(QFrame):
             self.metrics_label.setText(f"ФАЙЛ СОХРАНЕН // {result.get('file_size_str', '')}")
             self.status_label.setToolTip("")
             self.metrics_label.setToolTip("")
+            self.retry_btn.setVisible(False)
 
         self._current_file_path = result.get('file_path')
         self.cancel_btn.setVisible(False)

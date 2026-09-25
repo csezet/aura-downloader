@@ -36,6 +36,7 @@ class UnifiedBatchWorker(QThread):
         from core.local_processor import process_single_local_file, is_video_file
         results = []
         errors = []
+        failed_items = []
         total = len(self.items)
         if total == 0:
             return
@@ -146,19 +147,23 @@ class UnifiedBatchWorker(QThread):
                     self.item_completed.emit(item_result)
                 elif item_error:
                     errors.append(f"{item_title}: {item_error}")
+                    failed_items.append(item)
                     self.status_message.emit(f"[{idx+1}/{total}] ОШИБКА: {item_error}")
             except Exception as e:
                 errors.append(f"{item_title}: {e}")
+                failed_items.append(item)
                 self.status_message.emit(f"[{idx+1}/{total}] ОШИБКА: {e}")
 
         self.results = results
         self.errors = errors
+        self.failed_items = failed_items
         self.total = total
 
         if not self.is_cancelled:
             summary = {
                 'results': results,
                 'errors': errors,
+                'failed_items': failed_items,
                 'total': total,
                 'success_count': len(results),
                 'error_count': len(errors),

@@ -496,6 +496,7 @@ class MainWindow(QMainWindow):
         # 6. Progress Widget
         self.progress_widget = ProgressWidget()
         self.progress_widget.cancelled.connect(self._cancel_download)
+        self.progress_widget.retry_requested.connect(self._retry_failed_batch_items)
         content_layout.addWidget(self.progress_widget)
 
         # Elastic Stretch pushes Action Button & Footer down cleanly when list is empty
@@ -1047,13 +1048,14 @@ class MainWindow(QMainWindow):
         self.download_btn.setEnabled(True)
         self._update_download_button_text()
         errors = getattr(self.download_worker, 'errors', [])
+        self._last_failed_items = getattr(self.download_worker, 'failed_items', [])
         total = getattr(self.download_worker, 'total', len(results) + len(errors))
         last_res = results[-1] if results else {'file_path': settings.get("download_dir"), 'file_size_str': f"{len(results)} файлов"}
         last_res['success_count'] = len(results)
         last_res['total_count'] = total
         is_all_photos = all(r.get('mode') in ['JPG', 'PNG', 'WEBP'] for r in results) if results else False
         last_res['mode'] = f"Галерея ({len(results)} фото)" if is_all_photos else f"Пакет ({len(results)} шт)"
-        self.progress_widget.complete(last_res, errors=errors if errors else None, total=total)
+        self.progress_widget.complete(last_res, errors=errors if errors else None, total=total, has_retry=bool(self._last_failed_items))
 
         if hasattr(self, 'notification_manager'):
             if errors:
@@ -1064,6 +1066,29 @@ class MainWindow(QMainWindow):
                 title=notice_title,
                 file_path=last_res.get('file_path')
             )
+
+    def _retry_failed_batch_items(self):
+        items_to_retry = getattr(self, '_last_failed_items', [])
+        if not items_to_retry:
+            return
+        self._last_failed_items = []
+        save_dir = settings.get("download_dir")
+        options = {
+            'mode': self.current_mode,
+            'res': self.res_combo.currentText() if self.current_mode in ['custom', 'video_only'] else None,
+            'audio_fmt': self.audio_fmt_combo.currentText().split()[0].lower() if self.current_mode == 'audio_only' else 'mp3',
+            'audio_q': '320',
+        }
+        self.progress_widget.start_progress("⚡ ПОВТОРНАЯ ОБРАБОТКА...")
+        self.download_btn.setEnabled(False)
+        self.download_worker = UnifiedBatchWorker(items_to_retry, options, save_dir)
+        self._track_worker(self.download_worker)
+        self.download_worker.progress_updated.connect(self.progress_widget.update_progress)
+        self.download_worker.item_completed.connect(self._on_queue_item_completed)
+        self.download_worker.batch_completed.connect(self._on_batch_success)
+        self.download_worker.download_error.connect(self._on_download_fail)
+        self.download_worker.status_message.connect(lambda msg: self.progress_widget.status_label.setText(msg.upper()))
+        self.download_worker.start()
 
     def _on_download_success(self, result: dict):
         self.download_btn.setEnabled(True)

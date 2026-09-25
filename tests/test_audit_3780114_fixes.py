@@ -135,6 +135,53 @@ class TestAudit3780114Fixes(unittest.TestCase):
                 interpolate_with_ffmpeg("dummy.mp4", target_fps=60)
             self.assertIn("Не удалось выполнить увеличение плавности", str(ctx.exception))
 
+    def test_unified_batch_worker_tracks_failed_items_for_retry(self):
+        """Test that failed items in UnifiedBatchWorker are preserved in self.failed_items for retrying."""
+        save_dir = tempfile.mkdtemp()
+        try:
+            items = [
+                {'url': 'https://example.com/ok_video', 'title': 'Good Video'},
+                {'url': 'https://example.com/fail_video', 'title': 'Broken Video'}
+            ]
+            worker = UnifiedBatchWorker(items, {'mode': 'best'}, save_dir)
+
+            captured_summaries = []
+            worker.batch_summary.connect(lambda s: captured_summaries.append(s))
+
+            class FakeWorker:
+                def __init__(self, should_succeed):
+                    self.should_succeed = should_succeed
+                    self._on_done = None
+                    self._on_err = None
+                    self.download_completed = MagicMock()
+                    self.download_completed.connect = lambda cb: setattr(self, '_on_done', cb)
+                    self.download_error = MagicMock()
+                    self.download_error.connect = lambda cb: setattr(self, '_on_err', cb)
+                    self.progress_updated = MagicMock()
+                    self.status_message = MagicMock()
+
+                def run(self):
+                    if self.should_succeed and self._on_done:
+                        self._on_done({'file_path': os.path.join(save_dir, 'good.mp4'), 'title': 'Good Video'})
+                    elif not self.should_succeed and self._on_err:
+                        self._on_err("404 Not Found")
+
+            def mock_download_worker(url, opts, s_dir):
+                return FakeWorker(should_succeed=("ok_video" in url))
+
+            with patch('core.unified_batch_worker.DownloadWorker', side_effect=mock_download_worker):
+                worker.run()
+
+            self.assertEqual(len(worker.results), 1)
+            self.assertEqual(len(worker.errors), 1)
+            self.assertEqual(len(worker.failed_items), 1)
+            self.assertEqual(worker.failed_items[0]['title'], 'Broken Video')
+            self.assertEqual(len(captured_summaries), 1)
+            self.assertEqual(len(captured_summaries[0]['failed_items']), 1)
+        finally:
+            import shutil
+            shutil.rmtree(save_dir, ignore_errors=True)
+
 
 if __name__ == '__main__':
     unittest.main()
