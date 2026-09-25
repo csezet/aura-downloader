@@ -215,13 +215,13 @@ def interpolate_with_ffmpeg(input_path: str, target_fps: int = 60, output_path: 
                 os.remove(output_path)
             os.rename(part_path, output_path)
             return output_path
-        except Exception:
+        except Exception as e2:
             if os.path.exists(part_path):
                 try:
                     os.remove(part_path)
                 except Exception:
                     pass
-            return input_path
+            raise Exception(f"Не удалось выполнить увеличение плавности видео: {e} (резервная частота кадров: {e2})")
 
 def interpolate_with_rife(input_path: str, target_fps: int = 60, output_path: str = None, status_callback=None, is_cancelled_cb=None) -> str:
     rife_exe = get_rife_executable()
@@ -344,6 +344,8 @@ def interpolate_with_rife(input_path: str, target_fps: int = 60, output_path: st
                 os.remove(part_path)
             except Exception:
                 pass
+        if status_callback:
+            status_callback("RIFE недоступен, переключение на аппаратный FFmpeg...")
         print(f"RIFE error: {e}. Falling back to FFmpeg MCI.")
         return interpolate_with_ffmpeg(input_path, target_fps, output_path, is_cancelled_cb=is_cancelled_cb)
     finally:

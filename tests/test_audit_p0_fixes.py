@@ -48,7 +48,7 @@ class TestAuditP0Fixes(unittest.TestCase):
             mock_resp.raise_for_status = MagicMock()
 
             with patch('requests.get', return_value=mock_resp), \
-                 patch('core.downloader.get_video_duration', return_value=15.0):
+                 patch('core.downloader.probe_video_stream', return_value=True):
                 worker.run()
 
             self.assertEqual(len(completed_result), 1)

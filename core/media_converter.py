@@ -1,5 +1,7 @@
 import os
+import sys
 import time
+import shutil
 import tempfile
 import subprocess
 from pathlib import Path
@@ -21,14 +23,37 @@ def get_unique_path(target_path: str) -> str:
         counter += 1
     return f"{base} ({counter}){ext}"
 
+def get_ffmpeg_path() -> str:
+    base_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    bundled = os.path.join(base_dir, "tools", "ffmpeg.exe")
+    if os.path.isfile(bundled):
+        return bundled
+    local_app = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "ffmpeg.exe")
+    if os.path.isfile(local_app):
+        return os.path.abspath(local_app)
+    which_path = shutil.which("ffmpeg")
+    return which_path if which_path else "ffmpeg"
+
+def get_ffprobe_path() -> str:
+    base_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    bundled = os.path.join(base_dir, "tools", "ffprobe.exe")
+    if os.path.isfile(bundled):
+        return bundled
+    local_app = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "ffprobe.exe")
+    if os.path.isfile(local_app):
+        return os.path.abspath(local_app)
+    which_path = shutil.which("ffprobe")
+    return which_path if which_path else "ffprobe"
+
 def check_ffmpeg_available() -> tuple:
-    import shutil
-    ffmpeg = shutil.which("ffmpeg")
-    ffprobe = shutil.which("ffprobe")
-    if not ffmpeg or not ffprobe:
-        return False, "FFmpeg или FFprobe не найдены в системном PATH."
+    ffmpeg_exe = get_ffmpeg_path()
+    ffprobe_exe = get_ffprobe_path()
+    has_ffmpeg = (os.path.isabs(ffmpeg_exe) and os.path.isfile(ffmpeg_exe)) or bool(shutil.which(ffmpeg_exe))
+    has_ffprobe = (os.path.isabs(ffprobe_exe) and os.path.isfile(ffprobe_exe)) or bool(shutil.which(ffprobe_exe))
+    if not has_ffmpeg or not has_ffprobe:
+        return False, "FFmpeg или FFprobe не найдены. Установите через winget (winget install Gyan.FFmpeg) или поместите в папку tools/"
     try:
-        res = subprocess.run(["ffmpeg", "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+        res = subprocess.run([ffmpeg_exe, "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
         if res.returncode == 0:
             first_line = res.stdout.splitlines()[0] if res.stdout else "FFmpeg OK"
             return True, first_line
@@ -37,6 +62,10 @@ def check_ffmpeg_available() -> tuple:
     return False, "FFmpeg вернул ненулевой код завершения."
 
 def run_ffmpeg_cancellable(cmd: list, temp_output: str = None, is_cancelled_cb=None) -> bool:
+    if cmd and cmd[0] == "ffmpeg":
+        cmd = [get_ffmpeg_path()] + list(cmd[1:])
+    elif cmd and cmd[0] == "ffprobe":
+        cmd = [get_ffprobe_path()] + list(cmd[1:])
     with tempfile.TemporaryFile(mode='w+b') as err_file:
         proc = subprocess.Popen(
             cmd,
@@ -76,6 +105,43 @@ def run_ffmpeg_cancellable(cmd: list, temp_output: str = None, is_cancelled_cb=N
             raise Exception(f"FFmpeg error: {err_text}")
         return True
 
+def probe_video_stream(file_path: str) -> bool:
+    """Verifies that the file actually contains a valid, decodable video stream (not audio/HTML/corrupted)."""
+    if not file_path or not os.path.exists(file_path):
+        return False
+    try:
+        import json
+        cmd = [
+            get_ffprobe_path(), "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=codec_type,codec_name,width,height",
+            "-of", "json",
+            file_path
+        ]
+        res = subprocess.run(
+            cmd,
+            startupinfo=get_startupinfo(),
+            creationflags=CREATE_NO_WINDOW,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10
+        )
+        if res.returncode != 0:
+            return False
+        data = json.loads(res.stdout)
+        streams = data.get("streams", [])
+        if not streams:
+            return False
+        s = streams[0]
+        if s.get("codec_type") != "video":
+            return False
+        w = int(s.get("width") or 0)
+        h = int(s.get("height") or 0)
+        return w > 0 and h > 0
+    except Exception:
+        return False
+
 def get_video_dimensions(input_path: str) -> tuple:
     if not input_path or not os.path.exists(input_path):
         return None, None
@@ -83,7 +149,7 @@ def get_video_dimensions(input_path: str) -> tuple:
         import json
         # Compatible query for width, height across all FFprobe versions
         cmd = [
-            "ffprobe", "-v", "error",
+            get_ffprobe_path(), "-v", "error",
             "-select_streams", "v:0",
             "-show_entries", "stream=width,height",
             "-of", "json",
@@ -116,7 +182,7 @@ def get_video_dimensions(input_path: str) -> tuple:
         rotate = 0
         try:
             cmd_rot = [
-                "ffprobe", "-v", "error",
+                get_ffprobe_path(), "-v", "error",
                 "-select_streams", "v:0",
                 "-show_entries", "stream_tags=rotate:stream_side_data=rotation",
                 "-of", "json",
@@ -195,7 +261,7 @@ def get_video_duration(input_path: str):
         return None
     try:
         cmd = [
-            "ffprobe", "-v", "error",
+            get_ffprobe_path(), "-v", "error",
             "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1",
             input_path
@@ -390,7 +456,7 @@ def crop_video(input_path: str, crop_params: dict, output_path: str = None, is_c
     try:
         crop_filter = get_crop_filter(input_path, crop_params)
         if not crop_filter:
-            return input_path
+            raise Exception("Не удалось кадрировать видео: невозможно рассчитать параметры кадрирования.")
 
         is_gif = input_path.lower().endswith('.gif')
         if is_gif:

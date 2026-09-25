@@ -48,32 +48,43 @@ class UnifiedBatchWorker(QThread):
 
             # 1. Parse item info and options
             if isinstance(item, dict):
-                path_or_url = (item.get('url') or item.get('file_path') or item.get('direct_media_url') or '').strip().strip('"').strip("'")
+                direct_url = item.get('direct_media_url') or item.get('best_image')
+                source_url = item.get('url') or item.get('file_path') or direct_url or ''
+                path_or_url = source_url.strip().strip('"').strip("'")
                 item_title = item.get('title') or Path(path_or_url).name or f"Элемент #{idx+1}"
                 is_local = item.get('is_local', False) or is_video_file(path_or_url)
-                is_photo = item.get('is_photo', False)
-                direct_url = item.get('direct_media_url') or item.get('best_image') or path_or_url
+                is_photo = item.get('is_photo', False) or (item.get('media_type') == 'photo')
+                is_video = item.get('is_video', False) or (item.get('media_type') == 'video') or item.get('has_video', False)
                 card_opts = item.get('options') or {}
                 cur_opts = {**self.fallback_options, **card_opts}
+                if is_photo:
+                    cur_opts['is_photo'] = True
+                    cur_opts['media_type'] = 'photo'
+                    if direct_url:
+                        cur_opts['direct_media_url'] = direct_url
+                    cur_opts['title'] = item_title
+                elif is_video:
+                    cur_opts['is_video'] = True
+                    cur_opts['media_type'] = 'video'
+                    if direct_url:
+                        cur_opts['direct_media_url'] = direct_url
+                    cur_opts['title'] = item_title
             elif isinstance(item, tuple):
                 path_or_url = str(item[0]).strip().strip('"').strip("'")
                 item_title = Path(path_or_url).name or f"Элемент #{idx+1}"
                 is_local = is_video_file(path_or_url)
                 is_photo = False
-                direct_url = path_or_url
+                is_video = True
+                direct_url = None
                 cur_opts = {**self.fallback_options, **(item[1] or {})}
             else:
                 path_or_url = str(item).strip().strip('"').strip("'")
                 item_title = Path(path_or_url).name or f"Элемент #{idx+1}"
                 is_local = is_video_file(path_or_url)
                 is_photo = False
-                direct_url = path_or_url
+                is_video = True
+                direct_url = None
                 cur_opts = dict(self.fallback_options)
-
-            if is_photo:
-                cur_opts['is_photo'] = True
-                cur_opts['direct_media_url'] = direct_url
-                cur_opts['title'] = item_title
 
             self.status_message.emit(f"[{idx+1}/{total}] {item_title}")
 

@@ -87,7 +87,9 @@ class ProgressWidget(QFrame):
         self.progress_bar.setValue(0)
         self.percent_label.setText("0.0%")
         self.status_label.setText(message)
+        self.status_label.setToolTip("")
         self.metrics_label.setText("ПОДГОТОВКА...")
+        self.metrics_label.setToolTip("")
         self.cancel_btn.setVisible(True)
         self.open_file_btn.setVisible(False)
         self.open_dir_btn.setVisible(False)
@@ -110,16 +112,25 @@ class ProgressWidget(QFrame):
 
         self.metrics_label.setText(f"SPEED: {speed} // {downloaded} / {total} // ETA: {eta}")
 
-    def complete(self, result: dict, errors: list = None):
-        self.progress_bar.setValue(100)
+    def complete(self, result: dict, errors: list = None, total: int = None):
         if errors:
-            self.percent_label.setText("⚠")
+            success_count = result.get('success_count', 0) if isinstance(result, dict) else 0
+            total_count = total or (success_count + len(errors))
+            pct = int((success_count / max(1, total_count)) * 100) if total_count > 0 else 50
+            self.progress_bar.setValue(pct)
+            self.percent_label.setText(f"{pct}%")
             self.status_label.setText("ЧАСТИЧНО ЗАВЕРШЕНО")
-            self.metrics_label.setText(f"СОХРАНЕНО: {result.get('file_size_str', '')} // СБОЕВ: {len(errors)}")
+            self.metrics_label.setText(f"СОХРАНЕНО: {success_count}/{total_count} // СБОЕВ: {len(errors)}")
+            err_tooltip = "Ошибки при обработке очереди:\n" + "\n".join(f"• {e}" for e in errors)
+            self.status_label.setToolTip(err_tooltip)
+            self.metrics_label.setToolTip(err_tooltip)
         else:
+            self.progress_bar.setValue(100)
             self.percent_label.setText("100%")
             self.status_label.setText("ГОТОВО!")
             self.metrics_label.setText(f"ФАЙЛ СОХРАНЕН // {result.get('file_size_str', '')}")
+            self.status_label.setToolTip("")
+            self.metrics_label.setToolTip("")
 
         self._current_file_path = result.get('file_path')
         self.cancel_btn.setVisible(False)

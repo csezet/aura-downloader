@@ -34,6 +34,8 @@ def build():
         "--hidden-import=yt_dlp",
         "--hidden-import=requests",
         "--hidden-import=pefile",
+        "--hidden-import=PIL",
+        "--hidden-import=PIL.Image",
         "--clean",
         "--noconfirm",
     ]

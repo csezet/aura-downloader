@@ -11,7 +11,7 @@ from yt_dlp.extractor.instagram import InstagramIE
 from core.settings import settings
 from core.cookies_helper import get_cookies_config
 import tempfile
-from core.media_converter import convert_to_gif, compress_to_target_size, crop_video, get_unique_path, get_video_duration
+from core.media_converter import convert_to_gif, compress_to_target_size, crop_video, get_unique_path, get_video_duration, probe_video_stream, get_ffmpeg_path
 from core.interpolator import interpolate_video
 
 def format_bytes(bytes_val):
@@ -406,16 +406,27 @@ class DownloadWorker(QThread):
             os.makedirs(self.save_dir, exist_ok=True)
 
             # Direct Image / Instagram Photo or Direct Video Download
-            target_url = self.options.get('direct_media_url') or self.url or ""
+            direct_media_url = self.options.get('direct_media_url')
+            target_url = direct_media_url or self.url or ""
             target_clean = target_url.lower().split('?')[0]
 
             is_explicit_video = bool(self.options.get('is_video') or (self.options.get('media_type') == 'video'))
             is_explicit_photo = bool(self.options.get('is_photo') or (self.options.get('media_type') == 'photo'))
 
-            is_photo = (is_explicit_photo or any(target_clean.endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.webp'])) and not is_explicit_video
-            is_direct_video = is_explicit_video and ('cdninstagram' in target_url or 'instagram.com' in target_url or any(target_clean.endswith(ext) for ext in ['.mp4', '.mkv', '.webm']))
+            is_page_url = any(marker in target_clean for marker in [
+                '/reel/', '/reels/', '/p/', '/tv/', '/stories/',
+                'youtube.com', 'youtu.be', 'tiktok.com', 'twitter.com', 'x.com', 'vk.com'
+            ])
+
+            # A file is downloaded via direct HTTP only if it has an explicit direct media URL
+            # or is clearly a media file CDN and NOT a web page
+            is_photo = (is_explicit_photo or any(target_clean.endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.webp'])) and not is_explicit_video and (direct_media_url or not is_page_url)
+            is_direct_video = is_explicit_video and (direct_media_url or not is_page_url) and (
+                'cdninstagram.com' in target_url or 'fbcdn.net' in target_url or any(target_clean.endswith(ext) for ext in ['.mp4', '.mkv', '.webm'])
+            )
 
             if is_photo or is_direct_video:
+                download_target = direct_media_url or target_url
                 media_kind = "видео" if is_direct_video else "фотографию"
                 media_ext = "mp4" if is_direct_video else "jpg"
                 self.status_message.emit(f"Скачивание {media_kind}...")
@@ -423,7 +434,7 @@ class DownloadWorker(QThread):
                     'User-Agent': DEFAULT_HTTP_HEADERS['User-Agent'],
                     'Referer': 'https://www.instagram.com/'
                 }
-                resp = requests.get(target_url, headers=headers, stream=True, timeout=25)
+                resp = requests.get(download_target, headers=headers, stream=True, timeout=25)
                 resp.raise_for_status()
                 total_bytes = int(resp.headers.get('content-length', 0))
                 downloaded_bytes = 0
@@ -459,8 +470,8 @@ class DownloadWorker(QThread):
 
                     # Validate downloaded file content
                     if is_direct_video:
-                        if not get_video_duration(part_path):
-                            raise Exception("Скачанный файл не содержит валидного видеопотока (возможно CDN вернул ошибку).")
+                        if not probe_video_stream(part_path):
+                            raise Exception("Скачанный файл не содержит валидного видеопотока (возможно CDN вернул ошибку или аудио/HTML).")
                     else:
                         try:
                             from PIL import Image
@@ -514,8 +525,8 @@ class DownloadWorker(QThread):
             if cookies:
                 ydl_opts['cookiesfrombrowser'] = cookies
 
-            ffmpeg_exe = shutil.which('ffmpeg')
-            if ffmpeg_exe:
+            ffmpeg_exe = get_ffmpeg_path()
+            if ffmpeg_exe and (shutil.which(ffmpeg_exe) or os.path.isfile(ffmpeg_exe)):
                 ydl_opts['ffmpeg_location'] = ffmpeg_exe
 
             # Trimmer section
@@ -622,10 +633,15 @@ class DownloadWorker(QThread):
             if not os.path.exists(final_path) and self._last_filename and os.path.exists(self._last_filename):
                 final_path = self._last_filename
 
+            if self.is_cancelled:
+                return
+
             # GIF post processing
             if mode == 'gif' and os.path.exists(final_path):
                 self.status_message.emit("Конвертация в GIF...")
-                gif_path = convert_to_gif(final_path)
+                gif_path = convert_to_gif(final_path, is_cancelled_cb=lambda: self.is_cancelled)
+                if not gif_path or self.is_cancelled:
+                    return
                 if gif_path != final_path:
                     try:
                         os.remove(final_path)
@@ -636,7 +652,9 @@ class DownloadWorker(QThread):
             # Discord compression post processing
             elif mode == 'discord_8mb' and os.path.exists(final_path):
                 self.status_message.emit("Сжатие для Discord (< 8 МБ)...")
-                comp_path = compress_to_target_size(final_path, target_mb=7.8)
+                comp_path = compress_to_target_size(final_path, target_mb=7.8, is_cancelled_cb=lambda: self.is_cancelled)
+                if not comp_path or self.is_cancelled:
+                    return
                 if comp_path != final_path:
                     try:
                         os.remove(final_path)
@@ -649,7 +667,9 @@ class DownloadWorker(QThread):
             crop_params = self.options.get('crop_params')
             if crop_enabled and crop_params and mode != 'audio_only' and os.path.exists(final_path):
                 self.status_message.emit("Кадрирование видео (FFmpeg Crop)...")
-                cropped_path = crop_video(final_path, crop_params)
+                cropped_path = crop_video(final_path, crop_params, is_cancelled_cb=lambda: self.is_cancelled)
+                if not cropped_path or self.is_cancelled:
+                    return
                 if cropped_path != final_path:
                     try:
                         os.remove(final_path)
@@ -667,8 +687,11 @@ class DownloadWorker(QThread):
                     final_path,
                     target_fps=smooth_fps,
                     model=smooth_model,
-                    status_callback=lambda msg: self.status_message.emit(msg.upper())
+                    status_callback=lambda msg: self.status_message.emit(msg.upper()),
+                    is_cancelled_cb=lambda: self.is_cancelled
                 )
+                if not smooth_path or self.is_cancelled:
+                    return
                 if smooth_path != final_path:
                     try:
                         os.remove(final_path)
@@ -690,9 +713,30 @@ class DownloadWorker(QThread):
             if not os.path.exists(final_path):
                 raise Exception("Файл не был сохранен или был удален.")
 
+            orig_media_stem = Path(final_path).stem
+
             # Move atomically from staging to target save_dir with anti-overwrite protection
             final_dest = get_unique_path(os.path.join(self.save_dir, os.path.basename(final_path)))
             shutil.move(final_path, final_dest)
+            dest_media_stem = Path(final_dest).stem
+
+            # Move any sidecar files (subtitles .srt/.vtt, thumbnails, etc.) from staging_dir to save_dir
+            if os.path.exists(staging_dir):
+                for f in os.listdir(staging_dir):
+                    sidecar_src = os.path.join(staging_dir, f)
+                    if not os.path.isfile(sidecar_src) or sidecar_src.endswith('.part') or sidecar_src == final_path:
+                        continue
+                    if f.startswith(orig_media_stem):
+                        suffix = f[len(orig_media_stem):]
+                        sidecar_dest_name = f"{dest_media_stem}{suffix}"
+                    else:
+                        sidecar_dest_name = f
+                    sidecar_dest = get_unique_path(os.path.join(self.save_dir, sidecar_dest_name))
+                    try:
+                        shutil.move(sidecar_src, sidecar_dest)
+                    except Exception as err:
+                        print(f"Warning moving sidecar file {f}: {err}")
+
             final_path = final_dest
 
             file_size = os.path.getsize(final_path) if os.path.exists(final_path) else 0
@@ -809,7 +853,7 @@ class GalleryDownloadWorker(QThread):
 
                 # Content verification
                 if is_video:
-                    if not get_video_duration(part_path):
+                    if not probe_video_stream(part_path):
                         raise Exception(f"Файл {filename} не содержит валидного видеопотока.")
                 else:
                     try:

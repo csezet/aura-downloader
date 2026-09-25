@@ -1049,9 +1049,11 @@ class MainWindow(QMainWindow):
         errors = getattr(self.download_worker, 'errors', [])
         total = getattr(self.download_worker, 'total', len(results) + len(errors))
         last_res = results[-1] if results else {'file_path': settings.get("download_dir"), 'file_size_str': f"{len(results)} файлов"}
+        last_res['success_count'] = len(results)
+        last_res['total_count'] = total
         is_all_photos = all(r.get('mode') in ['JPG', 'PNG', 'WEBP'] for r in results) if results else False
         last_res['mode'] = f"Галерея ({len(results)} фото)" if is_all_photos else f"Пакет ({len(results)} шт)"
-        self.progress_widget.complete(last_res, errors=errors if errors else None)
+        self.progress_widget.complete(last_res, errors=errors if errors else None, total=total)
 
         if hasattr(self, 'notification_manager'):
             if errors:
