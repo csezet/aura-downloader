@@ -85,6 +85,8 @@ class TestAudit46830EDFixes(unittest.TestCase):
         self.assertIn("timestamp", rec_data)
         self.assertIn("error", rec_data)
         self.assertEqual(rec_data["save_dir"], self.save_dir)
+        self.assertIs(rec_data["marker_written"], True)
+        self.assertIsNone(rec_data["marker_error"])
         file_names = [f["name"] for f in rec_data["files"]]
         self.assertIn("File.mp4", file_names)
         self.assertIn("File.ru.srt", file_names)
