@@ -817,7 +817,9 @@ class DownloadWorker(QThread):
                     recovery_marker_path = os.path.join(staging_dir, ".aura_recovery.json")
                     tmp_marker_path = os.path.join(staging_dir, f".aura_recovery_tmp_{int(time.time()*1000)}.json")
                     with open(tmp_marker_path, 'w', encoding='utf-8') as rf:
-                        json.dump(recovery_info, rf, indent=2, ensure_ascii=False)
+                        # This payload only becomes the marker after os.replace succeeds.
+                        marker_payload = {**recovery_info, 'marker_written': True}
+                        json.dump(marker_payload, rf, indent=2, ensure_ascii=False)
                     os.replace(tmp_marker_path, recovery_marker_path)
                     marker_written = True
                 except Exception as meta_err:
