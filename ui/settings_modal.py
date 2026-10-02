@@ -174,7 +174,7 @@ class SettingsModal(WorkerDialog):
         # Clipboard auto-paste row
         clip_row = QHBoxLayout()
         clip_row.setContentsMargins(0, 2, 0, 0)
-        lbl_clip = QLabel("Автоматически подхватывать скопированные ссылки")
+        lbl_clip = QLabel("Заполнять поле из буфера (добавление по кнопке)")
         lbl_clip.setStyleSheet("color: #E4E4E7; font-size: 12px; font-weight: 600;")
         clip_row.addWidget(lbl_clip, stretch=1)
 

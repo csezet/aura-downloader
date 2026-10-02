@@ -4,7 +4,10 @@ import time
 import subprocess
 import shutil
 import requests
+import copy
+import threading
 from pathlib import Path
+from urllib.parse import urlsplit, parse_qs
 from PySide6.QtCore import QThread, Signal
 import yt_dlp
 from yt_dlp.extractor.instagram import InstagramIE
@@ -78,6 +81,9 @@ class MetadataWorker(QThread):
     playlist_ready = Signal(dict)
     gallery_ready = Signal(dict)
     info_error = Signal(str)
+    _cache = {}
+    _cache_lock = threading.Lock()
+    CACHE_TTL = 90
 
     def __init__(self, url):
         super().__init__()
@@ -86,34 +92,64 @@ class MetadataWorker(QThread):
 
     def cancel(self):
         self.is_cancelled = True
+        self.requestInterruption()
 
     def run(self):
-        is_playlist_url = 'list=' in self.url or '/playlist' in self.url
+        if self.is_cancelled:
+            return
+        self._cache_key = (self.url, get_cookies_config())
+        with self._cache_lock:
+            cached = self._cache.get(self._cache_key)
+        if cached and time.monotonic() - cached[0] < self.CACHE_TTL:
+            if not self.is_cancelled:
+                getattr(self, cached[1]).emit(copy.deepcopy(cached[2]))
+            return
+        try:
+            self._extract()
+        except Exception as error:
+            if not self.is_cancelled:
+                self.info_error.emit(str(error))
+
+    def _publish(self, signal_name, data):
+        if self.is_cancelled:
+            return
+        with self._cache_lock:
+            if len(self._cache) >= 32:
+                self._cache.pop(next(iter(self._cache)))
+            self._cache[self._cache_key] = (time.monotonic(), signal_name, copy.deepcopy(data))
+        getattr(self, signal_name).emit(data)
+
+    def _extract(self):
+        parsed = urlsplit(self.url)
+        query = parse_qs(parsed.query)
+        is_playlist_url = '/playlist' in parsed.path or ('list' in query and 'v' not in query)
         ydl_opts = {
             **javascript_options(),
             'quiet': True,
             'no_warnings': True,
             'extract_flat': 'in_playlist' if is_playlist_url else False,
             'skip_download': True,
+            'noplaylist': not is_playlist_url,
             'ignoreerrors': False,
             'geo_bypass': True,
             'http_headers': DEFAULT_HTTP_HEADERS,
             'extractor_args': DEFAULT_EXTRACTOR_ARGS,
-            'socket_timeout': 10,
+            'socket_timeout': 8,
+            'extractor_retries': 1,
+            'retries': 0,
         }
         cookies = get_cookies_config()
         if cookies:
             ydl_opts['cookiesfrombrowser'] = cookies
 
-        # Specialized Instagram carousel & photo extraction
+        info = None
+        # Extract Instagram once; reuse video metadata instead of extracting it again.
         if 'instagram.com' in self.url.lower():
             clean_ig_url = re.sub(r'\?.*$', '', self.url)
-            urls_to_try = [self.url]
-            if clean_ig_url != self.url:
-                urls_to_try.append(clean_ig_url)
+            urls_to_try = [clean_ig_url]
 
             for try_url in urls_to_try:
-                for with_cookies in [True, False]:
+                for with_cookies in ([True, False] if cookies else [False]):
                     if self.is_cancelled:
                         return
                     try:
@@ -146,9 +182,12 @@ class MetadataWorker(QThread):
                                         'thumbnail': preview_thumb,
                                         'title': e.get('title') or f"Instagram Фото #{idx+1}",
                                         'uploader': info.get('uploader') or info.get('channel') or 'Instagram',
+                                        'duration': e.get('duration'),
+                                        'width': e.get('width'),
+                                        'height': e.get('height'),
                                     })
                                 if not self.is_cancelled:
-                                    self.gallery_ready.emit({
+                                    self._publish('gallery_ready', {
                                         'title': info.get('title', 'Галерея Instagram'),
                                         'uploader': info.get('uploader') or info.get('channel') or 'Instagram',
                                         'items': items
@@ -164,7 +203,7 @@ class MetadataWorker(QThread):
                                 uploader = info.get('uploader') or target_entry.get('uploader') or 'Instagram'
                                 title = target_entry.get('title') or info.get('title') or f"Фото от @{uploader}"
                                 if not self.is_cancelled:
-                                    self.info_ready.emit({
+                                    self._publish('info_ready', {
                                         'title': title,
                                         'uploader': uploader,
                                         'duration': 0,
@@ -177,17 +216,28 @@ class MetadataWorker(QThread):
                                         'available_resolutions': ['Оригинал (JPG)']
                                     })
                                     return
+                            if is_vid:
+                                info = {**info, **target_entry}
+                                break
+                            info = None
                     except Exception:
+                        info = None
                         continue
+                if info:
+                    break
 
-        info = None
         extract_error = None
         for attempt_no, try_opts in enumerate([ydl_opts, {**ydl_opts, 'proxy': ''}]):
+            if info:
+                break
             if self.is_cancelled:
                 return
             try:
                 with yt_dlp.YoutubeDL(try_opts) as ydl:
-                    info = ydl.extract_info(self.url, download=False)
+                    # Card metadata needs no format selection or download preparation.
+                    info = ydl.extract_info(self.url, download=False, process=is_playlist_url)
+                    if info and info.get('_type') in ('url', 'url_transparent'):
+                        info = ydl.process_ie_result(info, download=False)
                     if info:
                         break
             except Exception as e:
@@ -230,7 +280,7 @@ class MetadataWorker(QThread):
                         })
                 valid_entries = [e for e in entries if e['url']]
                 if valid_entries and not self.is_cancelled:
-                    self.playlist_ready.emit({
+                    self._publish('playlist_ready', {
                         'title': info.get('title', 'Плейлист YouTube'),
                         'entries': valid_entries
                     })
@@ -278,25 +328,16 @@ class MetadataWorker(QThread):
                         height = f.get('height')
                         break
 
-            # Extract playable direct stream URL for instant in-app player preview
-            direct_url = info.get('url')
-            if not direct_url and formats:
-                for f in reversed(formats):
-                    if f.get('url') and f.get('ext') == 'mp4' and f.get('vcodec') != 'none' and f.get('acodec') != 'none':
-                        direct_url = f.get('url')
-                        break
-                if not direct_url:
-                    for f in reversed(formats):
-                        if f.get('url') and f.get('ext') == 'mp4' and f.get('vcodec') != 'none':
-                            direct_url = f.get('url')
-                            break
-                if not direct_url and formats:
-                    direct_url = formats[-1].get('url')
+            from core.media_preview import choose_preview_format
+            preview_format = choose_preview_format(formats)
+            direct_url = preview_format.get('url') if preview_format else (
+                info.get('url') if info.get('vcodec') != 'none' else None)
 
             result = {
                 'url': self.url,
                 'direct_url': direct_url,
-                'playable_url': direct_url or self.url,
+                'playable_url': direct_url,
+                'preview_url': direct_url,
                 'title': title,
                 'uploader': uploader,
                 'duration': duration,
@@ -305,11 +346,11 @@ class MetadataWorker(QThread):
                 'platform': platform,
                 'available_res': available_res,
                 'has_video': has_video,
-                'width': width or 1920,
-                'height': height or 1080
+                'width': width or None,
+                'height': height or None
             }
             if not self.is_cancelled:
-                self.info_ready.emit(result)
+                self._publish('info_ready', result)
         except Exception as e:
             if self.is_cancelled:
                 return

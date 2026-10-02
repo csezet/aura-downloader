@@ -109,6 +109,42 @@ def smoke_main(argv):
             window.show()
             app.processEvents()
             checked("Main window renders", not window.grab().isNull())
+            submitted = []
+            original_start_metadata = window._start_metadata_worker
+            window._start_metadata_worker = lambda url, item_id=None: submitted.append(url)
+            window.url_input.setText('https://example.test/manual')
+            deadline = time.monotonic() + 0.65
+            while time.monotonic() < deadline:
+                app.processEvents()
+                time.sleep(0.01)
+            checked("Pasted link waits for explicit submission", not submitted and window.cards_list.count() == 0)
+            window._paste_and_fetch()
+            checked("Insert button submits the entered link", submitted == ['https://example.test/manual'])
+            window._start_metadata_worker = original_start_metadata
+
+            from ui.trim_dialog import TrimDialog
+            trim_dialog = TrimDialog(window, str(source), info['duration'], initial_start='0.2', initial_end='1')
+            frames = []
+            trim_dialog.video_widget.videoSink().videoFrameChanged.connect(
+                lambda frame: frames.append(True) if frame.isValid() else None)
+            trim_dialog.show()
+            deadline = time.monotonic() + 15
+            while not frames and time.monotonic() < deadline:
+                app.processEvents()
+                if trim_dialog._preview_loaded:
+                    trim_dialog.player.play()
+                time.sleep(0.01)
+            checked("Trim preview decodes a real video frame", bool(frames))
+            trim_dialog.player.pause()
+            trim_dialog._apply()
+            checked("Trim editor preserves subsecond selection", trim_dialog.applied_range == ('00:00.2', '00:01'))
+            long_dialog = TrimDialog(window, duration_sec=1800)
+            long_dialog._on_player_duration_changed(108_000_000)
+            long_dialog._seek_to_ms(900_000)
+            long_dialog._on_player_position_changed(108_900_000)
+            checked("Half-hour timeline ignores absolute stream timestamps",
+                    long_dialog.duration_ms == 1_800_000 and long_dialog.time_lbl.text() == '15:00 / 30:00')
+            long_dialog.reject()
             settings_dialog = SettingsModal(window)
             settings_dialog.show()
             app.processEvents()
@@ -139,6 +175,13 @@ def smoke_main(argv):
             if app is not None:
                 from core.workers import shutdown_background_tasks
                 from core.temp_files import release_cache_session
+                from PySide6.QtCore import QUrl
+                from PySide6.QtMultimedia import QMediaPlayer
+                for widget in app.topLevelWidgets():
+                    for player in widget.findChildren(QMediaPlayer):
+                        player.stop()
+                        player.setSource(QUrl())
+                app.processEvents()
                 shutdown_background_tasks()
                 release_cache_session()
             import logging

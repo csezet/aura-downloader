@@ -15,7 +15,6 @@ from PySide6.QtGui import QColor, QPixmap, QIcon, QShortcut, QKeySequence
 from core.settings import settings
 from core.history import history
 from core.downloader import MetadataWorker
-from core.local_processor import is_video_file
 from core.unified_batch_worker import UnifiedBatchWorker
 from core.clipboard import ClipboardWatcher
 from core.media_converter import check_ffmpeg_available
@@ -109,11 +108,6 @@ class MainWindow(QMainWindow):
         self._import_generation = 0
         self.notification_manager = NotificationManager(parent=self, icon_path=self.icon_path)
 
-        self.url_debounce_timer = QTimer(self)
-        self.url_debounce_timer.setSingleShot(True)
-        self.url_debounce_timer.setInterval(400)
-        self.url_debounce_timer.timeout.connect(self._fetch_metadata)
-
         self._active_workers = []
         self._closing = False
         self._close_timer = QTimer(self)
@@ -149,7 +143,6 @@ class MainWindow(QMainWindow):
             event.ignore()
             self._closing = True
             registry.stopping = True
-            self.url_debounce_timer.stop()
             self.clipboard_watcher.set_enabled(False)
             self.setEnabled(False)
             self.progress_widget.start_progress("ЗАВЕРШЕНИЕ ФОНОВЫХ ЗАДАЧ...")
@@ -266,7 +259,6 @@ class MainWindow(QMainWindow):
         self.url_input.setObjectName("UrlInput")
         self.url_input.setPlaceholderText("https://... или перетащите видеофайлы (Drag & Drop)")
         self.url_input.setClearButtonEnabled(True)
-        self.url_input.textChanged.connect(self._on_url_text_changed)
         self.url_input.returnPressed.connect(self._fetch_metadata)
         input_bar.addWidget(self.url_input, stretch=1)
 
@@ -593,23 +585,13 @@ class MainWindow(QMainWindow):
         self.clipboard_watcher.url_detected.connect(self._on_clipboard_url)
 
     def _on_clipboard_url(self, url: str):
-        if settings.get("auto_paste", False) and not self._queue_busy:
-            if hasattr(self, 'url_debounce_timer'):
-                self.url_debounce_timer.stop()
-            self.url_input.blockSignals(True)
+        if settings.get("auto_paste", False) and not self._queue_busy and not self.url_input.text().strip():
             self.url_input.setText(url)
-            self.url_input.blockSignals(False)
-            self._fetch_metadata()
 
     def _paste_and_fetch(self):
-        if hasattr(self, 'url_debounce_timer'):
-            self.url_debounce_timer.stop()
-        clipboard = QApplication.clipboard()
-        text = clipboard.text().strip()
+        text = self.url_input.text().strip() or QApplication.clipboard().text().strip()
         if text:
-            self.url_input.blockSignals(True)
             self.url_input.setText(text)
-            self.url_input.blockSignals(False)
             self._fetch_metadata()
 
     def _open_file_dialog(self):
@@ -740,7 +722,11 @@ class MainWindow(QMainWindow):
         try:
             self.current_video_info = info
             self.crop_widget.set_source_info(pixmap, width=info.get('width') or 0, height=info.get('height') or 0)
-            playable = info.get('playable_url') or info.get('direct_url') or info.get('url')
+            playable = info.get('preview_url') or info.get('playable_url') or info.get('direct_url')
+            if info.get('is_local') or info.get('direct_media_url'):
+                playable = playable or info.get('url')
+            # A website page is not a media stream. Resolve it when opening the editor.
+            playable = playable or {'url': info.get('url')}
             self.trim_widget.set_source_video(playable, info.get('duration') or 0)
             self._restore_ui_from_video_info(info)
             self._refresh_editor_visibility()
@@ -758,7 +744,7 @@ class MainWindow(QMainWindow):
         dimensions_known = bool(info.get('width') and info.get('height'))
         self.crop_widget.toggle.setEnabled(dimensions_known and not self._queue_busy)
         self.crop_widget.edit_btn.setEnabled(dimensions_known and self.crop_widget.is_crop_enabled() and not self._queue_busy)
-        self.trim_widget.visual_btn.setEnabled(bool(info.get('duration')) and self.trim_widget.is_trim_enabled() and not self._queue_busy)
+        self.trim_widget.visual_btn.setEnabled(bool(info.get('url')) and self.trim_widget.is_trim_enabled() and not self._queue_busy)
         unknown = bool(info and not photo and not dimensions_known and not info.get('is_local'))
         self.metadata_details_btn.setVisible(unknown)
         self.metadata_details_btn.setEnabled(not self._queue_busy)
@@ -808,27 +794,7 @@ class MainWindow(QMainWindow):
         self._refresh_editor_visibility()
         self._update_download_button_text()
 
-    def _on_url_text_changed(self, text: str):
-        clean_text = text.strip()
-        if not clean_text:
-            if hasattr(self, 'url_debounce_timer'):
-                self.url_debounce_timer.stop()
-            return
-
-        if is_video_file(clean_text):
-            if hasattr(self, 'url_debounce_timer'):
-                self.url_debounce_timer.stop()
-            self.url_input.clear()
-            self._load_local_files([clean_text])
-            return
-
-        # Auto-fetch as soon as a complete URL is pasted or entered (starts with http/https)
-        if clean_text.startswith(("http://", "https://")) and len(clean_text) > 12:
-            if hasattr(self, 'url_debounce_timer'):
-                self.url_debounce_timer.start(400)
-
     def _fetch_metadata(self):
-        self.url_debounce_timer.stop()
         if self._closing:
             return
         text = self.url_input.text().strip()
@@ -852,6 +818,8 @@ class MainWindow(QMainWindow):
 
     def _start_metadata_worker(self, url, item_id=None):
         if self.metadata_worker and self.metadata_worker.isRunning():
+            if self.metadata_worker.url == url and not self.metadata_worker.is_cancelled:
+                return
             self.metadata_worker.cancel()
         worker = MetadataWorker(url)
         self.metadata_worker = worker
@@ -934,7 +902,7 @@ class MainWindow(QMainWindow):
                 info = {
                     'url': item.get('url'),
                     'direct_url': None,
-                    'playable_url': item.get('url'),
+                    'playable_url': None,
                     'title': item.get('title', 'Без названия'),
                     'uploader': item.get('uploader', 'Автор'),
                     'duration': item.get('duration', 0),

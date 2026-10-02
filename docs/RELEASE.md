@@ -1,6 +1,6 @@
 # Подготовка выпуска Windows x64
 
-Проверенное окружение: **CPython 3.12.10**, Windows 10/11 x64. Номер версии задаётся один раз в `core/version.py`. Для текущих изменений подготовлена версия **1.1.0**.
+Проверенное окружение: **CPython 3.12.10**, Windows 10/11 x64. Номер версии задаётся один раз в `core/version.py`. Для текущих изменений подготовлена версия **1.1.1**.
 
 ## Сборка
 
@@ -17,8 +17,8 @@ py -3.12 -m venv venv
 Выходные файлы:
 
 - `dist/AuraDownloader/AuraDownloader.exe` — программа; сохраняйте рядом всю папку `_internal/`.
-- `dist/AuraDownloader-v1.1.0-windows-x64.zip` — переносимый дистрибутив.
-- `dist/AuraDownloader-v1.1.0-windows-x64.zip.sha256` — контрольная сумма архива.
+- `dist/AuraDownloader-v1.1.1-windows-x64.zip` — переносимый дистрибутив.
+- `dist/AuraDownloader-v1.1.1-windows-x64.zip.sha256` — контрольная сумма архива.
 - `dist/smoke-report.json` — результаты проверки готового EXE.
 - `dist/AuraDownloader/build-manifest.json` — версии, ревизия исходников и контрольные суммы FFmpeg/FFprobe.
 

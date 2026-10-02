@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QIcon
 from assets.icons import get_svg_icon
 from ui.toggle_switch import ToggleSwitch
-from ui.trim_dialog import TrimDialog
+from ui.trim_dialog import TrimDialog, ms_to_fmt
 
 class TrimWidget(QFrame):
     trim_toggled = Signal(bool)
@@ -150,16 +150,10 @@ class TrimWidget(QFrame):
     def set_duration_hint(self, duration_sec: float):
         if duration_sec > 0:
             self._duration_sec = duration_sec
-            sec = int(round(duration_sec))
-            m, s = divmod(sec, 60)
-            h, m = divmod(m, 60)
-            if h > 0:
-                self.end_input.setText(f"{h:02d}:{m:02d}:{s:02d}")
-            else:
-                self.end_input.setText(f"{m:02d}:{s:02d}")
+            self.end_input.setText(ms_to_fmt(round(duration_sec * 1000)))
 
     def _on_toggled(self, checked: bool):
-        self.visual_btn.setEnabled(checked and self._duration_sec > 0)
+        self.visual_btn.setEnabled(checked and bool(self._video_source))
         self.visual_btn.setIcon(get_svg_icon("scissors", color="#FFFFFF" if checked else "#52525B", size=13))
         self.start_input.setEnabled(checked)
         self.end_input.setEnabled(checked)

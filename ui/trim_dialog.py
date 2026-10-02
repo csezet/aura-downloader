@@ -17,15 +17,28 @@ from ui.worker_dialog import WorkerDialog
 
 class PreviewProxyWorker(CancellableThread):
     ready = Signal(str)
+    info_ready = Signal(dict)
+    failed = Signal(str)
 
     def __init__(self, source):
         super().__init__()
         self.source = source
 
     def run(self):
-        proxy = get_or_create_preview_proxy(self.source, is_cancelled_cb=self.isInterruptionRequested)
-        if proxy and not self.isInterruptionRequested():
-            self.ready.emit(proxy)
+        try:
+            if isinstance(self.source, dict):
+                from core.media_preview import resolve_preview
+                info = resolve_preview(self.source['url'], self.isInterruptionRequested)
+                if info and not self.isInterruptionRequested():
+                    self.info_ready.emit(info)
+                    self.ready.emit(info['url'])
+            else:
+                proxy = get_or_create_preview_proxy(self.source, is_cancelled_cb=self.isInterruptionRequested)
+                if proxy and not self.isInterruptionRequested():
+                    self.ready.emit(proxy)
+        except Exception as error:
+            if not self.isInterruptionRequested():
+                self.failed.emit(str(error))
 
 def parse_time_to_ms(time_str: str) -> int:
     if not time_str:
@@ -61,12 +74,13 @@ class TrimDialog(WorkerDialog):
         self.setAttribute(Qt.WA_TranslucentBackground, True)
 
         self.video_source = video_source
+        self._duration_known = bool(duration_sec and float(duration_sec) > 0)
         self.duration_ms = max(100, int(round((float(duration_sec) if duration_sec else 60.0) * 1000.0)))
-        self.start_ms = parse_time_to_ms(initial_start)
+        self.start_ms = max(0, min(self.duration_ms - 1, parse_time_to_ms(initial_start)))
         parsed_end = parse_time_to_ms(initial_end) if initial_end else None
 
         # Anchor right handle to 100% full duration if not explicitly a custom sub-clip
-        if parsed_end is None or parsed_end >= (self.duration_ms - 800) or parsed_end <= self.start_ms:
+        if parsed_end is None or parsed_end >= self.duration_ms or parsed_end <= self.start_ms:
             self.end_ms = self.duration_ms
         else:
             self.end_ms = min(self.duration_ms, parsed_end)
@@ -151,6 +165,11 @@ class TrimDialog(WorkerDialog):
         self.video_widget = QVideoWidget()
         self.video_widget.setStyleSheet("background-color: #000000; border-radius: 8px;")
         v_layout.addWidget(self.video_widget)
+        self.preview_status = QLabel()
+        self.preview_status.setWordWrap(True)
+        self.preview_status.setStyleSheet("color: #A1A1AA; padding: 6px; font-size: 11px;")
+        self.preview_status.hide()
+        v_layout.addWidget(self.preview_status)
 
         c_layout.addWidget(self.video_container, stretch=1)
 
@@ -366,16 +385,35 @@ class TrimDialog(WorkerDialog):
         self.player.errorOccurred.connect(self._on_player_error)
 
         if self.video_source:
-            if isinstance(self.video_source, str) and (self.video_source.startswith("http://") or self.video_source.startswith("https://")):
-                self.player.setSource(QUrl(self.video_source))
-                self.player.pause()
-                self._seek_to_ms(self.start_ms)
-            elif os.path.exists(self.video_source):
+            if isinstance(self.video_source, str) and self.video_source.startswith(("http://", "https://")):
+                self._on_proxy_ready(self.video_source)
+            elif isinstance(self.video_source, dict) or os.path.exists(self.video_source):
                 self._proxy_worker = PreviewProxyWorker(self.video_source)
                 self.btn_play.setText(" ПОДГОТОВКА ПРЕВЬЮ...")
                 self.btn_play.setEnabled(False)
+                self.preview_status.setText("Подготовка предпросмотра. Диапазон можно выбрать уже сейчас.")
+                self.preview_status.show()
                 self._proxy_worker.ready.connect(self._on_proxy_ready)
+                self._proxy_worker.info_ready.connect(self._on_preview_info)
+                self._proxy_worker.failed.connect(self._on_preview_failed)
                 start_worker(self._proxy_worker, self)
+            else:
+                self._on_preview_failed("Исходный файл недоступен.")
+        else:
+            self._on_preview_failed("Источник предпросмотра отсутствует.")
+
+    def _on_preview_info(self, info):
+        if not self._duration_known and info.get('duration'):
+            self._on_player_duration_changed(round(info['duration'] * 1000))
+            self._duration_known = True
+
+    def _on_preview_failed(self, message):
+        if self._pending_result is not None:
+            return
+        self.btn_play.setEnabled(False)
+        self.btn_play.setText(" ПРЕВЬЮ НЕДОСТУПНО")
+        self.preview_status.setText(f"Превью недоступно: {message}. Выберите диапазон на шкале или задайте таймкоды в главном окне.")
+        self.preview_status.show()
 
     def _on_proxy_ready(self, playable):
         if self._pending_result is not None:
@@ -383,27 +421,37 @@ class TrimDialog(WorkerDialog):
         self._preview_loaded = True
         self.btn_play.setText(" ВОСПРОИЗВЕДЕНИЕ")
         self.btn_play.setEnabled(True)
-        self.player.setSource(QUrl.fromLocalFile(playable))
+        self.preview_status.hide()
+        self.player.setSource(QUrl(playable) if playable.startswith(('http://', 'https://')) else QUrl.fromLocalFile(playable))
         self.player.pause()
         self._seek_to_ms(self.start_ms)
 
     def _on_player_error(self, error, error_string):
-        self.btn_play.setToolTip(f"Превью недоступно: {error_string}. Время фрагмента можно задать вручную.")
+        self._on_preview_failed(error_string)
 
     def _on_player_duration_changed(self, dur_ms: int):
+        # Network manifests can report absolute timestamps after seeking. Metadata
+        # (or FFprobe for a file) defines the editor's range, not those timestamps.
+        if self._duration_known:
+            return
         if dur_ms > 0:
-            was_full = (self.end_ms >= (self.duration_ms - 800) or self.end_ms == 0)
+            was_full = (self.end_ms == self.duration_ms or self.end_ms == 0)
             self.duration_ms = dur_ms
             self.timeline_slider.set_duration(dur_ms)
             if was_full:
                 self.end_ms = dur_ms
             else:
                 self.end_ms = min(self.end_ms, dur_ms)
+            self.start_ms = min(self.start_ms, max(0, self.end_ms - 1))
+            self.current_pos_ms = min(self.current_pos_ms, self.duration_ms)
             self.timeline_slider.set_range(self.start_ms, self.end_ms)
+            self.timeline_slider.set_current_position(self.current_pos_ms)
             self._update_badges()
             self.time_lbl.setText(f"{ms_to_fmt(self.current_pos_ms)} / {ms_to_fmt(self.duration_ms)}")
 
     def _on_player_position_changed(self, pos_ms: int):
+        if pos_ms < 0 or pos_ms > self.duration_ms:
+            return
         self.current_pos_ms = pos_ms
         self.timeline_slider.set_current_position(pos_ms)
         self.time_lbl.setText(f"{ms_to_fmt(pos_ms)} / {ms_to_fmt(self.duration_ms)}")
@@ -450,8 +498,8 @@ class TrimDialog(WorkerDialog):
         self._seek_to_ms(pos_ms)
 
     def _on_range_changed(self, start_ms: int, end_ms: int):
-        self.start_ms = start_ms
-        self.end_ms = end_ms
+        self.start_ms = max(0, min(self.duration_ms - 1, start_ms))
+        self.end_ms = max(self.start_ms + 1, min(self.duration_ms, end_ms))
         self._update_badges()
         if self.player.playbackState() != QMediaPlayer.PlayingState:
             self._seek_to_ms(end_ms)
@@ -534,6 +582,7 @@ class TrimDialog(WorkerDialog):
     def done(self, result):
         if hasattr(self, 'player'):
             self.player.stop()
+            self.player.setSource(QUrl())
         super().done(result)
 
     def mousePressEvent(self, event):

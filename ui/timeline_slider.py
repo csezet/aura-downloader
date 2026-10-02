@@ -193,14 +193,16 @@ class TimelineRangeSlider(QWidget):
 
         if self.active_drag == HANDLE_START:
             ms = self._x_to_ms(x + self.handle_width / 2)
-            self.start_ms = max(0, min(self.end_ms - 200, ms))
+            min_span = min(200, self.duration_ms)
+            self.start_ms = max(0, min(self.end_ms - min_span, ms))
             self.current_pos_ms = self.start_ms
             self.range_changed.emit(self.start_ms, self.end_ms)
             self.seek_requested.emit(self.start_ms)
             self.update()
         elif self.active_drag == HANDLE_END:
             ms = self._x_to_ms(x - self.handle_width / 2)
-            self.end_ms = max(self.start_ms + 200, min(self.duration_ms, ms))
+            min_span = min(200, self.duration_ms)
+            self.end_ms = min(self.duration_ms, max(self.start_ms + min_span, ms))
             self.current_pos_ms = self.end_ms
             self.range_changed.emit(self.start_ms, self.end_ms)
             self.seek_requested.emit(self.end_ms)
