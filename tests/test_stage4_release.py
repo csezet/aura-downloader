@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 import zipfile
 
-from core.app_logging import PrivateFormatter, LogStream
+from core.app_logging import PrivateFormatter, LogStream, SafeRotatingFileHandler
 from core.js_runtime import javascript_options
 from core.updater import check_latest_release, version_tuple
 from core.version import RELEASES_URL
@@ -95,6 +95,19 @@ class TestReleaseUpdates(unittest.TestCase):
 
 
 class TestReleaseDiagnostics(unittest.TestCase):
+    def test_disk_failure_does_not_recurse_through_redirected_stderr(self):
+        with tempfile.TemporaryDirectory() as folder:
+            handler = SafeRotatingFileHandler(Path(folder) / "journal.log")
+            record = logging.LogRecord("test", logging.ERROR, __file__, 1, "Ошибка", (), None)
+            try:
+                with patch.object(handler, "shouldRollover", return_value=False), \
+                     patch.object(handler.stream, "write", side_effect=OSError("Disk full")), \
+                     patch.object(sys, "stderr") as stderr:
+                    handler.emit(record)
+                    stderr.write.assert_not_called()
+            finally:
+                handler.close()
+
     def test_build_does_not_resolve_dlls_from_unrelated_apps(self):
         from build_exe import clean_build_environment
         with patch.dict("os.environ", {"PATH": "C:/unrelated-app/bin", "PYTHONPATH": "C:/unrelated-python"}):

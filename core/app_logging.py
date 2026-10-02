@@ -1,4 +1,4 @@
-"""Rotating diagnostics for console-free launches; credentials never enter the log."""
+"""Rotating diagnostics for console-free launches, with URL and credential-field redaction."""
 import ctypes
 import logging
 from logging.handlers import RotatingFileHandler
@@ -65,6 +65,12 @@ class LogStream:
         return False
 
 
+class SafeRotatingFileHandler(RotatingFileHandler):
+    def handleError(self, record):
+        # Disk errors must not recurse through stderr, which itself writes to this handler.
+        pass
+
+
 def configure_logging(redirect=False):
     root = logging.getLogger()
     handler = next((h for h in root.handlers if getattr(h, "aura_handler", False)), None)
@@ -72,7 +78,7 @@ def configure_logging(redirect=False):
         for folder in (get_log_dir(), Path(tempfile.gettempdir()) / "AuraDownloader" / "logs"):
             try:
                 folder.mkdir(parents=True, exist_ok=True)
-                handler = RotatingFileHandler(folder / f"aura-{os.getpid()}.log", maxBytes=2 * 1024 * 1024,
+                handler = SafeRotatingFileHandler(folder / f"aura-{os.getpid()}.log", maxBytes=2 * 1024 * 1024,
                                               backupCount=3, encoding="utf-8")
                 break
             except OSError:
