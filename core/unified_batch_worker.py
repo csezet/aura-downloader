@@ -1,5 +1,6 @@
 import copy
 import math
+import logging
 import os
 from pathlib import Path
 from PySide6.QtCore import QThread, Signal
@@ -134,6 +135,7 @@ class UnifiedBatchWorker(QThread):
             else:
                 item_error = item_error or "Обработка завершилась без сохранённого файла."
                 errors.append(f"{title}: {item_error}")
+                logging.getLogger("aura.queue").error("Queue item failed: %s", item_error)
                 snapshot = copy.deepcopy(item)
                 if recovery_dir:
                     snapshot["recovery_dir"] = recovery_dir

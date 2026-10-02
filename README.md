@@ -7,7 +7,7 @@
 
 <br/>
 
-<a href="https://github.com/csezet/aura-downloader/archive/refs/heads/main.zip">
+<a href="https://github.com/csezet/aura-downloader/releases/latest">
   <img src="https://img.shields.io/badge/📥_СКАЧАТЬ_AURA_DOWNLOADER-Windows_x64-ffffff?style=for-the-badge&logo=windows&logoColor=000000" alt="Скачать Aura Downloader" height="46">
 </a>
 &nbsp;&nbsp;
@@ -18,7 +18,7 @@
 <br/><br/>
 
 [![Windows](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-18181b?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/csezet/aura-downloader)
-[![Python](https://img.shields.io/badge/Python-3.10%2B-18181b?style=for-the-badge&logo=python&logoColor=white)](https://github.com/csezet/aura-downloader)
+[![Python](https://img.shields.io/badge/Python-3.12-18181b?style=for-the-badge&logo=python&logoColor=white)](https://github.com/csezet/aura-downloader)
 [![PySide6](https://img.shields.io/badge/GUI-PySide6%20%2F%20Qt6-18181b?style=for-the-badge&logo=qt&logoColor=white)](https://github.com/csezet/aura-downloader)
 [![yt-dlp](https://img.shields.io/badge/Engine-yt--dlp%20%2B%20FFmpeg-18181b?style=for-the-badge&logo=github&logoColor=white)](https://github.com/csezet/aura-downloader)
 [![AI](https://img.shields.io/badge/AI-RIFE%2060%20FPS-18181b?style=for-the-badge&logo=nvidia&logoColor=white)](https://github.com/csezet/aura-downloader)
@@ -88,7 +88,7 @@
 
 ### Системные требования
 - **ОС**: Windows 10 / Windows 11 (64-bit)
-- **Медиа-движок**: [FFmpeg](https://ffmpeg.org/) и FFprobe (для объединения потоков, нарезки, кадрирования и сжатия)
+- **При запуске из исходников**: [FFmpeg](https://ffmpeg.org/) и FFprobe (для объединения потоков, нарезки, кадрирования и сжатия). В автономной сборке они уже включены.
   - *Способ 1 (через winget)*:
     ```bash
     winget install Gyan.FFmpeg
@@ -98,16 +98,20 @@
 
 ---
 
-### Вариант 1: Сборка в автономный `.exe` (PyInstaller)
+### Вариант 1: Готовая программа
+Скачайте архив **AuraDownloader-…-windows-x64.zip** на [странице релизов](https://github.com/csezet/aura-downloader/releases/latest), распакуйте всю папку и запустите **AuraDownloader.exe**. Для новых сборок по этому сценарию Python, FFmpeg и Deno входят в дистрибутив. Сохраняйте папку `_internal/` рядом с EXE.
+
+### Вариант 2: Сборка в автономный `.exe` (PyInstaller)
 Для сборки готового дистрибутива `AuraDownloader.exe`, не требующего Python у конечного пользователя:
 ```bash
-python build_exe.py
+python -m pip install -r requirements-lock.txt
+python build_exe.py --download-tools
 ```
-Готовый исполняемый файл появится в папке `dist/AuraDownloader/AuraDownloader.exe`.
+Используйте **CPython 3.12.10 на Windows x64**. Готовый файл появится в `dist/AuraDownloader/AuraDownloader.exe`; архив и SHA-256 — в `dist/`. Сборка проверяет перенесённый EXE без системных Python/FFmpeg/Deno перед упаковкой. Подробности и ручные проверки: [подготовка выпуска](docs/RELEASE.md).
 
 ---
 
-### Вариант 2: Запуск из исходного кода
+### Вариант 3: Запуск из исходного кода
 
 #### 1. Клонирование репозитория
 ```bash
@@ -117,17 +121,23 @@ cd aura-downloader
 
 #### 2. Установка зависимостей
 ```bash
-pip install -r requirements.txt
+py -3.12 -m venv venv
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
 #### 3. Создание ярлыка на Рабочем столе
 ```bash
-python create_shortcut.py
+.\venv\Scripts\python.exe create_shortcut.py
 ```
 
 #### 4. Запуск приложения
 - Двойной клик по иконке **`Aura Downloader`** на вашем Рабочем столе.
-- Или команда: `pythonw main.pyw` / `wscript.exe run.vbs`.
+- Или команда: `.\venv\Scripts\pythonw.exe main.pyw` / `wscript.exe run.vbs`.
+
+## 🔄 Обновления и диагностика
+В новой EXE-сборке откройте **Настройки → Проверить обновления**. Приложение проверяет стабильные релизы этого репозитория и предлагает скачать новую Windows-сборку. Для обновления закройте программу и распакуйте новый архив в другую папку: настройки и история сохраняются в профиле пользователя. В исходниках кнопка обновляет yt-dlp вместе с JavaScript-компонентами; после обновления нужен перезапуск.
+
+**Настройки → Журнал ошибок** открывает `%LOCALAPPDATA%/AuraDownloader/logs/`. Ошибки пишутся в файл и при запуске без консоли, с ротацией и маскированием URL/полей авторизации. При проблеме со сборкой используйте `dist/smoke-report.json`. Версия отображается в настройках; состав сборки записан в `build-manifest.json`. Лицензии компонентов описаны в [THIRD_PARTY.md](THIRD_PARTY.md).
 
 ---
 

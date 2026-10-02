@@ -2,6 +2,10 @@ import sys
 import os
 import ctypes
 
+if __name__ == "__main__" and "--smoke-test" in sys.argv:
+    from core.smoke_check import smoke_main
+    sys.exit(smoke_main(sys.argv[1:]))
+
 # Immediately hide and detach any console window if opened
 try:
     kernel32 = ctypes.windll.kernel32
@@ -20,6 +24,11 @@ if sys.executable.lower().endswith("pythonw.exe") or getattr(sys, 'frozen', Fals
         sys.stderr = open(os.devnull, 'w')
     except Exception:
         pass
+
+from core.app_logging import configure_logging, install_exception_hooks, install_qt_logging
+from core.version import APP_VERSION
+log_path = configure_logging(redirect=sys.executable.lower().endswith("pythonw.exe") or bool(getattr(sys, "frozen", False)))
+install_exception_hooks(log_path)
 
 from pathlib import Path
 from PySide6.QtWidgets import QApplication
@@ -50,6 +59,8 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Aura Downloader")
     app.setOrganizationName("AuraDev")
+    app.setApplicationVersion(APP_VERSION)
+    install_qt_logging()
 
     # Clean up any leftover temporary proxies/thumbs
     try:
@@ -70,6 +81,7 @@ def main():
     if os.path.exists(icon_path):
         window.setWindowIcon(QIcon(icon_path))
     window.show()
+    sys._aura_window_started = True
 
     sys.exit(app.exec())
 

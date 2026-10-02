@@ -104,10 +104,14 @@ def check_ffmpeg_available() -> tuple:
     if not has_ffmpeg or not has_ffprobe:
         return False, "FFmpeg или FFprobe не найдены. Установите через winget (winget install Gyan.FFmpeg) или поместите в папку tools/"
     try:
-        res = subprocess.run([ffmpeg_exe, "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
-        if res.returncode == 0:
-            first_line = res.stdout.splitlines()[0] if res.stdout else "FFmpeg OK"
-            return True, first_line
+        versions = []
+        for executable in (ffmpeg_exe, ffprobe_exe):
+            res = subprocess.run([executable, "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 text=True, encoding="utf-8", errors="replace", timeout=5, creationflags=CREATE_NO_WINDOW, startupinfo=get_startupinfo())
+            if res.returncode != 0:
+                return False, f"{Path(executable).name} вернул ошибку запуска."
+            versions.append(res.stdout.splitlines()[0] if res.stdout else Path(executable).name)
+        return True, " | ".join(versions)
     except Exception as e:
         return False, f"Ошибка запуска FFmpeg: {e}"
     return False, "FFmpeg вернул ненулевой код завершения."
@@ -175,7 +179,7 @@ def probe_video_stream(file_path: str) -> bool:
             creationflags=CREATE_NO_WINDOW,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=10
         )
         if res.returncode != 0:
@@ -212,7 +216,7 @@ def get_video_dimensions(input_path: str) -> tuple:
             creationflags=CREATE_NO_WINDOW,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=10
         )
         if res.returncode != 0:
@@ -245,7 +249,7 @@ def get_video_dimensions(input_path: str) -> tuple:
                 creationflags=CREATE_NO_WINDOW,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 timeout=5
             )
             if res_rot.returncode == 0:
@@ -324,7 +328,7 @@ def get_video_duration(input_path: str):
             creationflags=CREATE_NO_WINDOW,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=10
         )
         if res.returncode == 0:
@@ -869,7 +873,7 @@ def get_video_codec(input_path: str) -> str:
             creationflags=CREATE_NO_WINDOW,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             check=True,
             timeout=10
         )

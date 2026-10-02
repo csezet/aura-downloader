@@ -1,4 +1,5 @@
 """Keep background threads alive until cooperative cancellation has finished."""
+import logging
 from PySide6.QtCore import QObject, QThread, QTimer, Slot
 from PySide6.QtWidgets import QApplication
 
@@ -18,6 +19,11 @@ class WorkerRegistry(QObject):
         if worker not in self.workers:
             self.workers.append(worker)
             worker.finished.connect(self._on_finished)
+            for name in ("download_error", "info_error"):
+                signal = getattr(worker, name, None)
+                if signal is not None:
+                    task_name = type(worker).__name__
+                    signal.connect(lambda message, task=task_name: logging.getLogger("aura.worker").error("%s: %s", task, message))
         return worker
 
     @Slot()

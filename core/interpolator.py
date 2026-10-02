@@ -153,7 +153,7 @@ def get_video_fps(input_path: str):
                  "-show_entries", f"stream={field}",
                  "-of", "default=noprint_wrappers=1:nokey=1", input_path],
                 startupinfo=get_startupinfo(), creationflags=CREATE_NO_WINDOW,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", timeout=10)
             if res.returncode == 0:
                 value = res.stdout.strip()
                 try:

@@ -9,6 +9,7 @@ from PySide6.QtCore import QThread, Signal
 import yt_dlp
 from yt_dlp.extractor.instagram import InstagramIE
 from core.settings import settings
+from core.js_runtime import javascript_options
 from core.cookies_helper import get_cookies_config
 import json
 from core.media_converter import (
@@ -89,6 +90,7 @@ class MetadataWorker(QThread):
     def run(self):
         is_playlist_url = 'list=' in self.url or '/playlist' in self.url
         ydl_opts = {
+            **javascript_options(),
             'quiet': True,
             'no_warnings': True,
             'extract_flat': 'in_playlist' if is_playlist_url else False,
@@ -532,6 +534,7 @@ class DownloadWorker(QThread):
             out_template = os.path.join(staging_dir, '%(title)s [%(id)s].%(ext)s')
 
             ydl_opts = {
+                **javascript_options(),
                 'outtmpl': out_template,
                 'progress_hooks': [self._progress_hook],
                 'quiet': True,

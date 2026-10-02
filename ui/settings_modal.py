@@ -1,6 +1,8 @@
 import os
 import shutil
 import time
+import sys
+import logging
 from pathlib import Path
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFileDialog,
@@ -15,6 +17,8 @@ from assets.icons import get_svg_icon
 from core.workers import start_worker, worker_registry, CancellableThread
 from core.temp_files import release_cache_session, directory_is_active
 from ui.worker_dialog import WorkerDialog
+from core.version import APP_VERSION, RELEASES_URL
+from core.app_logging import get_log_dir
 
 class SettingsModal(WorkerDialog):
     opacity_changed = Signal(float)
@@ -121,6 +125,9 @@ class SettingsModal(WorkerDialog):
         close_btn.clicked.connect(self.accept)
         header.addWidget(close_btn)
         container_layout.addLayout(header)
+        version_label = QLabel(f"Aura Downloader {APP_VERSION}")
+        version_label.setStyleSheet("color: #A1A1AA; font-size: 11px;")
+        container_layout.addWidget(version_label)
 
         # --- Card 1: Сохранение и буфер обмена ---
         card1 = QFrame()
@@ -338,10 +345,13 @@ class SettingsModal(WorkerDialog):
         util_row.addWidget(self.btn_clear_cache, stretch=1)
 
         self.btn_update_ytdlp = QPushButton("  Обновить yt-dlp")
+        if getattr(sys, "frozen", False):
+            self.btn_update_ytdlp.setText("  Проверить обновления")
         self.btn_update_ytdlp.setIcon(get_svg_icon("zap", color="#FBBF24", size=14))
         self.btn_update_ytdlp.setIconSize(QSize(14, 14))
         self.btn_update_ytdlp.setCursor(Qt.PointingHandCursor)
-        self.btn_update_ytdlp.setToolTip("Проверить и обновить загрузчик yt-dlp до последней версии")
+        self.btn_update_ytdlp.setToolTip("Проверить новый релиз приложения" if getattr(sys, "frozen", False)
+                                       else "Обновить yt-dlp и его компоненты; после обновления перезапустите приложение")
         self.btn_update_ytdlp.setStyleSheet("""
             QPushButton {
                 background-color: rgba(255, 255, 255, 0.05);
@@ -362,7 +372,6 @@ class SettingsModal(WorkerDialog):
             }
         """)
         self.btn_update_ytdlp.clicked.connect(self._update_ytdlp)
-        util_row.addWidget(self.btn_update_ytdlp, stretch=1)
 
         self.btn_recovery = QPushButton("📁 ВОССТАНОВЛЕНИЕ")
         self.btn_recovery.setProperty("class", "GlassButton")
@@ -372,8 +381,23 @@ class SettingsModal(WorkerDialog):
         self._refresh_recovery_button()
 
         c3_layout.addLayout(util_row)
+        support_row = QHBoxLayout()
+        support_row.addWidget(self.btn_update_ytdlp, stretch=1)
+        log_button = QPushButton("Журнал ошибок")
+        log_button.setProperty("class", "GlassButton")
+        log_button.setStyleSheet(self.btn_clear_cache.styleSheet())
+        log_button.clicked.connect(self._open_logs)
+        support_row.addWidget(log_button, stretch=1)
+        self.release_button = QPushButton("Скачать обновление")
+        self.release_button.setProperty("class", "GlassButton")
+        self.release_button.setStyleSheet(self.btn_clear_cache.styleSheet())
+        self.release_button.clicked.connect(self._open_releases)
+        self.release_button.setVisible(False)
+        c3_layout.addLayout(support_row)
+        c3_layout.addWidget(self.release_button)
 
         self.util_status_lbl = QLabel("")
+        self.util_status_lbl.setWordWrap(True)
         self.util_status_lbl.setStyleSheet("font-size: 11px; color: #4ADE80; font-weight: 600; padding: 2px 4px;")
         self.util_status_lbl.setVisible(False)
         c3_layout.addWidget(self.util_status_lbl)
@@ -575,12 +599,16 @@ class SettingsModal(WorkerDialog):
         self._refresh_recovery_button()
 
     def _update_ytdlp(self):
+        if worker_registry().is_busy():
+            self.util_status_lbl.setText("Дождитесь завершения текущих задач перед обновлением.")
+            self.util_status_lbl.setVisible(True)
+            return
         self.btn_update_ytdlp.setEnabled(False)
-        self.util_status_lbl.setText("Проверка и обновление yt-dlp...")
+        self.util_status_lbl.setText("Проверка релизов Aura Downloader..." if getattr(sys, "frozen", False) else "Обновление yt-dlp...")
         self.util_status_lbl.setStyleSheet("font-size: 11px; color: #60A5FA; font-weight: 600;")
         self.util_status_lbl.setVisible(True)
 
-        self.update_worker = UpdateYtdlpWorker()
+        self.update_worker = ReleaseCheckWorker() if getattr(sys, "frozen", False) else UpdateYtdlpWorker()
         self.update_worker.finished_signal.connect(self._on_ytdlp_update_finished)
         start_worker(self.update_worker, self)
 
@@ -590,6 +618,45 @@ class SettingsModal(WorkerDialog):
         self.util_status_lbl.setText(msg)
         self.util_status_lbl.setStyleSheet(f"font-size: 11px; color: {color}; font-weight: 600;")
         self.util_status_lbl.setVisible(True)
+        self.release_button.setVisible(isinstance(self.update_worker, ReleaseCheckWorker) and self.update_worker.update_available)
+
+    def _open_logs(self):
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl
+        folder = get_log_dir()
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+        except OSError:
+            self.util_status_lbl.setText("Не удалось открыть папку журналов.")
+            self.util_status_lbl.setVisible(True)
+
+    def _open_releases(self):
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl
+        QDesktopServices.openUrl(QUrl(RELEASES_URL))
+
+
+class ReleaseCheckWorker(CancellableThread):
+    finished_signal = Signal(str, bool)
+
+    def __init__(self):
+        super().__init__()
+        self.update_available = False
+
+    def run(self):
+        from core.updater import check_latest_release
+        try:
+            if self.isInterruptionRequested():
+                return
+            result = check_latest_release()
+            if not self.isInterruptionRequested():
+                self.update_available = result["available"]
+                self.finished_signal.emit(result["message"], True)
+        except Exception:
+            logging.getLogger("aura.update").exception("Release check failed")
+            if not self.isInterruptionRequested():
+                self.finished_signal.emit("Не удалось проверить обновления. Проверьте подключение и повторите позже.", False)
 
 
 class UpdateYtdlpWorker(CancellableThread):
@@ -598,14 +665,17 @@ class UpdateYtdlpWorker(CancellableThread):
     def run(self):
         try:
             import subprocess, sys
-            cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"]
+            if getattr(sys, "frozen", False):
+                self.finished_signal.emit("Для EXE скачайте новый релиз Aura Downloader.", False)
+                return
+            cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp[default,deno]"]
             if self.isInterruptionRequested():
                 return
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 creationflags=0x08000000
             )
             try:
@@ -630,10 +700,7 @@ class UpdateYtdlpWorker(CancellableThread):
             if self.isInterruptionRequested():
                 return
             if proc.returncode == 0:
-                if "Requirement already satisfied" in stdout:
-                    self.finished_signal.emit("Установлена самая актуальная версия yt-dlp.", True)
-                else:
-                    self.finished_signal.emit("Движок yt-dlp успешно обновлен!", True)
+                self.finished_signal.emit("yt-dlp и компоненты обновлены. Перезапустите приложение для применения.", True)
             else:
                 self.finished_signal.emit(f"Ошибка обновления: {stderr[:60]}", False)
         except Exception as e:
