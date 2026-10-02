@@ -8,6 +8,7 @@ from unittest.mock import patch, MagicMock
 
 from core.downloader import DownloadWorker
 from core.media_converter import cleanup_aura_temp_files, is_recovery_staging_dir
+from core.temp_files import OwnedDirectory, cache_root
 
 
 class TestAudit46830EDFixes(unittest.TestCase):
@@ -110,8 +111,9 @@ class TestAudit46830EDFixes(unittest.TestCase):
         Audit Requirement 32 & 33:
         Staging dir with .part file or without recovery marker must be cleaned by cleanup_aura_temp_files.
         """
-        trash_staging = os.path.join(self.save_dir, ".aura_staging_trash_abort")
-        os.makedirs(trash_staging, exist_ok=True)
+        session = OwnedDirectory(self.save_dir, ".aura_staging_", "staging")
+        trash_staging = str(session.path)
+        session.release()
         with open(os.path.join(trash_staging, "video.mp4.part"), "wb") as f:
             f.write(b"part data")
 
@@ -147,10 +149,11 @@ class TestAudit46830EDFixes(unittest.TestCase):
         'Clear Cache' button in Settings clears temporary proxies/thumbs/crops but preserves recovery staging.
         """
         # Create temp files in tempdir
-        temp_dir = tempfile.gettempdir()
-        proxy_file = os.path.join(temp_dir, "aura_proxy_test_123.mp4")
+        cache = OwnedDirectory(cache_root(), "session_", "cache")
+        proxy_file = str(cache.path / "aura_proxy_test_123.mp4")
         with open(proxy_file, "wb") as f:
             f.write(b"proxy")
+        cache.release()
 
         # Create recovery staging in save_dir
         rec_staging = os.path.join(self.save_dir, ".aura_staging_recovery_btn")

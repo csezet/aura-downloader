@@ -1,17 +1,15 @@
 import os
-import sys
-import tempfile
 import subprocess
 from pathlib import Path
 from PySide6.QtCore import QThread, Signal
-import time
-from core.downloader import format_bytes, format_seconds, parse_time_str
+from core.downloader import format_bytes, format_seconds
 from core.media_converter import (
-    convert_to_gif, compress_to_target_size, crop_video, get_crop_filter,
+    convert_to_gif, compress_to_target_size,
     get_video_dimensions, get_video_duration, get_unique_path, run_ffmpeg_cancellable,
-    get_ffmpeg_path
+    get_ffmpeg_path, transform_video, extract_audio
 )
 from core.interpolator import interpolate_video, get_video_fps
+from core.temp_files import get_cache_dir, OwnedDirectory, remove_owned_directory
 
 CREATE_NO_WINDOW = 0x08000000
 
@@ -61,7 +59,7 @@ def get_local_media_info(file_path: str) -> dict:
 
     thumb_path = None
     try:
-        temp_dir = tempfile.gettempdir()
+        temp_dir = get_cache_dir()
         thumb_path = os.path.join(temp_dir, f"aura_thumb_{abs(hash(file_path))}.jpg")
         seek_sec = "00:00:00.5" if (duration and duration > 1) else "00:00:00"
         cmd = [
@@ -77,7 +75,8 @@ def get_local_media_info(file_path: str) -> dict:
             startupinfo=get_startupinfo(),
             creationflags=CREATE_NO_WINDOW,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+            stderr=subprocess.PIPE,
+            timeout=10
         )
         if not os.path.exists(thumb_path):
             thumb_path = None
@@ -97,7 +96,8 @@ def get_local_media_info(file_path: str) -> dict:
         'duration_str': format_seconds(duration) if duration else "--:--",
         'thumbnail': thumb_path,
         'platform': 'Local Video',
-        'available_res': [f"{width}x{height}"] if (width and height) else [],
+        'available_res': ([f"{width}x{height}"] + [f"{p}p" for p in (2160, 1440, 1080, 720, 480, 360)
+                          if p < height]) if (width and height) else [],
         'has_video': True,
         'width': width,
         'height': height,
@@ -109,259 +109,83 @@ def get_local_media_info(file_path: str) -> dict:
 
 
 def process_single_local_file(file_path: str, options: dict, save_dir: str, status_cb=None, progress_cb=None, is_cancelled_cb=None) -> dict:
-    if not os.path.exists(file_path):
-        raise Exception("Исходный файл не найден.")
-
+    if not os.path.isfile(file_path):
+        raise FileNotFoundError("Исходный файл не найден.")
+    mode = options.get("mode", "best")
+    if mode not in ("best", "custom", "video_only", "audio_only", "gif", "discord_8mb", "telegram_50mb"):
+        raise ValueError(f"Неизвестный режим: {mode}")
+    cancelled = is_cancelled_cb or (lambda: False)
+    if cancelled():
+        return None
     os.makedirs(save_dir, exist_ok=True)
-    mode = options.get('mode', 'best')
-    audio_fmt = options.get('audio_fmt', 'mp3').lower()
-    trim_enabled = options.get('trim_enabled', False)
-    trim_start = options.get('trim_start', '')
-    trim_end = options.get('trim_end', '')
-    crop_enabled = options.get('crop_enabled', False)
-    crop_params = options.get('crop_params')
-    smooth_enabled = options.get('smooth_enabled', False)
-    smooth_fps = options.get('smooth_fps', 60)
-    smooth_model = options.get('smooth_model', 'auto')
-
     base_name = Path(file_path).stem
-    current_path = file_path
+    session = OwnedDirectory(save_dir, ".aura_staging_", "staging")
+    final_output = None
 
-    if status_cb:
-        status_cb(f"Подготовка {base_name}...")
-
-    has_trim = trim_enabled and (trim_start or trim_end)
-    has_crop = crop_enabled and crop_params and mode != 'audio_only'
-
-    # 1. Single-pass Trim + Crop (2x faster, no generation loss)
-    if has_trim and has_crop:
-        if is_cancelled_cb and is_cancelled_cb():
-            return None
+    def report(message, percent):
         if status_cb:
-            status_cb(f"Обрезка и кадрирование {base_name} (Single-pass)...")
-        start_sec = parse_time_str(trim_start) or 0
-        end_sec = parse_time_str(trim_end)
-        crop_filter = get_crop_filter(current_path, crop_params)
+            status_cb(message)
+        if progress_cb:
+            progress_cb({"percent": percent, "speed_str": "ОБРАБОТКА", "eta_str": "--:--",
+                         "downloaded_str": "", "total_str": "", "status": "processing"})
 
-        out_path = get_unique_path(os.path.join(save_dir, f"{base_name}_trim_crop.mp4"))
-        part_path = f"{out_path}.tmp.mp4"
-        cmd = ["ffmpeg", "-y"]
-        if start_sec > 0:
-            cmd.extend(["-ss", str(start_sec)])
-        if end_sec is not None and end_sec > start_sec:
-            cmd.extend(["-to", str(end_sec)])
-        cmd.extend(["-i", current_path])
-        if crop_filter:
-            cmd.extend(["-vf", crop_filter])
-        cmd.extend(["-c:v", "libx264", "-crf", "18", "-preset", "faster", "-c:a", "copy", part_path])
-
-        if not run_ffmpeg_cancellable(cmd, part_path, is_cancelled_cb):
-            return None
-
-        if os.path.exists(out_path):
-            os.remove(out_path)
-        os.rename(part_path, out_path)
-        current_path = out_path
-
-    elif has_trim:
-        if is_cancelled_cb and is_cancelled_cb():
-            return None
-        if status_cb:
-            status_cb(f"Обрезка фрагмента {base_name}...")
-        start_sec = parse_time_str(trim_start) or 0
-        end_sec = parse_time_str(trim_end)
-
-        trimmed_path = get_unique_path(os.path.join(save_dir, f"{base_name}_trim.mp4"))
-        part_path = f"{trimmed_path}.tmp.mp4"
-        cmd = ["ffmpeg", "-y"]
-        if start_sec > 0:
-            cmd.extend(["-ss", str(start_sec)])
-        if end_sec is not None and end_sec > start_sec:
-            cmd.extend(["-to", str(end_sec)])
-        cmd.extend(["-i", current_path, "-c:v", "libx264", "-crf", "18", "-preset", "faster", "-c:a", "copy", part_path])
-
-        if not run_ffmpeg_cancellable(cmd, part_path, is_cancelled_cb):
-            return None
-
-        if os.path.exists(trimmed_path):
-            os.remove(trimmed_path)
-        os.rename(part_path, trimmed_path)
-        current_path = trimmed_path
-
-    elif has_crop:
-        if is_cancelled_cb and is_cancelled_cb():
-            return None
-        if status_cb:
-            status_cb(f"Кадрирование {base_name} (Crop)...")
-        cropped_path = crop_video(current_path, crop_params, is_cancelled_cb=is_cancelled_cb)
-        if not cropped_path:
-            if current_path != file_path and os.path.exists(current_path):
-                try:
-                    os.remove(current_path)
-                except Exception:
-                    pass
-            return None
-        if cropped_path != current_path:
-            if current_path != file_path:
-                try:
-                    os.remove(current_path)
-                except Exception:
-                    pass
-            current_path = cropped_path
-
-    # 3. Smooth FPS
-    if smooth_enabled and mode not in ['audio_only', 'gif']:
-        if is_cancelled_cb and is_cancelled_cb():
-            return None
-        if status_cb:
-            status_cb(f"AI Увеличение плавности {base_name} ({smooth_fps} FPS)...")
-        smooth_path = interpolate_video(
-            current_path,
-            target_fps=smooth_fps,
-            model=smooth_model,
-            status_callback=lambda msg: status_cb(msg.upper()) if status_cb else None,
-            is_cancelled_cb=is_cancelled_cb
-        )
-        if not smooth_path:
-            if current_path != file_path and os.path.exists(current_path):
-                try:
-                    os.remove(current_path)
-                except Exception:
-                    pass
-            return None
-        if smooth_path != current_path:
-            if current_path != file_path:
-                try:
-                    os.remove(current_path)
-                except Exception:
-                    pass
-            current_path = smooth_path
-
-    if is_cancelled_cb and is_cancelled_cb():
-        if current_path != file_path and os.path.exists(current_path):
-            try:
-                os.remove(current_path)
-            except Exception:
-                pass
-        return None
-
-    # 4. Mode formatting
-    if mode == 'audio_only':
-        if status_cb:
-            status_cb(f"Извлечение аудио [{audio_fmt.upper()}] {base_name}...")
-        out_audio = get_unique_path(os.path.join(save_dir, f"{base_name}.{audio_fmt}"))
-        part_path = f"{out_audio}.tmp.{audio_fmt}"
-        cmd = ["ffmpeg", "-y", "-i", current_path, "-vn"]
-        if audio_fmt == 'mp3':
-            cmd.extend(["-c:a", "libmp3lame", "-b:a", "320k"])
-        elif audio_fmt == 'flac':
-            cmd.extend(["-c:a", "flac"])
-        elif audio_fmt == 'm4a':
-            cmd.extend(["-c:a", "aac", "-b:a", "256k"])
-        elif audio_fmt == 'wav':
-            cmd.extend(["-c:a", "pcm_s16le"])
+    try:
+        report(f"Подготовка {base_name}...", 0)
+        if mode == "audio_only":
+            audio_fmt = str(options.get("audio_fmt", "mp3")).lower()
+            report(f"Извлечение аудио [{audio_fmt.upper()}]...", 20)
+            current = extract_audio(file_path, audio_fmt, options,
+                                    str(session.path / f"{base_name}.{audio_fmt}"), cancelled)
         else:
-            cmd.extend(["-c:a", "copy"])
-        cmd.append(part_path)
-
-        if not run_ffmpeg_cancellable(cmd, part_path, is_cancelled_cb):
-            if current_path != file_path and os.path.exists(current_path):
-                try:
-                    os.remove(current_path)
-                except Exception:
-                    pass
-            return None
-
-        if os.path.exists(out_audio):
-            os.remove(out_audio)
-        os.rename(part_path, out_audio)
-        final_output = out_audio
-
-    elif mode == 'gif':
-        if status_cb:
-            status_cb(f"Конвертация {base_name} в GIF...")
-        gif_path = convert_to_gif(current_path, is_cancelled_cb=is_cancelled_cb)
-        if not gif_path:
-            if current_path != file_path and os.path.exists(current_path):
-                try:
-                    os.remove(current_path)
-                except Exception:
-                    pass
-            return None
-        final_output = gif_path
-
-    elif mode == 'discord_8mb':
-        if status_cb:
-            status_cb(f"Сжатие {base_name} для Discord (< 8 МБ)...")
-        comp_path = compress_to_target_size(current_path, target_mb=7.8, is_cancelled_cb=is_cancelled_cb)
-        if not comp_path:
-            if current_path != file_path and os.path.exists(current_path):
-                try:
-                    os.remove(current_path)
-                except Exception:
-                    pass
-            return None
-        final_output = comp_path
-
-    elif mode == 'video_only':
-        if status_cb:
-            status_cb(f"Удаление аудиодорожки {base_name}...")
-        out_no_audio = get_unique_path(os.path.join(save_dir, f"{base_name}_mute.mp4"))
-        part_path = f"{out_no_audio}.tmp.mp4"
-        cmd = ["ffmpeg", "-y", "-i", current_path, "-c:v", "copy", "-an", part_path]
-        if not run_ffmpeg_cancellable(cmd, part_path, is_cancelled_cb):
-            if current_path != file_path and os.path.exists(current_path):
-                try:
-                    os.remove(current_path)
-                except Exception:
-                    pass
-            return None
-
-        if os.path.exists(out_no_audio):
-            os.remove(out_no_audio)
-        os.rename(part_path, out_no_audio)
-        final_output = out_no_audio
-
-    else:
-        # Best / Standard
-        if current_path == file_path:
-            final_output = get_unique_path(os.path.join(save_dir, f"{base_name}_aura.mp4"))
-            part_path = f"{final_output}.tmp.mp4"
-            cmd = ["ffmpeg", "-y", "-i", current_path, "-c", "copy", part_path]
-            if not run_ffmpeg_cancellable(cmd, part_path, is_cancelled_cb):
+            report("Обрезка, кадрирование и подготовка видео...", 20)
+            current = transform_video(file_path, options,
+                                      str(session.path / f"{base_name}_aura.mp4"), cancelled)
+            if not current or cancelled():
                 return None
-            if os.path.exists(final_output):
-                os.remove(final_output)
-            os.rename(part_path, final_output)
-        else:
-            final_output = current_path
-
-    # Clean intermediate
-    if current_path != file_path and current_path != final_output:
-        try:
-            os.remove(current_path)
-        except Exception:
-            pass
-
-    if is_cancelled_cb and is_cancelled_cb():
-        if final_output and os.path.exists(final_output) and final_output != file_path:
+            if options.get("smooth_enabled") and mode != "gif":
+                report("Увеличение плавности...", 50)
+                current = interpolate_video(current, target_fps=options.get("smooth_fps", 60),
+                                            model=options.get("smooth_model", "auto"),
+                                            status_callback=status_cb, is_cancelled_cb=cancelled)
+            if not current or cancelled():
+                return None
+            if mode == "gif":
+                report("Конвертация в GIF...", 75)
+                current = convert_to_gif(current, output_path=str(session.path / f"{base_name}.gif"),
+                                         is_cancelled_cb=cancelled)
+            elif mode in ("discord_8mb", "telegram_50mb"):
+                limit = 7.8 if mode == "discord_8mb" else 49.0
+                report(f"Сжатие до {limit:g} МБ...", 75)
+                current = compress_to_target_size(current, target_mb=limit,
+                                                  output_path=str(session.path / f"{base_name}_compressed.mp4"),
+                                                  is_cancelled_cb=cancelled)
+        if not current or cancelled():
+            return None
+        report("Сохранение результата...", 95)
+        # Windows rename refuses to overwrite a file that appeared after path selection.
+        while True:
+            destination = get_unique_path(os.path.join(save_dir, Path(current).name))
             try:
-                os.remove(final_output)
-            except Exception:
-                pass
-        return None
-
-    file_size = os.path.getsize(final_output) if (final_output and os.path.exists(final_output)) else 0
-
-    return {
-        'title': Path(final_output).stem if final_output else base_name,
-        'url': file_path,
-        'file_path': final_output,
-        'file_size': file_size,
-        'file_size_str': format_bytes(file_size),
-        'thumbnail': None,
-        'mode': f"Studio ({mode.upper()})"
-    }
+                os.rename(current, destination)
+                final_output = destination
+                break
+            except FileExistsError:
+                continue
+        if cancelled():
+            os.remove(final_output)
+            final_output = None
+            return None
+        file_size = os.path.getsize(final_output)
+        if progress_cb:
+            progress_cb({"percent": 100.0, "speed_str": "ГОТОВО", "eta_str": "00:00",
+                         "downloaded_str": format_bytes(file_size), "total_str": format_bytes(file_size),
+                         "status": "finished"})
+        return {"title": Path(final_output).stem, "url": file_path, "file_path": final_output,
+                "file_size": file_size, "file_size_str": format_bytes(file_size),
+                "thumbnail": None, "mode": f"Studio ({mode.upper()})"}
+    finally:
+        session.release()
+        remove_owned_directory(session.path, save_dir, "staging")
 
 
 class LocalProcessWorker(QThread):
@@ -387,6 +211,7 @@ class LocalProcessWorker(QThread):
                 self.options,
                 self.save_dir,
                 status_cb=self.status_message.emit,
+                progress_cb=self.progress_updated.emit,
                 is_cancelled_cb=lambda: self.is_cancelled
             )
             if res and not self.is_cancelled:

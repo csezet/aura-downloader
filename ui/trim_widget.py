@@ -142,7 +142,9 @@ class TrimWidget(QFrame):
 
     def set_source_video(self, video_source: str, duration_sec: float = 60):
         self._video_source = video_source
-        self._duration_sec = duration_sec
+        self._duration_sec = duration_sec or 0
+        self.start_input.setText("00:00")
+        self.end_input.setText("")
         self.set_duration_hint(duration_sec)
 
     def set_duration_hint(self, duration_sec: float):
@@ -157,7 +159,7 @@ class TrimWidget(QFrame):
                 self.end_input.setText(f"{m:02d}:{s:02d}")
 
     def _on_toggled(self, checked: bool):
-        self.visual_btn.setEnabled(checked)
+        self.visual_btn.setEnabled(checked and self._duration_sec > 0)
         self.visual_btn.setIcon(get_svg_icon("scissors", color="#FFFFFF" if checked else "#52525B", size=13))
         self.start_input.setEnabled(checked)
         self.end_input.setEnabled(checked)

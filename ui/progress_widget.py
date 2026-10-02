@@ -92,6 +92,8 @@ class ProgressWidget(QFrame):
         self.anim_opacity.setEasingCurve(QEasingCurve.OutCubic)
 
     def start_progress(self, message="⚡ СКАЧИВАНИЕ..."):
+        self.cancel_btn.setEnabled(True)
+        self.retry_btn.setText("↺ ПОВТОРИТЬ СБОИ")
         self._current_file_path = None
         self._recovery_dir = None
         self._recovery_dirs = []
@@ -127,7 +129,37 @@ class ProgressWidget(QFrame):
         total = data.get('total_str', '0 B')
         eta = data.get('eta_str', '--:--')
 
-        self.metrics_label.setText(f"SPEED: {speed} // {downloaded} / {total} // ETA: {eta}")
+        self.metrics_label.setText(f"{downloaded} / {total} · {speed} · осталось {eta}")
+
+    def complete_cancelled(self, summary):
+        results = summary.get('results') or []
+        errors = summary.get('errors') or []
+        retry = summary.get('retry_items') or []
+        self._current_file_path = results[-1].get('file_path') if results else None
+        self._save_dir = summary.get('save_dir')
+        self._recovery_dirs = [p for p in summary.get('recovery_dirs', []) if os.path.isdir(p)]
+        self._recovery_dir = self._recovery_dirs[0] if self._recovery_dirs else None
+        total = summary.get('total', 0)
+        percent = len(results) / max(1, total) * 100
+        self.progress_bar.setValue(int(percent))
+        self.percent_label.setText(f"{percent:.0f}%")
+        self.status_label.setText("ОЧЕРЕДЬ ОСТАНОВЛЕНА")
+        self.metrics_label.setText(f"Сохранено: {len(results)}/{total} · осталось: {len(retry)} · ошибок: {len(errors)}")
+        details = '\n'.join(errors)
+        if self._recovery_dirs:
+            details += '\n' + '\n'.join(self._recovery_dirs)
+        self.status_label.setToolTip(details)
+        self.metrics_label.setToolTip(details)
+        self.retry_btn.setText("↺ ПРОДОЛЖИТЬ")
+        self.retry_btn.setVisible(bool(retry))
+        self.cancel_btn.setEnabled(True)
+        self.cancel_btn.setText("✕ ЗАКРЫТЬ")
+        self.cancel_btn.setVisible(True)
+        self.open_file_btn.setVisible(bool(self._current_file_path and os.path.isfile(self._current_file_path)))
+        self.open_dir_btn.setVisible(bool(self._recovery_dirs or self._save_dir))
+        self.open_dir_btn.setText("📂 ВОССТАНОВЛЕНИЕ" if self._recovery_dirs else "📂 ПАПКА")
+        self.open_dir_btn.setToolTip('\n'.join(self._recovery_dirs) if self._recovery_dirs else self._save_dir or '')
+        self.setVisible(True)
 
     def complete(self, result: dict, errors: list = None, total: int = None, has_retry: bool = False, recovery_dirs: list = None):
         self._current_file_path = result.get('file_path') if isinstance(result, dict) else None

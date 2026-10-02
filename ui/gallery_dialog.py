@@ -4,11 +4,13 @@ from PySide6.QtWidgets import (
     QDialog, QFrame, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QScrollArea, QWidget, QCheckBox, QGraphicsDropShadowEffect
 )
-from PySide6.QtCore import Qt, Signal, QSize, QThread
+from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QColor, QPixmap, QImage, QPainter, QPainterPath
 from assets.icons import get_svg_icon, get_svg_pixmap
+from core.workers import CancellableThread, start_worker
+from ui.worker_dialog import WorkerDialog
 
-class ThumbnailLoader(QThread):
+class ThumbnailLoader(CancellableThread):
     loaded = Signal(QPixmap)
 
     def __init__(self, url: str, target_size: QSize = QSize(70, 70)):
@@ -23,7 +25,7 @@ class ThumbnailLoader(QThread):
                 'Referer': 'https://www.instagram.com/'
             }
             resp = requests.get(self.url, headers=headers, timeout=8)
-            if resp.status_code == 200:
+            if resp.status_code == 200 and not self.isInterruptionRequested():
                 image = QImage.fromData(resp.content)
                 if not image.isNull():
                     pix = QPixmap.fromImage(image).scaled(
@@ -45,7 +47,8 @@ class ThumbnailLoader(QThread):
                     painter.setClipPath(path)
                     painter.drawPixmap(0, 0, pix)
                     painter.end()
-                    self.loaded.emit(rounded)
+                    if not self.isInterruptionRequested():
+                        self.loaded.emit(rounded)
         except Exception:
             pass
 
@@ -134,7 +137,7 @@ class GalleryItemWidget(QFrame):
         if thumb_url and thumb_url.startswith('http'):
             self.loader = ThumbnailLoader(thumb_url, QSize(70, 70))
             self.loader.loaded.connect(self._on_thumb_loaded)
-            self.loader.start()
+            start_worker(self.loader, self)
 
         # Information column
         info_layout = QVBoxLayout()
@@ -256,7 +259,7 @@ class GalleryItemWidget(QFrame):
         self._update_appearance()
 
 
-class InstagramGalleryDialog(QDialog):
+class InstagramGalleryDialog(WorkerDialog):
     def __init__(self, gallery_data: dict, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Галерея Instagram — Выбор фото")

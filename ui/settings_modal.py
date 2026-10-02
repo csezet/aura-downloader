@@ -1,18 +1,22 @@
 import os
 import shutil
 import time
+from pathlib import Path
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFileDialog,
     QSlider, QComboBox, QFrame, QWidget, QScrollArea, QMessageBox
 )
-from PySide6.QtCore import Qt, Signal, QThread, QSize
+from PySide6.QtCore import Qt, Signal, QSize
 from core.settings import settings
 from core.cookies_helper import SUPPORTED_BROWSERS
 from core.media_converter import cleanup_aura_temp_files
 from ui.toggle_switch import ToggleSwitch
 from assets.icons import get_svg_icon
+from core.workers import start_worker, worker_registry, CancellableThread
+from core.temp_files import release_cache_session, directory_is_active
+from ui.worker_dialog import WorkerDialog
 
-class SettingsModal(QDialog):
+class SettingsModal(WorkerDialog):
     opacity_changed = Signal(float)
 
     def __init__(self, parent=None):
@@ -168,7 +172,7 @@ class SettingsModal(QDialog):
         clip_row.addWidget(lbl_clip, stretch=1)
 
         self.clip_toggle = ToggleSwitch(checked=settings.get("auto_paste", True))
-        self.clip_toggle.toggled.connect(lambda v: settings.set("auto_paste", v))
+        self.clip_toggle.toggled.connect(lambda v: self._save_setting("auto_paste", v))
         clip_row.addWidget(self.clip_toggle)
         c1_layout.addLayout(clip_row)
 
@@ -180,7 +184,7 @@ class SettingsModal(QDialog):
         notif_row.addWidget(lbl_notif, stretch=1)
 
         self.notif_toggle = ToggleSwitch(checked=settings.get("notifications_enabled", True))
-        self.notif_toggle.toggled.connect(lambda v: settings.set("notifications_enabled", v))
+        self.notif_toggle.toggled.connect(lambda v: self._save_setting("notifications_enabled", v))
         notif_row.addWidget(self.notif_toggle)
         c1_layout.addLayout(notif_row)
 
@@ -286,7 +290,7 @@ class SettingsModal(QDialog):
         sub_row.addWidget(lbl_sub, stretch=1)
 
         self.sub_toggle = ToggleSwitch(checked=settings.get("download_subtitles", False))
-        self.sub_toggle.toggled.connect(lambda v: settings.set("download_subtitles", v))
+        self.sub_toggle.toggled.connect(lambda v: self._save_setting("download_subtitles", v))
         sub_row.addWidget(self.sub_toggle)
         c2_layout.addLayout(sub_row)
 
@@ -381,23 +385,36 @@ class SettingsModal(QDialog):
     def _browse_dir(self):
         folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сохранения", settings.get("download_dir"))
         if folder:
-            settings.set("download_dir", folder)
-            self.path_lbl.setText(folder)
+            try:
+                if not settings.set("download_dir", folder):
+                    raise OSError(settings.last_error)
+                self.path_lbl.setText(folder)
+            except (OSError, ValueError) as exc:
+                QMessageBox.warning(self, "Папка недоступна", f"Не удалось сохранить папку загрузок: {exc}")
+
+    def _save_setting(self, key, value):
+        if settings.set(key, value):
+            return True
+        self.util_status_lbl.setText("Не удалось сохранить настройки. Предыдущее значение сохранено.")
+        self.util_status_lbl.setToolTip(settings.last_error or "")
+        self.util_status_lbl.setStyleSheet("font-size: 11px; color: #EF4444;")
+        self.util_status_lbl.setVisible(True)
+        return False
 
     def _on_opacity_slider_changed(self, val):
         opacity = val / 100.0
         self.opacity_val_lbl.setText(f"{val}%")
-        settings.set("glass_opacity", opacity)
-        self.opacity_changed.emit(opacity)
+        if self._save_setting("glass_opacity", opacity):
+            self.opacity_changed.emit(opacity)
 
     def _on_cookies_changed(self, idx):
         browser_id = self.cookies_combo.itemData(idx)
-        settings.set("browser_cookies", browser_id)
+        self._save_setting("browser_cookies", browser_id)
 
     def _on_audio_format_changed(self, idx):
         formats = ["mp3", "flac", "m4a", "opus", "wav"]
         if idx < len(formats):
-            settings.set("audio_format", formats[idx])
+            self._save_setting("audio_format", formats[idx])
 
     def _refresh_recovery_button(self):
         try:
@@ -500,7 +517,15 @@ class SettingsModal(QDialog):
                     )
                     if reply == QMessageBox.Yes:
                         if accessible and os.path.exists(p_to_del):
-                            shutil.rmtree(p_to_del, ignore_errors=True)
+                            target = Path(p_to_del)
+                            resolved = target.resolve()
+                            expected_parent = target.parent.resolve()
+                            if (resolved.parent != expected_parent or not resolved.name.startswith(".aura_staging_")
+                                    or os.path.normcase(os.path.abspath(target)) != os.path.normcase(str(resolved))
+                                    or directory_is_active(target)):
+                                QMessageBox.warning(dialog, "Папка используется", "Активный или небезопасный каталог нельзя удалить.")
+                                return
+                            shutil.rmtree(resolved, ignore_errors=True)
                             if not os.path.exists(p_to_del):
                                 settings.unregister_recovery_session(p_to_del)
                                 card_widget.setVisible(False)
@@ -538,6 +563,8 @@ class SettingsModal(QDialog):
         self._refresh_recovery_button()
 
     def _clear_cache(self):
+        if not worker_registry().is_busy():
+            release_cache_session()
         count = cleanup_aura_temp_files(max_age_hours=0)
         from core.media_converter import get_recovery_sessions
         rec_sessions = get_recovery_sessions()
@@ -555,7 +582,7 @@ class SettingsModal(QDialog):
 
         self.update_worker = UpdateYtdlpWorker()
         self.update_worker.finished_signal.connect(self._on_ytdlp_update_finished)
-        self.update_worker.start()
+        start_worker(self.update_worker, self)
 
     def _on_ytdlp_update_finished(self, msg: str, success: bool):
         self.btn_update_ytdlp.setEnabled(True)
@@ -565,26 +592,49 @@ class SettingsModal(QDialog):
         self.util_status_lbl.setVisible(True)
 
 
-class UpdateYtdlpWorker(QThread):
+class UpdateYtdlpWorker(CancellableThread):
     finished_signal = Signal(str, bool)
 
     def run(self):
         try:
             import subprocess, sys
             cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"]
-            res = subprocess.run(
+            if self.isInterruptionRequested():
+                return
+            proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 creationflags=0x08000000
             )
-            if res.returncode == 0:
-                if "Requirement already satisfied" in res.stdout:
+            try:
+                while True:
+                    if self.isInterruptionRequested():
+                        proc.terminate()
+                        try:
+                            proc.communicate(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.communicate()
+                        return
+                    try:
+                        stdout, stderr = proc.communicate(timeout=0.2)
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.communicate()
+            if self.isInterruptionRequested():
+                return
+            if proc.returncode == 0:
+                if "Requirement already satisfied" in stdout:
                     self.finished_signal.emit("Установлена самая актуальная версия yt-dlp.", True)
                 else:
                     self.finished_signal.emit("Движок yt-dlp успешно обновлен!", True)
             else:
-                self.finished_signal.emit(f"Ошибка обновления: {res.stderr[:60]}", False)
+                self.finished_signal.emit(f"Ошибка обновления: {stderr[:60]}", False)
         except Exception as e:
             self.finished_signal.emit(f"Ошибка: {str(e)[:60]}", False)

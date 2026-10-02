@@ -1,78 +1,22 @@
-import os
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit,
+    QVBoxLayout, QHBoxLayout, QLabel, QTextEdit,
     QPushButton, QProgressBar, QComboBox, QFrame, QWidget
 )
-from PySide6.QtCore import Qt, QThread, Signal, QSize
-from core.downloader import DownloadWorker
-from core.settings import settings
-from core.history import history
+from PySide6.QtCore import Qt, QSize
 from assets.icons import get_svg_icon
+from core.queue_items import parse_sources
+from ui.worker_dialog import WorkerDialog
 
-class BatchDownloadManager(QThread):
-    item_started = Signal(str, int, int)
-    item_progress = Signal(dict)
-    item_finished = Signal(dict, int, int)
-    all_completed = Signal(int)
-
-    def __init__(self, urls: list, options: dict, save_dir: str):
-        super().__init__()
-        self.urls = [u.strip() for u in urls if u.strip().startswith("http")]
-        self.options = options
-        self.save_dir = save_dir
-        self.is_cancelled = False
-        self._current_worker = None
-
-    def cancel(self):
-        self.is_cancelled = True
-        if self._current_worker:
-            self._current_worker.cancel()
-
-    def run(self):
-        total = len(self.urls)
-        completed_count = 0
-
-        for idx, url in enumerate(self.urls):
-            if self.is_cancelled:
-                break
-
-            self.item_started.emit(url, idx + 1, total)
-            worker = DownloadWorker(url, self.options, self.save_dir)
-            self._current_worker = worker
-
-            res_holder = {}
-            worker.progress_updated.connect(self.item_progress.emit)
-            def on_done(res):
-                res_holder['data'] = res
-            worker.download_completed.connect(on_done)
-
-            worker.run()
-
-            if 'data' in res_holder:
-                completed_count += 1
-                r = res_holder['data']
-                history.add_entry(
-                    title=r.get('title'),
-                    url=r.get('url'),
-                    file_path=r.get('file_path'),
-                    format_type=self.options.get('mode', 'MP4'),
-                    size_bytes=r.get('file_size', 0),
-                    thumbnail=r.get('thumbnail')
-                )
-                self.item_finished.emit(r, completed_count, total)
-
-        self.all_completed.emit(completed_count)
-
-
-class BatchDialog(QDialog):
+class BatchDialog(WorkerDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Пакетная загрузка")
+        self.setWindowTitle("Добавить в очередь")
         self.setFixedSize(540, 490)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
         self.setAttribute(Qt.WA_TranslucentBackground)
 
-        self.manager = None
+        self.sources = []
+        self.options = {}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -142,7 +86,7 @@ class BatchDialog(QDialog):
         header_icon.setPixmap(get_svg_icon("batch", color="#FFFFFF", size=18).pixmap(18, 18))
         header.addWidget(header_icon)
 
-        title = QLabel("ПАКЕТНАЯ ЗАГРУЗКА")
+        title = QLabel("ДОБАВИТЬ В ОЧЕРЕДЬ")
         title.setStyleSheet("font-size: 14px; font-weight: 800; color: #FFFFFF; letter-spacing: 1px;")
         header.addWidget(title)
 
@@ -187,7 +131,7 @@ class BatchDialog(QDialog):
         c_layout.addLayout(header)
 
         # Instructions
-        desc = QLabel("Вставьте список ссылок (каждая с новой строки):")
+        desc = QLabel("Ссылки, пути к видео или папкам — по одному на строку.")
         desc.setProperty("class", "SectionHeader")
         c_layout.addWidget(desc)
 
@@ -221,7 +165,7 @@ class BatchDialog(QDialog):
         fmt_row.addWidget(lbl_fmt)
 
         self.fmt_combo = QComboBox()
-        self.fmt_combo.addItems(["Лучшее качество (MP4)", "Только аудио (MP3 320k)", "Аудио (FLAC Lossless)", "Аудио (M4A AAC)"])
+        self.fmt_combo.addItems(["Текущие настройки", "Лучшее качество", "Аудио MP3", "Аудио FLAC", "Аудио M4A", "Аудио OPUS", "Аудио WAV"])
         fmt_row.addWidget(self.fmt_combo, stretch=1)
         c_layout.addLayout(fmt_row)
 
@@ -238,7 +182,7 @@ class BatchDialog(QDialog):
         c_layout.addWidget(self.status_lbl)
 
         # Action button
-        self.start_btn = QPushButton("  НАЧАТЬ ЗАГРУЗКУ ОЧЕРЕДИ")
+        self.start_btn = QPushButton("  ДОБАВИТЬ В ГЛАВНОЕ ОКНО")
         self.start_btn.setIcon(get_svg_icon("download", color="#000000", size=16))
         self.start_btn.setIconSize(QSize(16, 16))
         self.start_btn.setMinimumHeight(44)
@@ -272,52 +216,18 @@ class BatchDialog(QDialog):
         layout.addWidget(container)
 
     def _start_batch(self):
-        text = self.text_edit.toPlainText().strip()
-        urls = [line.strip() for line in text.splitlines() if line.strip().startswith("http")]
-        if not urls:
+        sources, errors = parse_sources(self.text_edit.toPlainText())
+        if errors or not sources:
+            self.status_lbl.setStyleSheet("font-size: 11px; color: #FCA5A5;")
+            self.status_lbl.setWordWrap(True)
+            self.status_lbl.setText("\n".join(errors[:3]) if errors else "Добавьте хотя бы один источник.")
+            self.status_lbl.setVisible(True)
             return
-
-        fmt_idx = self.fmt_combo.currentIndex()
-        if fmt_idx == 0:
-            options = {'mode': 'best'}
-        elif fmt_idx == 1:
-            options = {'mode': 'audio_only', 'audio_fmt': 'mp3', 'audio_q': '320'}
-        elif fmt_idx == 2:
-            options = {'mode': 'audio_only', 'audio_fmt': 'flac'}
-        else:
-            options = {'mode': 'audio_only', 'audio_fmt': 'm4a'}
-
-        self.start_btn.setEnabled(False)
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setValue(0)
-        self.status_lbl.setVisible(True)
-        self.status_lbl.setText(f"Подготовка очереди ({len(urls)} ссылок)...")
-
-        save_dir = settings.get("download_dir")
-        self.manager = BatchDownloadManager(urls, options, save_dir)
-        self.manager.item_started.connect(self._on_item_started)
-        self.manager.item_finished.connect(self._on_item_finished)
-        self.manager.all_completed.connect(self._on_all_completed)
-        self.manager.start()
-
-    def _on_item_started(self, url, cur, total):
-        self.status_lbl.setText(f"[{cur}/{total}] Загрузка: {url[:45]}...")
-        self.progress_bar.setValue(int(((cur - 1) / total) * 100))
-
-    def _on_item_finished(self, res, cur, total):
-        self.progress_bar.setValue(int((cur / total) * 100))
-        self.status_lbl.setText(f"[{cur}/{total}] Готово: {res.get('title', '')[:40]}")
-
-    def _on_all_completed(self, count):
-        self.progress_bar.setValue(100)
-        self.status_lbl.setText(f"✓ Вся очередь завершена! Скачано: {count} файлов.")
-        self.start_btn.setText("  ЗАКРЫТЬ")
-        self.start_btn.setIcon(get_svg_icon("check", color="#000000", size=16))
-        self.start_btn.setEnabled(True)
-        self.start_btn.clicked.disconnect()
-        self.start_btn.clicked.connect(self.accept)
+        index = self.fmt_combo.currentIndex()
+        self.options = {} if index == 0 else {"mode": "best"} if index == 1 else {
+            "mode": "audio_only", "audio_fmt": ("mp3", "flac", "m4a", "opus", "wav")[index - 2]}
+        self.sources = sources
+        self.accept()
 
     def _on_close(self):
-        if self.manager and self.manager.isRunning():
-            self.manager.cancel()
-        self.accept()
+        self.reject()

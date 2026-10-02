@@ -7,6 +7,7 @@ from unittest.mock import patch, MagicMock
 from core.downloader import DownloadWorker
 from core.media_converter import is_recovery_staging_dir, cleanup_aura_temp_files, get_recovery_sessions
 from core.unified_batch_worker import UnifiedBatchWorker
+from core.temp_files import OwnedDirectory
 from ui.progress_widget import ProgressWidget
 from PySide6.QtWidgets import QApplication
 
@@ -122,8 +123,9 @@ class TestAudit58B7D23Fixes(unittest.TestCase):
         self.assertTrue(is_recovery_staging_dir(case2_dir), "CAPS_VIDEO.MP4 must be protected (case-insensitive)")
 
         # Case 3: only .part (aborted download)
-        case3_dir = os.path.join(self.save_dir, ".aura_staging_case3_abort")
-        os.makedirs(case3_dir, exist_ok=True)
+        session = OwnedDirectory(self.save_dir, ".aura_staging_", "staging")
+        case3_dir = str(session.path)
+        session.release()
         with open(os.path.join(case3_dir, "stream.mp4.part"), "wb") as f:
             f.write(b"part")
 

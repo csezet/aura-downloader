@@ -1,19 +1,22 @@
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QComboBox, QPushButton, QWidget, QSizePolicy
 )
-from PySide6.QtCore import Qt, Signal, QThread, QSize
+from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QIcon
 from assets.icons import get_svg_icon
 from ui.toggle_switch import ToggleSwitch
 from core.interpolator import is_rife_available, download_rife_engine
+from core.workers import CancellableThread, start_worker
 
-class RifeDownloaderThread(QThread):
+class RifeDownloaderThread(CancellableThread):
     status_updated = Signal(str)
     download_finished = Signal(bool)
 
     def run(self):
-        success = download_rife_engine(progress_callback=self.status_updated.emit)
-        self.download_finished.emit(success)
+        success = download_rife_engine(progress_callback=self.status_updated.emit,
+                                       is_cancelled_cb=self.isInterruptionRequested)
+        if not self.isInterruptionRequested():
+            self.download_finished.emit(success)
 
 class SmoothWidget(QFrame):
     smooth_toggled = Signal(bool)
@@ -146,7 +149,7 @@ class SmoothWidget(QFrame):
                     }
                 """)
                 self.status_lbl.setStyleSheet("color: #71717A; font-size: 11px; font-weight: 600; background: transparent; border: none;")
-            self.status_lbl.setText("Готов к ускорению")
+            self.status_lbl.setText("RIFE v4.6 · Vulkan")
         else:
             self.engine_btn.setText(" СКАЧАТЬ RIFE AI")
             self.engine_btn.setIcon(get_svg_icon("download", color="#3B82F6" if checked else "#52525B", size=12))
@@ -179,7 +182,7 @@ class SmoothWidget(QFrame):
                         background: rgba(0, 0, 0, 0.2);
                     }
                 """)
-            self.status_lbl.setText("Требуется ~40 МБ")
+            self.status_lbl.setText("FFmpeg · CPU (можно скачать RIFE)")
 
     def _on_toggled(self, checked: bool):
         self.fps_combo.setEnabled(checked)
@@ -192,12 +195,14 @@ class SmoothWidget(QFrame):
             self._start_download()
 
     def _start_download(self):
+        if self._dl_thread and self._dl_thread.isRunning():
+            return
         self.engine_btn.setEnabled(False)
         self.engine_btn.setText(" ЗАГРУЗКА...")
         self._dl_thread = RifeDownloaderThread()
         self._dl_thread.status_updated.connect(lambda s: self.status_lbl.setText(s))
         self._dl_thread.download_finished.connect(self._on_download_finished)
-        self._dl_thread.start()
+        start_worker(self._dl_thread, self)
 
     def _on_download_finished(self, success: bool):
         self.engine_btn.setEnabled(True)

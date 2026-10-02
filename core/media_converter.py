@@ -6,8 +6,16 @@ import tempfile
 import json
 import subprocess
 from pathlib import Path
+from core.temp_files import cache_root, get_cache_dir, remove_owned_directory, directory_is_active
+from core.media_options import scale_filter, trim_range
 
 CREATE_NO_WINDOW = 0x08000000
+
+def remove_partial(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 def get_startupinfo():
     startupinfo = subprocess.STARTUPINFO()
@@ -274,11 +282,12 @@ def convert_to_gif(input_path: str, output_path: str = None, fps: int = 15, widt
 
     part_path = f"{output_path}.tmp.gif"
     try:
-        filter_complex = f"[0:v] fps={fps},scale={width}:-1:flags=lanczos,split [a][b];[a] palettegen [p];[b][p] paletteuse"
+        filter_complex = f"[0:v]fps={fps},scale=min(iw\\,{width}):-1:flags=lanczos,split[a][b];[a]palettegen[p];[b][p]paletteuse"
         cmd = [
             "ffmpeg", "-y",
             "-i", input_path,
-            "-vf", filter_complex,
+            "-filter_complex", filter_complex,
+            "-an", "-loop", "0",
             part_path
         ]
         if not run_ffmpeg_cancellable(cmd, part_path, is_cancelled_cb):
@@ -336,7 +345,7 @@ def compress_to_target_size(input_path: str, target_mb: float = 8.0, output_path
 
     if not output_path:
         base, ext = os.path.splitext(input_path)
-        output_path = get_unique_path(f"{base}_compressed_{int(target_mb)}MB{ext or '.mp4'}")
+        output_path = get_unique_path(f"{base}_compressed_{int(target_mb)}MB.mp4")
 
     part_path = f"{output_path}.tmp.mp4"
     max_bytes = int(target_mb * 1024 * 1024)
@@ -355,11 +364,11 @@ def compress_to_target_size(input_path: str, target_mb: float = 8.0, output_path
         # Resolution scaling for lower bitrates to maintain quality and avoid oversized output
         vf_args = []
         if video_bitrate < 300:
-            vf_args = ["-vf", "scale=trunc(min(iw\\,640)/2)*2:trunc(min(ih\\,360)/2)*2"]
+            vf_args = ["-vf", scale_filter("640x360")]
         elif video_bitrate < 500:
-            vf_args = ["-vf", "scale=trunc(min(iw\\,854)/2)*2:trunc(min(ih\\,480)/2)*2"]
+            vf_args = ["-vf", scale_filter("854x480")]
         elif video_bitrate < 900:
-            vf_args = ["-vf", "scale=trunc(min(iw\\,1280)/2)*2:trunc(min(ih\\,720)/2)*2"]
+            vf_args = ["-vf", scale_filter("1280x720")]
 
         cmd = ["ffmpeg", "-y", "-i", input_path]
         if vf_args:
@@ -389,7 +398,7 @@ def compress_to_target_size(input_path: str, target_mb: float = 8.0, output_path
             cmd_reencode = [
                 "ffmpeg", "-y",
                 "-i", input_path,
-                "-vf", "scale=trunc(min(iw\\,640)/2)*2:trunc(min(ih\\,360)/2)*2",
+                "-vf", scale_filter("640x360"),
                 "-c:v", "libx264",
                 "-b:v", f"{lower_bitrate}k",
                 "-maxrate", f"{int(lower_bitrate * 1.15)}k",
@@ -410,7 +419,7 @@ def compress_to_target_size(input_path: str, target_mb: float = 8.0, output_path
             cmd_reencode3 = [
                 "ffmpeg", "-y",
                 "-i", input_path,
-                "-vf", "scale=trunc(min(iw\\,480)/2)*2:trunc(min(ih\\,270)/2)*2",
+                "-vf", scale_filter("480x270"),
                 "-c:v", "libx264",
                 "-b:v", f"{aggressive_bitrate}k",
                 "-maxrate", f"{int(aggressive_bitrate * 1.1)}k",
@@ -468,17 +477,11 @@ def get_crop_filter(input_path: str, crop_params: dict) -> str:
             crop_x = int(crop_params.get('x', 0))
             crop_y = int(crop_params.get('y', 0))
 
-        # Enforce even dimensions for video codecs
-        crop_w = max(2, crop_w - (crop_w % 2))
-        crop_h = max(2, crop_h - (crop_h % 2))
-        crop_x = crop_x - (crop_x % 2)
-        crop_y = crop_y - (crop_y % 2)
-
-        # Clamp within video boundaries
-        if crop_x + crop_w > real_w:
-            crop_w = max(2, real_w - crop_x - ((real_w - crop_x) % 2))
-        if crop_y + crop_h > real_h:
-            crop_h = max(2, real_h - crop_y - ((real_h - crop_y) % 2))
+        # Clamp the origin first, leaving room for at least one even-sized block.
+        crop_x = min(max(0, crop_x), real_w - 2) // 2 * 2
+        crop_y = min(max(0, crop_y), real_h - 2) // 2 * 2
+        crop_w = max(2, min(crop_w, real_w - crop_x) // 2 * 2)
+        crop_h = max(2, min(crop_h, real_h - crop_y) // 2 * 2)
 
         return f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y}"
     except Exception as e:
@@ -493,18 +496,18 @@ def crop_video(input_path: str, crop_params: dict, output_path: str = None, is_c
 
     if not output_path:
         base, ext = os.path.splitext(input_path)
-        output_path = get_unique_path(f"{base}_crop{ext or '.mp4'}")
+        output_path = get_unique_path(f"{base}_crop{'.gif' if ext.lower() == '.gif' else '.mp4'}")
 
-    part_path = f"{output_path}.tmp.mp4"
+    is_gif = output_path.lower().endswith('.gif')
+    part_path = f"{output_path}.tmp.{'gif' if is_gif else 'mp4'}"
     try:
         crop_filter = get_crop_filter(input_path, crop_params)
         if not crop_filter:
             raise Exception("Не удалось кадрировать видео: невозможно рассчитать параметры кадрирования.")
 
-        is_gif = input_path.lower().endswith('.gif')
         if is_gif:
             filter_complex = f"[0:v] {crop_filter},split [a][b];[a] palettegen [p];[b][p] paletteuse"
-            cmd = ["ffmpeg", "-y", "-i", input_path, "-vf", filter_complex, part_path]
+            cmd = ["ffmpeg", "-y", "-i", input_path, "-filter_complex", filter_complex, "-an", "-loop", "0", part_path]
         else:
             cmd = [
                 "ffmpeg", "-y",
@@ -513,7 +516,8 @@ def crop_video(input_path: str, crop_params: dict, output_path: str = None, is_c
                 "-c:v", "libx264",
                 "-crf", "18",
                 "-preset", "faster",
-                "-c:a", "copy",
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "192k",
                 part_path
             ]
 
@@ -534,6 +538,79 @@ def crop_video(input_path: str, crop_params: dict, output_path: str = None, is_c
             except Exception:
                 pass
         raise e
+
+def transform_video(input_path, options, output_path=None, is_cancelled_cb=None):
+    """Trim, crop, resize and optionally mute in one encoding pass."""
+    start, end = trim_range(options, get_video_duration(input_path))
+    if not output_path:
+        output_path = get_unique_path(f"{os.path.splitext(input_path)[0]}_processed.mp4")
+    part_path = f"{output_path}.tmp.mp4"
+    cmd = ["ffmpeg", "-y"]
+    if start:
+        cmd += ["-ss", str(start)]
+    cmd += ["-i", input_path]
+    if end is not None:
+        cmd += ["-t", str(end - start)]
+    filters = []
+    if options.get("crop_enabled") and options.get("crop_params"):
+        crop = get_crop_filter(input_path, options["crop_params"])
+        if not crop:
+            raise ValueError("Не удалось рассчитать параметры кадрирования.")
+        filters.append(crop)
+    if options.get("mode") in ("custom", "video_only") and options.get("res"):
+        filters.append(scale_filter(options["res"]))
+    cmd += ["-map", "0:v:0"]
+    if options.get("mode") == "video_only":
+        cmd += ["-an"]
+    else:
+        cmd += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "192k"]
+    if filters:
+        cmd += ["-vf", ",".join(filters)]
+    if not filters and not options.get("trim_enabled") and get_video_codec(input_path) in ("h264", "hevc"):
+        cmd += ["-c:v", "copy"]
+    else:
+        cmd += ["-c:v", "libx264", "-crf", "18", "-preset", "faster", "-pix_fmt", "yuv420p"]
+    cmd += ["-movflags", "+faststart", part_path]
+    try:
+        if is_cancelled_cb and is_cancelled_cb():
+            return None
+        if not run_ffmpeg_cancellable(cmd, part_path, is_cancelled_cb):
+            return None
+        if not os.path.isfile(part_path) or not os.path.getsize(part_path):
+            raise ValueError("Обработанный файл пуст.")
+        os.rename(part_path, output_path)
+        return output_path
+    finally:
+        remove_partial(part_path)
+
+
+def extract_audio(input_path, audio_fmt, options, output_path, is_cancelled_cb=None):
+    codecs = {
+        "mp3": ["libmp3lame", "-b:a", "320k"],
+        "flac": ["flac"], "m4a": ["aac", "-b:a", "256k"],
+        "wav": ["pcm_s16le"], "opus": ["libopus", "-b:a", "192k"],
+    }
+    if audio_fmt not in codecs:
+        raise ValueError(f"Неподдерживаемый формат аудио: {audio_fmt}")
+    start, end = trim_range(options, get_video_duration(input_path))
+    part_path = f"{output_path}.tmp.{audio_fmt}"
+    cmd = ["ffmpeg", "-y"]
+    if start:
+        cmd += ["-ss", str(start)]
+    cmd += ["-i", input_path]
+    if end is not None:
+        cmd += ["-t", str(end - start)]
+    cmd += ["-map", "0:a:0", "-vn", "-c:a", *codecs[audio_fmt], part_path]
+    try:
+        if is_cancelled_cb and is_cancelled_cb():
+            return None
+        if not run_ffmpeg_cancellable(cmd, part_path, is_cancelled_cb):
+            return None
+        os.rename(part_path, output_path)
+        return output_path
+    finally:
+        remove_partial(part_path)
+
 
 def is_recovery_staging_dir(staging_path: str) -> bool:
     """
@@ -613,6 +690,8 @@ def get_recovery_sessions(target_dirs: list = None) -> list:
         try:
             for entry in os.scandir(d):
                 if entry.is_dir() and entry.name.startswith(".aura_staging_"):
+                    if directory_is_active(entry.path):
+                        continue
                     norm_entry = os.path.normpath(entry.path)
                     if norm_entry in seen_paths:
                         continue
@@ -661,6 +740,8 @@ def get_recovery_sessions(target_dirs: list = None) -> list:
 
     # 2. Check any remaining registered staging paths that weren't inside scan_dirs
     for rp in registry_paths:
+        if directory_is_active(rp):
+            continue
         if rp in seen_paths:
             continue
         seen_paths.add(rp)
@@ -722,16 +803,23 @@ def get_recovery_sessions(target_dirs: list = None) -> list:
 
 def cleanup_aura_temp_files(max_age_hours: float = 24.0, extra_dirs: list = None, include_recovery: bool = False) -> int:
     """
-    Cleans up leftover aura temp files (proxies, thumbs, cropped previews)
-    and orphaned .aura_staging_* directories older than max_age_hours.
-    Preserved recovery directories containing .aura_recovery.json or completed media
-    are strictly protected from automated deletion unless include_recovery=True.
+    Remove only owned, inactive cache/staging directories. Loose files and legacy
+    directories without an ownership marker are preserved, regardless of their names.
     """
     now = time.time()
     cutoff = now - (max_age_hours * 3600)
     cleaned_count = 0
 
-    scan_dirs = {tempfile.gettempdir()}
+    cache_dir = cache_root()
+    if cache_dir.is_dir():
+        for entry in cache_dir.iterdir():
+            try:
+                if entry.is_dir() and (max_age_hours <= 0 or entry.stat().st_mtime < cutoff):
+                    cleaned_count += int(remove_owned_directory(entry, cache_dir, "cache"))
+            except OSError:
+                pass
+
+    scan_dirs = set()
     try:
         from core.settings import settings
         dl_dir = settings.get("download_dir")
@@ -745,27 +833,16 @@ def cleanup_aura_temp_files(max_age_hours: float = 24.0, extra_dirs: list = None
             if d and os.path.isdir(d):
                 scan_dirs.add(d)
 
-    prefixes = ("aura_proxy_", "aura_thumb_", "aura_crop_", "sample_")
     for target_dir in scan_dirs:
         try:
             for entry in os.scandir(target_dir):
                 try:
-                    # Clean temporary proxy/thumb/crop files
-                    if entry.is_file() and entry.name.startswith(prefixes) and (
-                        entry.name.endswith(".mp4") or entry.name.endswith(".jpg") or entry.name.endswith(".png")
-                    ):
-                        mtime = entry.stat().st_mtime
-                        if mtime < cutoff or max_age_hours <= 0:
-                            os.remove(entry.path)
-                            cleaned_count += 1
-                    # Clean orphaned staging directories (skip protected recovery folders)
-                    elif entry.is_dir() and entry.name.startswith(".aura_staging_"):
+                    if entry.is_dir() and entry.name.startswith(".aura_staging_"):
                         if not include_recovery and is_recovery_staging_dir(entry.path):
                             continue
                         mtime = entry.stat().st_mtime
                         if mtime < cutoff or max_age_hours <= 0:
-                            shutil.rmtree(entry.path, ignore_errors=True)
-                            cleaned_count += 1
+                            cleaned_count += int(remove_owned_directory(entry.path, target_dir, "staging"))
                 except Exception:
                     pass
         except Exception:
@@ -793,14 +870,15 @@ def get_video_codec(input_path: str) -> str:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            check=True
+            check=True,
+            timeout=10
         )
         return res.stdout.strip().lower()
     except Exception:
         return ""
 
 
-def get_or_create_preview_proxy(input_path: str) -> str:
+def get_or_create_preview_proxy(input_path: str, is_cancelled_cb=None) -> str:
     """
     Ensures the video is playable in Qt Multimedia without D3D11 hardware acceleration failures.
     If the video is already h264/avc1/mp4v, returns input_path.
@@ -809,18 +887,22 @@ def get_or_create_preview_proxy(input_path: str) -> str:
     if not input_path or not os.path.exists(input_path):
         return input_path
 
+    if is_cancelled_cb and is_cancelled_cb():
+        return None
     codec = get_video_codec(input_path)
     if codec in ['h264', 'avc1', 'mp4v', 'mjpeg']:
         return input_path
 
     try:
-        import tempfile
         import hashlib
-        file_hash = hashlib.md5(input_path.encode('utf-8')).hexdigest()[:12]
-        proxy_path = os.path.join(tempfile.gettempdir(), f"aura_proxy_{file_hash}.mp4")
+        stat = os.stat(input_path)
+        identity = f'{input_path}:{stat.st_mtime_ns}:{stat.st_size}'
+        file_hash = hashlib.md5(identity.encode('utf-8')).hexdigest()[:12]
+        proxy_path = os.path.join(get_cache_dir(), f"aura_proxy_{file_hash}.mp4")
         if os.path.exists(proxy_path) and os.path.getsize(proxy_path) > 0:
             return proxy_path
 
+        part_path = f"{proxy_path}.tmp.mp4"
         cmd = [
             get_ffmpeg_path(), "-y",
             "-i", input_path,
@@ -831,16 +913,15 @@ def get_or_create_preview_proxy(input_path: str) -> str:
             "-vf", "scale='min(1280,iw)':-2",
             "-c:a", "aac",
             "-b:a", "128k",
-            proxy_path
+            part_path
         ]
-        subprocess.run(
-            cmd,
-            startupinfo=get_startupinfo(),
-            creationflags=CREATE_NO_WINDOW,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True
-        )
+        try:
+            if not run_ffmpeg_cancellable(cmd, part_path, is_cancelled_cb):
+                return None
+            if os.path.isfile(part_path) and os.path.getsize(part_path):
+                os.replace(part_path, proxy_path)
+        finally:
+            remove_partial(part_path)
         if os.path.exists(proxy_path) and os.path.getsize(proxy_path) > 0:
             return proxy_path
     except Exception as e:

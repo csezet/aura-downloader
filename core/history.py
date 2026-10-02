@@ -1,56 +1,84 @@
+import copy
+import math
 import os
-import json
+import threading
 import time
-from pathlib import Path
+
 from core.settings import CONFIG_DIR
+from core.persistence import load_json, save_json
 
 HISTORY_FILE = CONFIG_DIR / "history.json"
+HISTORY_LIMIT = 100
+
+
+def _validate_history(data):
+    if not isinstance(data, list):
+        raise ValueError("История должна быть массивом JSON.")
+    entries = []
+    for item in data:
+        if not isinstance(item, dict) or not isinstance(item.get("file_path"), str) or "\0" in item["file_path"]:
+            continue
+        entry = dict(item)
+        for key, fallback in (("title", "Без названия"), ("url", ""), ("format_type", "MP4")):
+            if not isinstance(entry.get(key), str):
+                entry[key] = fallback
+        for key in ("id", "timestamp", "size_bytes"):
+            value = entry.get(key, 0)
+            valid = type(value) is int or (type(value) is float and math.isfinite(value))
+            entry[key] = value if valid and value >= 0 else 0
+        if not isinstance(entry.get("thumbnail"), str):
+            entry["thumbnail"] = None
+        entry["file_exists"] = os.path.isfile(entry["file_path"])
+        entries.append(entry)
+    if data and not entries:
+        raise ValueError("История не содержит корректных записей.")
+    return entries[:HISTORY_LIMIT]
+
 
 class HistoryManager:
     def __init__(self):
+        self._lock = threading.RLock()
+        self.last_error = None
         self.history = []
         self.load()
 
     def load(self):
-        if HISTORY_FILE.exists():
-            try:
-                with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                    self.history = json.load(f)
-            except Exception as e:
-                print(f"Error loading history: {e}")
-                self.history = []
+        with self._lock:
+            self.history, errors = load_json(HISTORY_FILE, _validate_history, [])
+            self.last_error = "; ".join(errors) if errors else None
 
     def save(self):
-        try:
-            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-                json.dump(self.history[:100], f, indent=4, ensure_ascii=False)  # Keep last 100 entries
-        except Exception as e:
-            print(f"Error saving history: {e}")
+        with self._lock:
+            try:
+                save_json(HISTORY_FILE, self.history[:HISTORY_LIMIT], _validate_history)
+                self.last_error = None
+                return True
+            except (OSError, ValueError, TypeError) as exc:
+                self.last_error = str(exc)
+                return False
 
     def add_entry(self, title, url, file_path, format_type, size_bytes=0, thumbnail=None):
-        entry = {
-            "id": int(time.time() * 1000),
-            "title": title,
-            "url": url,
-            "file_path": file_path,
-            "format_type": format_type,
-            "size_bytes": size_bytes,
-            "thumbnail": thumbnail,
-            "timestamp": int(time.time()),
-            "file_exists": os.path.exists(file_path) if file_path else False
-        }
-        self.history.insert(0, entry)
-        self.save()
-        return entry
+        with self._lock:
+            entry = _validate_history([{
+                "id": time.time_ns(), "title": title, "url": url,
+                "file_path": str(file_path) if file_path else "", "format_type": format_type,
+                "size_bytes": size_bytes, "thumbnail": thumbnail, "timestamp": int(time.time()),
+            }])[0]
+            self.history.insert(0, entry)
+            del self.history[HISTORY_LIMIT:]
+            self.save()
+            return copy.deepcopy(entry)
 
     def get_all(self):
-        # Update file_exists status
-        for item in self.history:
-            item["file_exists"] = os.path.exists(item.get("file_path", ""))
-        return self.history
+        with self._lock:
+            for item in self.history:
+                item["file_exists"] = os.path.isfile(item["file_path"])
+            return copy.deepcopy(self.history)
 
     def clear(self):
-        self.history = []
-        self.save()
+        with self._lock:
+            self.history = []
+            return self.save()
+
 
 history = HistoryManager()

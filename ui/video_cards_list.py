@@ -1,15 +1,17 @@
 import os
 import uuid
+import copy
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QWidget, QSizePolicy, QApplication
+    QScrollArea, QWidget, QSizePolicy, QApplication, QCheckBox
 )
-from PySide6.QtCore import Qt, Signal, QSize, QThread, QByteArray
+from PySide6.QtCore import Qt, Signal, QSize, QByteArray
 from PySide6.QtGui import QPixmap, QImage, QPainter, QPainterPath
 import requests
 from assets.icons import get_svg_icon
+from core.workers import CancellableThread, start_worker, cancel_worker
 
-class ImageLoaderWorker(QThread):
+class ImageLoaderWorker(CancellableThread):
     image_loaded = Signal(QPixmap)
 
     def __init__(self, url):
@@ -23,11 +25,12 @@ class ImageLoaderWorker(QThread):
                 'Referer': 'https://www.instagram.com/'
             }
             resp = requests.get(self.url, headers=headers, timeout=8)
-            if resp.status_code == 200:
+            if resp.status_code == 200 and not self.isInterruptionRequested():
                 image = QImage()
                 image.loadFromData(QByteArray(resp.content))
                 pixmap = QPixmap.fromImage(image)
-                self.image_loaded.emit(pixmap)
+                if not self.isInterruptionRequested():
+                    self.image_loaded.emit(pixmap)
         except Exception:
             pass
 
@@ -36,24 +39,30 @@ class VideoCardWidget(QFrame):
     removed = Signal(str)  # item_id
     card_clicked = Signal(str, object)  # item_id, mouse_event
     thumb_loaded = Signal(str, QPixmap)  # item_id, pixmap
+    selection_toggled = Signal(str, bool)
 
     def __init__(self, data: dict, item_id: str, parent=None):
         super().__init__(parent)
-        self.data = data
+        self.data = copy.deepcopy(data)
         self.item_id = item_id
-        self.item_options = dict(data.get('options', {}))
+        self.item_options = copy.deepcopy(data.get('options', {}))
+        self.result_path = None
         self._raw_pixmap = None
         self._image_worker = None
         self._is_selected = False
 
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.setFixedHeight(100)
+        self.setFixedHeight(118)
         self.setCursor(Qt.PointingHandCursor)
         self._update_style(False)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(12)
+        self.select_check = QCheckBox()
+        self.select_check.setToolTip("Включить в обработку")
+        self.select_check.toggled.connect(lambda checked: self.selection_toggled.emit(self.item_id, checked))
+        layout.addWidget(self.select_check)
 
         # Thumbnail (115x72)
         self.thumb_label = QLabel()
@@ -67,7 +76,7 @@ class VideoCardWidget(QFrame):
             font-size: 10px;
             font-family: 'Consolas', monospace;
         """)
-        self.thumb_label.setText("NO PREVIEW")
+        self.thumb_label.setText("Без превью")
         layout.addWidget(self.thumb_label)
 
         # Info Layout
@@ -113,6 +122,9 @@ class VideoCardWidget(QFrame):
             }
         """)
         badge_layout.addWidget(self.duration_badge)
+        self.state_badge = QLabel("В очереди")
+        self.state_badge.setStyleSheet("font-size: 10px; color: #A1A1AA;")
+        badge_layout.addWidget(self.state_badge)
 
         badge_layout.addStretch()
         info_layout.addLayout(badge_layout)
@@ -129,12 +141,19 @@ class VideoCardWidget(QFrame):
             uploader = data.get('uploader')
         elif data.get('width') and data.get('height'):
             fps_part = f", {int(data.get('fps'))} FPS" if data.get('fps') else ""
-            uploader = f"Локальное видео ({data.get('width')}×{data.get('height')}{fps_part})"
+            source_label = "Локальное видео" if data.get('is_local') else "Видео"
+            uploader = f"{source_label} ({data.get('width')}×{data.get('height')}{fps_part})"
         else:
-            uploader = "Локальное видео"
+            uploader = "Фото" if data.get('is_photo') else "Локальное видео" if data.get('is_local') else "Ссылка на видео"
         self.author_label = QLabel(f"{uploader}")
+        self.author_label.setToolTip(data.get('url') or '')
         self.author_label.setStyleSheet("font-size: 10px; color: #A1A1AA;")
         info_layout.addWidget(self.author_label)
+        self.options_label = QLabel()
+        self.options_label.setStyleSheet("font-size: 10px; color: #93C5FD;")
+        self.options_label.setWordWrap(True)
+        info_layout.addWidget(self.options_label)
+        self._update_options_label()
 
         info_layout.addStretch()
         layout.addLayout(info_layout, stretch=1)
@@ -165,6 +184,12 @@ class VideoCardWidget(QFrame):
         self.close_btn.setToolTip("Убрать это видео")
         self.close_btn.clicked.connect(lambda: self.removed.emit(self.item_id))
         right_layout.addWidget(self.close_btn, alignment=Qt.AlignTop | Qt.AlignRight)
+        self.open_btn = QPushButton("▶")
+        self.open_btn.setFixedSize(26, 26)
+        self.open_btn.setToolTip("Открыть готовый файл")
+        self.open_btn.setVisible(False)
+        self.open_btn.clicked.connect(self._open_result)
+        right_layout.addWidget(self.open_btn)
         right_layout.addStretch()
 
         layout.addLayout(right_layout)
@@ -173,11 +198,54 @@ class VideoCardWidget(QFrame):
         self._load_thumb(data.get("thumbnail"))
 
     def set_options(self, opts: dict):
-        if opts:
-            self.item_options = dict(opts)
+        self.item_options = copy.deepcopy(opts or {})
+        self.data['options'] = copy.deepcopy(self.item_options)
+        self._update_options_label()
 
     def get_options(self) -> dict:
-        return dict(self.item_options)
+        return copy.deepcopy(self.item_options)
+
+    def _update_options_label(self):
+        opts = self.item_options
+        labels = {'best': 'Лучшее качество', 'custom': 'Видео', 'video_only': 'Без звука',
+                  'audio_only': 'Аудио', 'gif': 'GIF', 'discord_8mb': 'Discord < 8 МБ'}
+        if self.data.get('is_photo'):
+            text = "Фото · оригинал"
+        else:
+            parts = [labels.get(opts.get('mode', 'best'), 'Видео')]
+            if opts.get('mode') == 'audio_only':
+                parts.append(opts.get('audio_fmt', 'mp3').upper())
+            elif opts.get('mode') in ('custom', 'video_only') and opts.get('res'):
+                parts.append(opts['res'])
+            if opts.get('trim_enabled'):
+                parts.append(f"{opts.get('trim_start') or '0'}–{opts.get('trim_end') or 'конец'}")
+            if opts.get('crop_enabled'):
+                parts.append("кадрирование")
+            if opts.get('smooth_enabled') and opts.get('mode') not in ('audio_only', 'gif'):
+                fps = opts.get('smooth_fps', 60)
+                parts.append('2x FPS' if fps == 0 else f'{fps} FPS')
+            text = " · ".join(parts)
+        self.options_label.setText(text)
+        self.options_label.setToolTip(text)
+
+    def set_state(self, state, percent=None, error=None, result=None, **extra):
+        labels = {'waiting': 'В очереди', 'downloading': 'Загрузка', 'processing': 'Обработка',
+                  'completed': 'Готово', 'error': 'Ошибка', 'cancelled': 'Остановлено'}
+        text = labels.get(state, state)
+        if percent is not None and state in ('downloading', 'processing'):
+            text += f" {percent:.0f}%"
+        color = '#4ADE80' if state == 'completed' else '#FCA5A5' if state == 'error' else '#93C5FD'
+        self.state_badge.setText(text)
+        self.state_badge.setStyleSheet(f"font-size: 10px; color: {color};")
+        self.state_badge.setToolTip(error or '')
+        if result:
+            self.result_path = result.get('file_path')
+            self.open_btn.setVisible(bool(self.result_path))
+            self.open_btn.setToolTip(f"Открыть файл:\n{self.result_path}")
+
+    def _open_result(self):
+        if self.result_path and os.path.isfile(self.result_path):
+            os.startfile(self.result_path)
 
     def _update_style(self, selected: bool):
         self._is_selected = selected
@@ -207,6 +275,9 @@ class VideoCardWidget(QFrame):
             """)
 
     def set_selected(self, selected: bool):
+        self.select_check.blockSignals(True)
+        self.select_check.setChecked(selected)
+        self.select_check.blockSignals(False)
         self._update_style(selected)
 
     def is_selected(self) -> bool:
@@ -214,24 +285,25 @@ class VideoCardWidget(QFrame):
 
     def _load_thumb(self, thumb_val):
         if not thumb_val:
-            self.thumb_label.setText("NO PREVIEW")
+            self.thumb_label.setText("Без превью")
             return
 
         if isinstance(thumb_val, str) and os.path.exists(thumb_val):
             pix = QPixmap(thumb_val)
             self._on_image_loaded(pix)
         elif isinstance(thumb_val, str) and thumb_val.startswith("http"):
-            self.thumb_label.setText("LOADING...")
+            self.thumb_label.setText("Загрузка...")
             if self._image_worker and self._image_worker.isRunning():
+                cancel_worker(self._image_worker)
                 try:
                     self._image_worker.image_loaded.disconnect()
                 except Exception:
                     pass
             self._image_worker = ImageLoaderWorker(thumb_val)
             self._image_worker.image_loaded.connect(self._on_image_loaded)
-            self._image_worker.start()
+            start_worker(self._image_worker, self)
         else:
-            self.thumb_label.setText("NO PREVIEW")
+            self.thumb_label.setText("Без превью")
 
     def _on_image_loaded(self, pixmap: QPixmap):
         if pixmap and not pixmap.isNull():
@@ -271,6 +343,7 @@ class VideoCardsListWidget(QWidget):
         self.cards: list[VideoCardWidget] = []
         self.active_id: str = None
         self.last_clicked_id: str = None
+        self.busy = False
 
         self.setStyleSheet("background: transparent; border: none;")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -282,7 +355,7 @@ class VideoCardsListWidget(QWidget):
         # Scroll Area without visible scrollbars (scrolls purely via mouse wheel)
         self.scroll = QScrollArea(self)
         self.scroll.setWidgetResizable(True)
-        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.scroll.setStyleSheet("""
@@ -314,30 +387,71 @@ class VideoCardsListWidget(QWidget):
             self.setFixedHeight(0)
         elif c == 1:
             self.setVisible(True)
-            self.setMinimumHeight(102)
-            self.setMaximumHeight(102)
+            self.setMinimumHeight(120)
+            self.setMaximumHeight(120)
         else:
             self.setVisible(True)
-            self.setMinimumHeight(102)
+            self.setMinimumHeight(120)
             self.setMaximumHeight(16777215)  # Dynamically fills entire fullscreen height!
 
-    def add_video(self, info: dict) -> str:
-        item_id = uuid.uuid4().hex
+    def add_video(self, info: dict, select=True) -> str:
+        item_id = info.get('item_id') or uuid.uuid4().hex
         card = VideoCardWidget(info, item_id, self.scroll_content)
         card.removed.connect(self.remove_card)
         card.card_clicked.connect(self._on_card_clicked)
         card.thumb_loaded.connect(self._on_card_thumb_loaded)
+        card.selection_toggled.connect(self._on_card_check)
+        card.close_btn.setEnabled(not self.busy)
 
         self.cards.append(card)
         self.scroll_layout.addWidget(card)
 
         # Select newly added card
-        self._select_single(item_id)
+        if select:
+            card.set_selected(True)
+            self._set_active_only(item_id)
         self.last_clicked_id = item_id
 
         self._update_container_height()
         self.list_changed.emit(len(self.cards))
         return item_id
+
+    def _on_card_check(self, item_id, selected):
+        card = self._get_card(item_id)
+        if card:
+            card.set_selected(selected)
+            if selected:
+                self._set_active_only(item_id)
+            self.list_changed.emit(len(self.cards))
+
+    def select_all(self, selected=True):
+        for card in self.cards:
+            card.set_selected(selected)
+        self.list_changed.emit(len(self.cards))
+
+    def set_busy(self, busy):
+        self.busy = busy
+        for card in self.cards:
+            card.close_btn.setEnabled(not busy)
+
+    def update_item_state(self, data):
+        card = self._get_card(data.get('item_id'))
+        if card:
+            card.set_state(**{key: value for key, value in data.items() if key != 'item_id'})
+            if data.get('state') == 'completed':
+                card.set_selected(False)
+                self.list_changed.emit(len(self.cards))
+
+    def update_card_info(self, item_id, info):
+        card = self._get_card(item_id)
+        if card:
+            card.data.update(copy.deepcopy(info))
+            card.title_label.setText(card.data.get('title', 'Без названия'))
+            card.duration_badge.setText(card.data.get('duration_str', '--:--'))
+            card.author_label.setText(card.data.get('uploader') or '')
+            card._load_thumb(card.data.get('thumbnail'))
+            if item_id == self.active_id:
+                self._set_active_only(item_id)
 
     def _on_card_thumb_loaded(self, item_id: str, pixmap: QPixmap):
         if item_id == self.active_id and pixmap and not pixmap.isNull():
@@ -412,6 +526,8 @@ class VideoCardsListWidget(QWidget):
         return -1
 
     def remove_card(self, item_id: str):
+        if self.busy:
+            return
         idx = -1
         for i, c in enumerate(self.cards):
             if c.item_id == item_id:
@@ -420,6 +536,8 @@ class VideoCardsListWidget(QWidget):
 
         if idx >= 0:
             c = self.cards.pop(idx)
+            if c._image_worker:
+                cancel_worker(c._image_worker)
             c.deleteLater()
 
         self._update_container_height()
@@ -435,7 +553,11 @@ class VideoCardsListWidget(QWidget):
             self.list_changed.emit(len(self.cards))
 
     def clear_all(self):
+        if self.busy:
+            return
         for c in self.cards:
+            if c._image_worker:
+                cancel_worker(c._image_worker)
             c.deleteLater()
         self.cards.clear()
         self.active_id = None
@@ -444,14 +566,10 @@ class VideoCardsListWidget(QWidget):
         self.list_changed.emit(0)
 
     def get_all_videos(self) -> list[dict]:
-        return [{**c.data, 'options': c.get_options(), 'item_id': c.item_id} for c in self.cards]
+        return [copy.deepcopy({**c.data, 'options': c.get_options(), 'item_id': c.item_id}) for c in self.cards]
 
     def get_selected_videos(self) -> list[dict]:
-        sel = [{**c.data, 'options': c.get_options(), 'item_id': c.item_id} for c in self.cards if c.is_selected()]
-        if sel:
-            return sel
-        active = self.get_active_card()
-        return [{**active.data, 'options': active.get_options(), 'item_id': active.item_id}] if active else []
+        return [copy.deepcopy({**c.data, 'options': c.get_options(), 'item_id': c.item_id}) for c in self.cards if c.is_selected()]
 
     def get_active_card(self) -> VideoCardWidget:
         for c in self.cards:

@@ -1,4 +1,5 @@
 import os
+import copy
 import subprocess
 import ctypes
 from ctypes import wintypes
@@ -6,21 +7,21 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
     QPushButton, QLabel, QComboBox, QFrame, QApplication,
-    QSizePolicy, QFileDialog, QSizeGrip
+    QSizePolicy, QFileDialog, QSizeGrip, QGridLayout
 )
 from PySide6.QtCore import Qt, QSize, QEvent, QTimer
-from PySide6.QtGui import QColor, QPixmap
+from PySide6.QtGui import QColor, QPixmap, QIcon, QShortcut, QKeySequence
 
 from core.settings import settings
 from core.history import history
-from core.downloader import MetadataWorker, DownloadWorker, GalleryDownloadWorker
-from core.local_processor import get_local_media_info, is_video_file, LocalProcessWorker, LocalBatchProcessWorker
+from core.downloader import MetadataWorker
+from core.local_processor import is_video_file
 from core.unified_batch_worker import UnifiedBatchWorker
 from core.clipboard import ClipboardWatcher
 from core.media_converter import check_ffmpeg_available
 from assets.styles import get_stylesheet
 from assets.icons import get_svg_icon
-from ui.window_effects import apply_acrylic_effect
+from ui.window_effects import apply_acrylic_effect, set_native_window_icon
 from ui.title_bar import CustomTitleBar
 from ui.video_cards_list import VideoCardsListWidget
 from ui.progress_widget import ProgressWidget
@@ -33,6 +34,9 @@ from ui.settings_modal import SettingsModal
 from ui.playlist_dialog import PlaylistDialog
 from ui.gallery_dialog import InstagramGalleryDialog
 from core.notifications import NotificationManager
+from core.workers import worker_registry, start_worker
+from core.queue_items import default_options, normalize_item, validate_item, parse_sources, RESOLUTIONS
+from core.media_importer import MediaImportWorker
 
 class DropOverlay(QFrame):
     def __init__(self, parent=None):
@@ -82,10 +86,12 @@ class MainWindow(QMainWindow):
     def __init__(self, icon_path=None):
         super().__init__()
         self.icon_path = icon_path
+        if self.icon_path and os.path.exists(self.icon_path):
+            self.setWindowIcon(QIcon(self.icon_path))
         self.setWindowTitle("Aura Downloader")
         
-        self.resize(760, 650)
-        self.setMinimumSize(660, 540)
+        self.resize(880, 820)
+        self.setMinimumSize(760, 700)
 
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
@@ -95,6 +101,12 @@ class MainWindow(QMainWindow):
         self.metadata_worker = None
         self.download_worker = None
         self.current_video_info = None
+        self._queue_busy = False
+        self._pending_summary = None
+        self._last_failed_items = []
+        self._last_queue_save_dir = None
+        self._import_workers = []
+        self._import_generation = 0
         self.notification_manager = NotificationManager(parent=self, icon_path=self.icon_path)
 
         self.url_debounce_timer = QTimer(self)
@@ -103,14 +115,23 @@ class MainWindow(QMainWindow):
         self.url_debounce_timer.timeout.connect(self._fetch_metadata)
 
         self._active_workers = []
+        self._closing = False
+        self._close_timer = QTimer(self)
+        self._close_timer.setInterval(50)
+        self._close_timer.timeout.connect(self._finish_pending_close)
 
         self.setStatusBar(None)
 
         self._init_ui()
         self._apply_theme()
         self._setup_clipboard()
+        self._is_restoring_ui = True
+        self._restore_ui_from_video_info({})
+        self._is_restoring_ui = False
+        self._setup_shortcuts()
 
     def _track_worker(self, worker):
+        worker_registry().track(worker)
         if worker and worker not in self._active_workers:
             self._active_workers.append(worker)
             try:
@@ -122,10 +143,36 @@ class MainWindow(QMainWindow):
         if worker in self._active_workers:
             self._active_workers.remove(worker)
 
+    def closeEvent(self, event):
+        registry = worker_registry()
+        if registry.is_busy():
+            event.ignore()
+            self._closing = True
+            registry.stopping = True
+            self.url_debounce_timer.stop()
+            self.clipboard_watcher.set_enabled(False)
+            self.setEnabled(False)
+            self.progress_widget.start_progress("ЗАВЕРШЕНИЕ ФОНОВЫХ ЗАДАЧ...")
+            registry.cancel_all()
+            self._close_timer.start()
+            return
+        self._close_timer.stop()
+        super().closeEvent(event)
+
+    def _finish_pending_close(self):
+        if not worker_registry().is_busy():
+            self.close()
+
     def showEvent(self, event):
         super().showEvent(event)
         hwnd = int(self.winId())
-        apply_acrylic_effect(hwnd)
+        if self.icon_path and os.path.exists(self.icon_path):
+            h_big, h_sm = set_native_window_icon(hwnd, self.icon_path)
+            if h_big:
+                self._hicon_big = h_big
+            if h_sm:
+                self._hicon_small = h_sm
+        apply_acrylic_effect(hwnd, icon_path=self.icon_path)
         sb = self.statusBar()
         if sb:
             sb.setSizeGripEnabled(False)
@@ -140,6 +187,12 @@ class MainWindow(QMainWindow):
                 # WM_NCCALCSIZE = 0x0083
                 if msg.message == 0x0083 and msg.wParam == 1:
                     return True, 0
+                # WM_GETICON = 0x007F
+                if msg.message == 0x007F:
+                    if getattr(self, '_hicon_big', None) and msg.wParam == 1:
+                        return True, self._hicon_big
+                    elif getattr(self, '_hicon_small', None) and msg.wParam in (0, 2):
+                        return True, self._hicon_small
             except Exception:
                 pass
         return super().nativeEvent(eventType, message)
@@ -168,67 +221,18 @@ class MainWindow(QMainWindow):
 
     def dropEvent(self, event):
         self.drop_overlay.hide_overlay()
-
-        # 1. Check if user dropped a web link (from browser address bar or link drag)
-        web_url = None
+        sources = []
         if event.mimeData().hasUrls():
-            for u in event.mimeData().urls():
-                us = u.toString().strip()
-                if us.startswith(("http://", "https://")):
-                    web_url = us
-                    break
-        if not web_url and event.mimeData().hasText():
-            t = event.mimeData().text().strip()
-            if t.startswith(("http://", "https://")):
-                web_url = t
-
-        if web_url:
-            event.acceptProposedAction()
-            if hasattr(self, 'url_debounce_timer'):
-                self.url_debounce_timer.stop()
-            self.url_input.blockSignals(True)
-            self.url_input.setText(web_url)
-            self.url_input.blockSignals(False)
-            self._fetch_metadata()
-            return
-
-        files = []
-        if event.mimeData().hasUrls():
-            for u in event.mimeData().urls():
-                p = u.toLocalFile()
-                if not p and u.toString().startswith("file:///"):
-                    p = u.toString()[8:]
-                if p:
-                    files.append(p)
+            sources = [url.toLocalFile() if url.isLocalFile() else url.toString() for url in event.mimeData().urls()]
         elif event.mimeData().hasText():
-            for line in event.mimeData().text().splitlines():
-                line = line.strip().strip('"').strip("'")
-                if os.path.exists(line):
-                    files.append(line)
-
-        valid_videos = []
-        for f in files:
-            if os.path.isdir(f):
-                for root, _, dir_files in os.walk(f):
-                    for df in dir_files:
-                        full_p = os.path.join(root, df)
-                        if is_video_file(full_p):
-                            valid_videos.append(full_p)
-            elif is_video_file(f):
-                valid_videos.append(f)
-
-        if valid_videos:
+            sources, errors = parse_sources(event.mimeData().text())
+            if errors:
+                self._show_input_error("\n".join(errors))
+        if sources:
             event.acceptProposedAction()
-            self._load_local_files(valid_videos)
-        elif files:
-            first = files[0]
-            if first.startswith("http"):
-                if hasattr(self, 'url_debounce_timer'):
-                    self.url_debounce_timer.stop()
-                self.url_input.blockSignals(True)
-                self.url_input.setText(first)
-                self.url_input.blockSignals(False)
-                self._fetch_metadata()
+            self._import_sources(sources, self._read_current_options())
+        else:
+            event.ignore()
 
     def _apply_theme(self):
         opacity = settings.get("glass_opacity", 0.45)
@@ -308,6 +312,12 @@ class MainWindow(QMainWindow):
 
         content_layout.addLayout(input_bar)
 
+        self.startup_notice = QLabel(settings.startup_warning or "")
+        self.startup_notice.setWordWrap(True)
+        self.startup_notice.setStyleSheet("color: #FBBF24; font-size: 12px;")
+        self.startup_notice.setVisible(bool(settings.startup_warning))
+        content_layout.addWidget(self.startup_notice)
+
         # FFmpeg Availability Warning Banner
         self.ffmpeg_banner = QFrame()
         self.ffmpeg_banner.setStyleSheet("""
@@ -360,7 +370,7 @@ class MainWindow(QMainWindow):
         self.modes_card.setProperty("class", "GlassCard")
         self.modes_card.setFixedHeight(42)
         self.modes_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        modes_layout = QHBoxLayout(self.modes_card)
+        modes_layout = QGridLayout(self.modes_card)
         modes_layout.setContentsMargins(6, 5, 6, 5)
         modes_layout.setSpacing(6)
 
@@ -370,34 +380,34 @@ class MainWindow(QMainWindow):
         self.pill_best.setProperty("class", "ModePill")
         self.pill_best.setProperty("active", "true")
         self.pill_best.clicked.connect(lambda: self._set_mode("best"))
-        modes_layout.addWidget(self.pill_best)
+        modes_layout.addWidget(self.pill_best, 0, 0)
 
         self.pill_custom = QPushButton(" ВИДЕО")
         self.pill_custom.setIcon(get_svg_icon("video", color="#EDEDED", size=13))
         self.pill_custom.setIconSize(QSize(13, 13))
         self.pill_custom.setProperty("class", "ModePill")
         self.pill_custom.clicked.connect(lambda: self._set_mode("custom"))
-        modes_layout.addWidget(self.pill_custom)
+        modes_layout.addWidget(self.pill_custom, 0, 1)
 
         self.res_combo = QComboBox()
         self.res_combo.addItems(["4K (2160p)", "2K (1440p)", "1080p Full HD", "720p HD", "480p", "360p"])
         self.res_combo.setCurrentText("1080p Full HD")
         self.res_combo.setVisible(False)
         self.res_combo.currentTextChanged.connect(self._update_download_button_text)
-        modes_layout.addWidget(self.res_combo)
+        modes_layout.addWidget(self.res_combo, 1, 0, 1, 6)
 
         self.pill_audio = QPushButton(" АУДИО")
         self.pill_audio.setIcon(get_svg_icon("music", color="#EDEDED", size=13))
         self.pill_audio.setIconSize(QSize(13, 13))
         self.pill_audio.setProperty("class", "ModePill")
         self.pill_audio.clicked.connect(lambda: self._set_mode("audio_only"))
-        modes_layout.addWidget(self.pill_audio)
+        modes_layout.addWidget(self.pill_audio, 0, 2)
 
         self.audio_fmt_combo = QComboBox()
         self.audio_fmt_combo.addItems(["MP3 (320k)", "FLAC (Lossless)", "M4A (AAC)", "OPUS", "WAV"])
         self.audio_fmt_combo.setVisible(False)
         self.audio_fmt_combo.currentTextChanged.connect(self._update_download_button_text)
-        modes_layout.addWidget(self.audio_fmt_combo)
+        modes_layout.addWidget(self.audio_fmt_combo, 1, 0, 1, 6)
 
         self.pill_gif = QPushButton(" GIF")
         self.pill_gif.setIcon(get_svg_icon("gif", color="#EDEDED", size=13))
@@ -405,7 +415,7 @@ class MainWindow(QMainWindow):
         self.pill_gif.setProperty("class", "ModePill")
         self.pill_gif.setToolTip("Конвертировать в анимированный GIF")
         self.pill_gif.clicked.connect(lambda: self._set_mode("gif"))
-        modes_layout.addWidget(self.pill_gif)
+        modes_layout.addWidget(self.pill_gif, 0, 3)
 
         self.pill_discord = QPushButton(" DISCORD")
         self.pill_discord.setIcon(get_svg_icon("discord", color="#EDEDED", size=13))
@@ -413,7 +423,7 @@ class MainWindow(QMainWindow):
         self.pill_discord.setProperty("class", "ModePill")
         self.pill_discord.setToolTip("Сжать видео для отправки в Discord (< 8 МБ)")
         self.pill_discord.clicked.connect(lambda: self._set_mode("discord_8mb"))
-        modes_layout.addWidget(self.pill_discord)
+        modes_layout.addWidget(self.pill_discord, 0, 4)
 
         self.pill_video_only = QPushButton(" БЕЗ ЗВУКА")
         self.pill_video_only.setIcon(get_svg_icon("mute", color="#EDEDED", size=13))
@@ -421,9 +431,8 @@ class MainWindow(QMainWindow):
         self.pill_video_only.setProperty("class", "ModePill")
         self.pill_video_only.setToolTip("Только видеоряд без аудио")
         self.pill_video_only.clicked.connect(lambda: self._set_mode("video_only"))
-        modes_layout.addWidget(self.pill_video_only)
+        modes_layout.addWidget(self.pill_video_only, 0, 5)
 
-        modes_layout.addStretch()
         content_layout.addWidget(self.modes_card)
 
         # 4. Trimmer, Crop & Smooth FPS Widgets
@@ -452,6 +461,39 @@ class MainWindow(QMainWindow):
         self.audio_fmt_combo.currentIndexChanged.connect(lambda _: self._auto_save_active_options())
 
         content_layout.addLayout(tools_layout)
+
+        queue_bar = QHBoxLayout()
+        self.queue_count_label = QLabel("В очереди: 0 · выбрано: 0")
+        self.queue_count_label.setStyleSheet("color: #A1A1AA; font-size: 11px;")
+        queue_bar.addWidget(self.queue_count_label, 1)
+        self.queue_buttons = []
+        for text, callback in (("Выбрать все", lambda: self.cards_list.select_all()),
+                               ("Снять выбор", lambda: self.cards_list.select_all(False)),
+                               ("Применить к выбранным", self._apply_options_to_selected),
+                               ("Очистить", self._reset_all_state)):
+            button = QPushButton(text)
+            button.setProperty("class", "GlassButton")
+            button.setStyleSheet("font-size: 10px; padding: 4px 8px;")
+            button.clicked.connect(callback)
+            queue_bar.addWidget(button)
+            self.queue_buttons.append(button)
+        content_layout.addLayout(queue_bar)
+
+        self.editor_hint = QLabel("Настройки относятся к активной карточке. Флажки выбирают элементы для запуска.")
+        self.editor_hint.setWordWrap(True)
+        self.editor_hint.setStyleSheet("color: #A1A1AA; font-size: 11px;")
+        content_layout.addWidget(self.editor_hint)
+        self.metadata_details_btn = QPushButton("Уточнить данные видео для кадрирования")
+        self.metadata_details_btn.setProperty("class", "GlassButton")
+        self.metadata_details_btn.clicked.connect(self._fetch_active_details)
+        self.metadata_details_btn.setVisible(False)
+        content_layout.addWidget(self.metadata_details_btn)
+
+        self.import_status_label = QLabel()
+        self.import_status_label.setWordWrap(True)
+        self.import_status_label.setStyleSheet("color: #93C5FD; font-size: 11px;")
+        self.import_status_label.setVisible(False)
+        content_layout.addWidget(self.import_status_label)
 
         # 5. Full Video Cards List (Supports duplicate videos, smooth wheel scrolling without scrollbars)
         self.cards_list = VideoCardsListWidget()
@@ -540,11 +582,9 @@ class MainWindow(QMainWindow):
             sessions = get_recovery_sessions()
             if sessions:
                 count = len(sessions)
-                QTimer.singleShot(1200, lambda: self.show_toast(
-                    f"📁 Найдено сохранённых сессий восстановления: {count}. Файлы доступны в папке загрузок.",
-                    "info",
-                    duration=7000
-                ))
+                notice = f"Найдено сессий восстановления: {count}. Откройте раздел восстановления в настройках."
+                self.startup_notice.setText("\n".join(filter(None, [settings.startup_warning, notice])))
+                self.startup_notice.setVisible(True)
         except Exception:
             pass
 
@@ -553,7 +593,7 @@ class MainWindow(QMainWindow):
         self.clipboard_watcher.url_detected.connect(self._on_clipboard_url)
 
     def _on_clipboard_url(self, url: str):
-        if settings.get("auto_paste", False) and not self.download_worker:
+        if settings.get("auto_paste", False) and not self._queue_busy:
             if hasattr(self, 'url_debounce_timer'):
                 self.url_debounce_timer.stop()
             self.url_input.blockSignals(True)
@@ -582,136 +622,148 @@ class MainWindow(QMainWindow):
         if file_paths:
             self._load_local_files(file_paths)
 
-    def _load_local_files(self, file_paths: list[str]):
-        if not file_paths:
+    def _load_local_files(self, file_paths):
+        self._import_sources(file_paths, default_options(settings))
+
+    def _import_sources(self, sources, options):
+        if self._closing or not sources:
             return
+        worker = MediaImportWorker(sources, options)
+        generation = self._import_generation
+        self._import_workers.append(worker)
+        worker.item_ready.connect(lambda info: self._add_queue_item(info) if generation == self._import_generation else None)
+        worker.status_message.connect(lambda message: self.import_status_label.setText(message) if generation == self._import_generation else None)
+        worker.import_finished.connect(lambda summary: self._on_import_finished(summary) if generation == self._import_generation else None)
+        worker.finished.connect(lambda: self._import_workers.remove(worker) if worker in self._import_workers else None)
+        self.import_status_label.setText("Подготовка элементов очереди...")
+        self.import_status_label.setVisible(True)
+        start_worker(worker, self)
 
-        clean_paths = []
-        for p in file_paths:
-            if isinstance(p, str):
-                c = p.strip().strip('"').strip("'")
-                if os.path.isdir(c):
-                    for root, _, files in os.walk(c):
-                        for f in files:
-                            full_p = os.path.join(root, f)
-                            if is_video_file(full_p):
-                                clean_paths.append(full_p)
-                elif is_video_file(c):
-                    clean_paths.append(c)
-
-        if not clean_paths:
+    def _on_import_finished(self, summary):
+        if self._closing:
             return
+        errors = summary.get('errors', [])
+        text = f"Добавлено: {summary.get('added', 0)}. Настройте карточки и нажмите запуск."
+        if errors:
+            text += "\n" + "\n".join(errors[:3])
+        elif not summary.get('added'):
+            text = "Подходящие видео не найдены." if not summary.get('cancelled') else "Подготовка остановлена."
+        self.import_status_label.setText(text)
+        self._update_download_button_text()
 
-        for path in clean_paths:
-            info = get_local_media_info(path)
-            if info:
-                self.cards_list.add_video(info)
+    def _add_queue_item(self, info):
+        if not self._closing:
+            self.cards_list.add_video(normalize_item(info, default_options(settings)))
+
+    def _read_current_options(self):
+        trim_start, trim_end = self.trim_widget.get_trim_range()
+        return {'mode': self.current_mode,
+                'res': self.res_combo.currentText(),
+                'audio_fmt': self.audio_fmt_combo.currentText().split()[0].lower(),
+                'audio_q': settings.get('audio_quality', '320'),
+                'download_subs': settings.get('download_subtitles', False),
+                'trim_enabled': self.trim_widget.is_trim_enabled(), 'trim_start': trim_start, 'trim_end': trim_end,
+                'crop_enabled': self.crop_widget.is_crop_enabled(), 'crop_params': copy.deepcopy(self.crop_widget.get_crop_params()),
+                'smooth_enabled': self.smooth_widget.is_smooth_enabled(), 'smooth_fps': self.smooth_widget.get_target_fps(),
+                'smooth_model': self.smooth_widget.get_model()}
+
+    def _apply_options_to_selected(self):
+        if self._queue_busy:
+            return
+        options = self._read_current_options()
+        for item in self.cards_list.get_selected_videos():
+            normalized = normalize_item({**item, 'options': options})
+            self.cards_list.save_card_options(item['item_id'], normalized['options'])
+        self.import_status_label.setText("Настройки применены к выбранным карточкам.")
+        self.import_status_label.setVisible(True)
+
+    def _show_input_error(self, message):
+        self.import_status_label.setText(message)
+        self.import_status_label.setVisible(True)
+        self.url_input.setFocus()
+
+    def _setup_shortcuts(self):
+        self._shortcuts = []
+        for sequence, callback in (("Ctrl+O", self._open_file_dialog), ("Ctrl+B", self._open_batch_dialog),
+                                   ("Ctrl+Return", self._start_download), ("Ctrl+L", self.url_input.setFocus)):
+            shortcut = QShortcut(QKeySequence(sequence), self)
+            shortcut.activated.connect(callback)
+            self._shortcuts.append(shortcut)
+        self.download_btn.setToolTip("Запустить выбранные элементы · Ctrl+Enter")
+        self.file_btn.setToolTip("Добавить видео · Ctrl+O")
+        self.batch_btn.setToolTip("Добавить список ссылок и файлов · Ctrl+B")
 
     def _save_current_ui_to_video_info(self):
-        if not self.current_video_info:
+        if not self.current_video_info or self._queue_busy:
             return
-        item_id = self.current_video_info.get('item_id')
-        trim_start, trim_end = self.trim_widget.get_trim_range()
-        opts = {
-            'mode': self.current_mode,
-            'res': self.res_combo.currentText() if self.current_mode in ['custom', 'video_only'] else None,
-            'audio_fmt': self.audio_fmt_combo.currentText().split()[0].lower() if self.current_mode == 'audio_only' else 'mp3',
-            'audio_q': '320',
-            'trim_enabled': self.trim_widget.is_trim_enabled(),
-            'trim_start': trim_start,
-            'trim_end': trim_end,
-            'crop_enabled': self.crop_widget.is_crop_enabled(),
-            'crop_params': self.crop_widget.get_crop_params(),
-            'smooth_enabled': self.smooth_widget.is_smooth_enabled(),
-            'smooth_fps': self.smooth_widget.get_target_fps(),
-            'smooth_model': self.smooth_widget.get_model()
-        }
-        self.current_video_info['options'] = opts
-        if item_id:
-            self.cards_list.save_card_options(item_id, opts)
-        else:
-            self.cards_list.save_active_options(opts)
+        options = normalize_item({**self.current_video_info, 'options': self._read_current_options()})['options']
+        self.current_video_info['options'] = copy.deepcopy(options)
+        self.cards_list.save_card_options(self.current_video_info.get('item_id'), options)
 
     def _auto_save_active_options(self):
         if getattr(self, '_is_restoring_ui', False):
             return
         self._save_current_ui_to_video_info()
 
-    def _restore_ui_from_video_info(self, info: dict):
-        opts = info.get('options')
-        if not opts:
-            self._set_mode("best")
-            self.crop_widget.toggle.setChecked(False)
-            self.trim_widget.toggle.setChecked(False)
-            self.smooth_widget.toggle.setChecked(False)
-            return
-
+    def _restore_ui_from_video_info(self, info):
+        opts = {**default_options(settings), **(info.get('options') or {})}
         self._set_mode(opts.get('mode', 'best'))
-        if opts.get('res'):
-            self.res_combo.setCurrentText(opts.get('res'))
-        if opts.get('audio_fmt'):
-            for i in range(self.audio_fmt_combo.count()):
-                if opts['audio_fmt'].lower() in self.audio_fmt_combo.itemText(i).lower():
-                    self.audio_fmt_combo.setCurrentIndex(i)
-                    break
+        available = info.get('available_res') or RESOLUTIONS
+        self.res_combo.clear()
+        self.res_combo.addItems(available)
+        resolution = opts.get('res') or available[0]
+        if self.res_combo.findText(resolution) < 0:
+            self.res_combo.addItem(resolution)
+        self.res_combo.setCurrentText(resolution)
+        for index in range(self.audio_fmt_combo.count()):
+            if self.audio_fmt_combo.itemText(index).split()[0].lower() == opts.get('audio_fmt', 'mp3'):
+                self.audio_fmt_combo.setCurrentIndex(index)
+                break
+        self.trim_widget.start_input.setText(opts.get('trim_start') or '00:00')
+        self.trim_widget.end_input.setText(opts.get('trim_end') or '')
+        self.trim_widget.toggle.setChecked(bool(opts.get('trim_enabled')))
+        self.crop_widget._crop_params = copy.deepcopy(opts.get('crop_params'))
+        self.crop_widget.toggle.setChecked(bool(opts.get('crop_enabled')))
+        self.crop_widget.status_tag.setVisible(bool(opts.get('crop_enabled') and opts.get('crop_params')))
+        crop = opts.get('crop_params') or {}
+        self.crop_widget.status_tag.setText(f"{crop.get('w', '?')}×{crop.get('h', '?')}")
+        self.smooth_widget.fps_combo.setCurrentIndex({60: 0, 120: 1, 0: 2}.get(opts.get('smooth_fps', 60), 0))
+        self.smooth_widget.toggle.setChecked(bool(opts.get('smooth_enabled')))
 
-        # Trim
-        self.trim_widget.toggle.setChecked(opts.get('trim_enabled', False))
-        if opts.get('trim_start'):
-            self.trim_widget.start_input.setText(opts.get('trim_start'))
-        if opts.get('trim_end'):
-            self.trim_widget.end_input.setText(opts.get('trim_end'))
-
-        # Crop
-        self.crop_widget.toggle.setChecked(opts.get('crop_enabled', False))
-        self.crop_widget._crop_params = opts.get('crop_params')
-        if opts.get('crop_params'):
-            w = opts['crop_params'].get('w', 1920)
-            h = opts['crop_params'].get('h', 1080)
-            self.crop_widget.status_tag.setText(f"{w}×{h}")
-            self.crop_widget.status_tag.setVisible(opts.get('crop_enabled', False))
-        else:
-            self.crop_widget.status_tag.setVisible(False)
-
-        # Smooth
-        self.smooth_widget.toggle.setChecked(opts.get('smooth_enabled', False))
-        fps = opts.get('smooth_fps', 60)
-        if fps == 60:
-            self.smooth_widget.fps_combo.setCurrentIndex(0)
-        elif fps == 120:
-            self.smooth_widget.fps_combo.setCurrentIndex(1)
-        else:
-            self.smooth_widget.fps_combo.setCurrentIndex(2)
-
-    def _on_active_thumbnail_updated(self, pixmap: QPixmap):
+    def _on_active_thumbnail_updated(self, pixmap):
         if self.current_video_info and pixmap and not pixmap.isNull():
-            w = self.current_video_info.get("width", 1920)
-            h = self.current_video_info.get("height", 1080)
-            self.crop_widget.set_source_info(pixmap, width=w, height=h)
+            self.crop_widget.set_source_info(pixmap, width=self.current_video_info.get('width') or 0,
+                                            height=self.current_video_info.get('height') or 0)
 
-    def _on_active_video_changed(self, info: dict, pixmap: QPixmap):
+    def _on_active_video_changed(self, info, pixmap):
         self._is_restoring_ui = True
         try:
             self.current_video_info = info
-            is_photo = bool(info and info.get('is_photo'))
-            if hasattr(self, 'modes_card'):
-                self.modes_card.setVisible(not is_photo)
-            self.trim_widget.setVisible(not is_photo)
-            self.smooth_widget.setVisible(not is_photo)
-
-            w = info.get("width", 1920)
-            h = info.get("height", 1080)
-            self.crop_widget.set_source_info(pixmap, width=w, height=h)
+            self.crop_widget.set_source_info(pixmap, width=info.get('width') or 0, height=info.get('height') or 0)
             playable = info.get('playable_url') or info.get('direct_url') or info.get('url')
-            if not is_photo:
-                self.trim_widget.set_source_video(playable, info.get('duration', 60))
-            if info.get("available_res"):
-                self.res_combo.clear()
-                self.res_combo.addItems(info["available_res"])
+            self.trim_widget.set_source_video(playable, info.get('duration') or 0)
             self._restore_ui_from_video_info(info)
+            self._refresh_editor_visibility()
             self._update_download_button_text()
         finally:
             self._is_restoring_ui = False
+
+    def _refresh_editor_visibility(self):
+        info = self.current_video_info or {}
+        photo = info.get('is_photo') or info.get('media_type') == 'photo'
+        self.modes_card.setVisible(not photo)
+        self.trim_widget.setVisible(not photo)
+        self.crop_widget.setVisible(not photo and self.current_mode != 'audio_only')
+        self.smooth_widget.setVisible(not photo and self.current_mode not in ('audio_only', 'gif'))
+        dimensions_known = bool(info.get('width') and info.get('height'))
+        self.crop_widget.toggle.setEnabled(dimensions_known and not self._queue_busy)
+        self.crop_widget.edit_btn.setEnabled(dimensions_known and self.crop_widget.is_crop_enabled() and not self._queue_busy)
+        self.trim_widget.visual_btn.setEnabled(bool(info.get('duration')) and self.trim_widget.is_trim_enabled() and not self._queue_busy)
+        unknown = bool(info and not photo and not dimensions_known and not info.get('is_local'))
+        self.metadata_details_btn.setVisible(unknown)
+        self.metadata_details_btn.setEnabled(not self._queue_busy)
+        title = info.get('title') or 'активная карточка'
+        self.editor_hint.setText(f"Настройки: {title}. Для нескольких файлов используйте «Применить к выбранным».")
 
     def _on_cards_list_changed(self, count: int):
         if hasattr(self, 'empty_placeholder'):
@@ -728,6 +780,17 @@ class MainWindow(QMainWindow):
         self._update_download_button_text()
 
     def _reset_all_state(self):
+        if self._queue_busy:
+            return
+        self._import_generation += 1
+        self._last_failed_items = []
+        self.progress_widget.hide_progress()
+        self.import_status_label.setVisible(False)
+        if self.metadata_worker:
+            self.metadata_worker.cancel()
+            self.metadata_worker = None
+        for worker in self._import_workers:
+            worker.cancel()
         self.current_video_info = None
         self.url_input.blockSignals(True)
         self.url_input.clear()
@@ -742,6 +805,7 @@ class MainWindow(QMainWindow):
         self.smooth_widget.toggle.setChecked(False)
         self.trim_widget.setVisible(True)
         self.smooth_widget.setVisible(True)
+        self._refresh_editor_visibility()
         self._update_download_button_text()
 
     def _on_url_text_changed(self, text: str):
@@ -764,46 +828,62 @@ class MainWindow(QMainWindow):
                 self.url_debounce_timer.start(400)
 
     def _fetch_metadata(self):
-        if hasattr(self, 'url_debounce_timer'):
-            self.url_debounce_timer.stop()
-
-        url = self.url_input.text().strip()
-        if not url:
+        self.url_debounce_timer.stop()
+        if self._closing:
             return
-
-        # Clear input field immediately upon pressing Enter/Paste without re-triggering textChanged
+        text = self.url_input.text().strip()
+        sources, errors = parse_sources(text)
+        if errors:
+            self._show_input_error("\n".join(errors))
+            return
+        if not sources:
+            return
         self.url_input.blockSignals(True)
         self.url_input.clear()
         self.url_input.blockSignals(False)
-
-        if is_video_file(url):
-            self._load_local_files([url])
+        if len(sources) != 1 or not sources[0].startswith(('http://', 'https://')):
+            self._import_sources(sources, default_options(settings))
             return
+        self._start_metadata_worker(sources[0])
 
+    def _fetch_active_details(self):
+        if self.current_video_info and not self._queue_busy:
+            self._start_metadata_worker(self.current_video_info['url'], self.current_video_info.get('item_id'))
+
+    def _start_metadata_worker(self, url, item_id=None):
         if self.metadata_worker and self.metadata_worker.isRunning():
-            old_worker = self.metadata_worker
-            old_worker.cancel()
-            try:
-                old_worker.info_ready.disconnect()
-                old_worker.playlist_ready.disconnect()
-                old_worker.gallery_ready.disconnect()
-                old_worker.info_error.disconnect()
-            except Exception:
-                pass
-            self.metadata_worker = None
-
-        self.download_btn.setEnabled(False)
-        self.download_btn.setText("  ПОЛУЧЕНИЕ ИНФОРМАЦИИ...")
-
-        self.metadata_worker = MetadataWorker(url)
-        self._track_worker(self.metadata_worker)
-        self.metadata_worker.info_ready.connect(self._on_metadata_ready)
-        self.metadata_worker.playlist_ready.connect(self._on_playlist_ready)
-        self.metadata_worker.gallery_ready.connect(self._on_gallery_ready)
-        self.metadata_worker.info_error.connect(self._on_metadata_error)
-        self.metadata_worker.start()
+            self.metadata_worker.cancel()
+        worker = MetadataWorker(url)
+        self.metadata_worker = worker
+        self.import_status_label.setText("Получение информации о видео...")
+        self.import_status_label.setVisible(True)
+        def ready(info):
+            if self._closing or worker is not self.metadata_worker:
+                return
+            if item_id:
+                self.cards_list.update_card_info(item_id, info)
+            else:
+                self._on_metadata_ready(info)
+            self.import_status_label.setText("Карточка готова. Настройте параметры и запустите обработку.")
+        def gallery(info):
+            if not self._closing and worker is self.metadata_worker:
+                self._on_gallery_ready(info)
+        def playlist(info):
+            if not self._closing and worker is self.metadata_worker:
+                self._on_playlist_ready(info)
+        def failed(error):
+            if not self._closing and worker is self.metadata_worker:
+                self._on_metadata_error(error)
+        worker.info_ready.connect(ready)
+        worker.gallery_ready.connect(gallery)
+        worker.playlist_ready.connect(playlist)
+        worker.info_error.connect(failed)
+        self._track_worker(worker)
+        start_worker(worker, self)
 
     def _on_gallery_ready(self, gallery_data: dict):
+        if self._closing:
+            return
         self.download_btn.setEnabled(True)
         self._update_download_button_text()
 
@@ -815,7 +895,7 @@ class MainWindow(QMainWindow):
 
             # Display cards for all selected items in main cards_list
             for item in selected:
-                is_vid = item.get('is_video', False)
+                is_vid = bool(item.get('is_video') or item.get('media_type') == 'video')
                 media_url = item.get('url') if is_vid else (item.get('best_image') or item.get('url'))
                 info = {
                     'url': media_url,
@@ -824,7 +904,7 @@ class MainWindow(QMainWindow):
                     'playable_url': media_url,
                     'title': item.get('title') or f"Instagram {'Видео' if is_vid else 'Фото'} #{item.get('index', 1)}",
                     'uploader': item.get('uploader') or gallery_data.get('uploader') or 'Instagram',
-                    'duration': 0,
+                    'duration': item.get('duration') or 0,
                     'duration_str': 'ФОТО' if not is_vid else 'ВИДЕО',
                     'thumbnail': item.get('thumbnail') or item.get('best_image'),
                     'platform': 'Instagram',
@@ -833,23 +913,17 @@ class MainWindow(QMainWindow):
                     'is_photo': not is_vid,
                     'is_video': is_vid,
                     'media_type': 'video' if is_vid else 'photo',
-                    'width': 1080,
-                    'height': 1350
+                    'width': item.get('width'),
+                    'height': item.get('height')
                 }
-                self.cards_list.add_video(info)
+                self._add_queue_item(info)
 
-            save_dir = settings.get("download_dir")
-            self.progress_widget.start_progress()
-            self.download_btn.setEnabled(False)
-            self.download_worker = GalleryDownloadWorker(selected, save_dir)
-            self.download_worker.progress_updated.connect(self.progress_widget.update_progress)
-            self.download_worker.item_completed.connect(self._on_queue_item_completed)
-            self.download_worker.batch_completed.connect(self._on_batch_success)
-            self.download_worker.download_error.connect(self._on_download_fail)
-            self.download_worker.status_message.connect(lambda msg: self.progress_widget.status_label.setText(msg.upper()))
-            self.download_worker.start()
+            self.import_status_label.setText(f"Добавлено из галереи: {len(selected)}. Настройте карточки и нажмите запуск.")
+            self.import_status_label.setVisible(True)
 
     def _on_playlist_ready(self, playlist_data: dict):
+        if self._closing:
+            return
         self.download_btn.setEnabled(True)
         self._update_download_button_text()
 
@@ -869,20 +943,21 @@ class MainWindow(QMainWindow):
                     'platform': 'youtube',
                     'available_res': ['1080p Full HD', '720p HD', '480p'],
                     'has_video': True,
-                    'width': 1920,
-                    'height': 1080
+                    'width': item.get('width'),
+                    'height': item.get('height')
                 }
-                self.cards_list.add_video(info)
+                self._add_queue_item(info)
 
     def _on_metadata_ready(self, info: dict):
-        self.cards_list.add_video(info)
+        if self._closing:
+            return
+        self._add_queue_item(info)
         self.download_btn.setEnabled(True)
         self._update_download_button_text()
 
-    def _on_metadata_error(self, err_msg: str):
-        self.download_btn.setEnabled(True)
+    def _on_metadata_error(self, err_msg):
+        self._show_input_error(err_msg)
         self._update_download_button_text()
-        self.progress_widget.set_error(err_msg)
 
     def _set_mode(self, mode: str):
         self.current_mode = mode
@@ -898,8 +973,8 @@ class MainWindow(QMainWindow):
         self.res_combo.setVisible(mode in ["custom", "video_only"])
         self.audio_fmt_combo.setVisible(mode == "audio_only")
 
-        self.crop_widget.setVisible(mode != "audio_only")
-        self.smooth_widget.setVisible(mode not in ["audio_only", "gif"])
+        self.modes_card.setFixedHeight(76 if mode in ("audio_only", "custom", "video_only") else 42)
+        self._refresh_editor_visibility()
 
         for pill, icon_name, p_mode in pill_map:
             if p_mode == mode:
@@ -915,140 +990,97 @@ class MainWindow(QMainWindow):
         self._auto_save_active_options()
 
     def _update_download_button_text(self):
-        selected_vids = self.cards_list.get_selected_videos()
-        q_count = len(selected_vids)
-        is_local = (self.current_video_info and self.current_video_info.get('is_local')) or q_count > 0
-
-        if not self.current_video_info and q_count == 0:
-            self.download_btn.setIcon(get_svg_icon("download", color="#000000", size=18))
-            self.download_btn.setText("  СКАЧАТЬ В ЛУЧШЕМ КАЧЕСТВЕ (MP4)")
+        if not hasattr(self, 'download_btn'):
             return
-
-        active_video = selected_vids[0] if selected_vids else self.current_video_info
-        if active_video and active_video.get('is_photo'):
-            self.download_btn.setIcon(get_svg_icon("camera", color="#000000", size=18))
-            self.download_btn.setText("  СКАЧАТЬ ФОТОГРАФИЮ (JPG)")
-            return
-
-        if q_count > 1:
-            self.download_btn.setIcon(get_svg_icon("zap", color="#000000", size=18))
-            if self.current_mode in ["best", "custom"]:
-                self.download_btn.setText(f"  ОБРАБОТАТЬ ВСЕ ВИДЕО ({q_count})")
-            elif self.current_mode == "audio_only":
-                fmt = self.audio_fmt_combo.currentText().split()[0]
-                self.download_btn.setText(f"  ИЗВЛЕЧЬ АУДИО [{fmt}] ({q_count} ВИДЕО)")
-            elif self.current_mode == "gif":
-                self.download_btn.setText(f"  КОНВЕРТИРОВАТЬ В GIF ({q_count} ВИДЕО)")
-            elif self.current_mode == "discord_8mb":
-                self.download_btn.setText(f"  СЖАТЬ ДЛЯ DISCORD ({q_count} ВИДЕО)")
-            elif self.current_mode == "video_only":
-                self.download_btn.setText(f"  УДАЛИТЬ ЗВУК ({q_count} ВИДЕО)")
-            return
-
-        if is_local:
-            self.download_btn.setIcon(get_svg_icon("zap", color="#000000", size=18))
-            if self.current_mode in ["best", "custom"]:
-                self.download_btn.setText("  ОБРАБОТАТЬ И СОХРАНИТЬ ВИДЕО")
-            elif self.current_mode == "audio_only":
-                fmt = self.audio_fmt_combo.currentText().split()[0]
-                self.download_btn.setText(f"  ИЗВЛЕЧЬ АУДИО [{fmt}]")
-            elif self.current_mode == "gif":
-                self.download_btn.setText("  КОНВЕРТИРОВАТЬ В GIF")
-            elif self.current_mode == "discord_8mb":
-                self.download_btn.setText("  СЖАТЬ ДЛЯ DISCORD (< 8 МБ)")
-            elif self.current_mode == "video_only":
-                self.download_btn.setText("  УДАЛИТЬ ЗВУК И СОХРАНИТЬ")
+        selected = self.cards_list.get_selected_videos()
+        count = len(selected)
+        self.queue_count_label.setText(f"В очереди: {self.cards_list.count()} · выбрано: {count}")
+        self.download_btn.setEnabled(bool(count) and not self._queue_busy and not self._closing)
+        if self._queue_busy:
+            self.download_btn.setText("  ВЫПОЛНЯЕТСЯ ОЧЕРЕДЬ...")
+        elif count > 1:
+            self.download_btn.setText(f"  ЗАПУСТИТЬ ВЫБРАННЫЕ ({count})")
+        elif count == 1:
+            item = selected[0]
+            opts = item.get('options') or default_options(settings)
+            if item.get('is_photo'):
+                label = 'СКАЧАТЬ ФОТО'
+            elif opts.get('mode') == 'audio_only':
+                label = f"ИЗВЛЕЧЬ АУДИО [{opts.get('audio_fmt', 'mp3').upper()}]"
+            elif item.get('is_local'):
+                label = 'ОБРАБОТАТЬ И СОХРАНИТЬ'
+            else:
+                label = 'СКАЧАТЬ И СОХРАНИТЬ'
+            self.download_btn.setText('  ' + label)
         else:
-            self.download_btn.setIcon(get_svg_icon("download", color="#000000", size=18))
-            if self.current_mode == "best":
-                self.download_btn.setText("  СКАЧАТЬ В ЛУЧШЕМ КАЧЕСТВЕ (MP4)")
-            elif self.current_mode == "custom":
-                res = self.res_combo.currentText()
-                self.download_btn.setText(f"  СКАЧАТЬ ВИДЕО [{res}]")
-            elif self.current_mode == "audio_only":
-                fmt = self.audio_fmt_combo.currentText().split()[0]
-                self.download_btn.setText(f"  СКАЧАТЬ АУДИО [{fmt}]")
-            elif self.current_mode == "gif":
-                self.download_btn.setText("  КОНВЕРТИРОВАТЬ И СКАЧАТЬ В GIF")
-            elif self.current_mode == "discord_8mb":
-                self.download_btn.setText("  СЖАТЬ И СКАЧАТЬ ДЛЯ DISCORD (< 8 МБ)")
-            elif self.current_mode == "video_only":
-                res = self.res_combo.currentText()
-                self.download_btn.setText(f"  СКАЧАТЬ БЕЗ ЗВУКА [{res}]")
+            self.download_btn.setText("  ВЫБЕРИТЕ ЭЛЕМЕНТЫ ДЛЯ ЗАПУСКА")
+
+    def _set_queue_busy(self, busy):
+        self._queue_busy = busy
+        self.cards_list.set_busy(busy)
+        for widget in (self.modes_card, self.trim_widget, self.crop_widget, self.smooth_widget):
+            widget.setEnabled(not busy)
+        for button in self.queue_buttons:
+            button.setEnabled(not busy)
+        self.progress_widget.retry_btn.setEnabled(not busy)
+        self._refresh_editor_visibility()
+        self._update_download_button_text()
 
     def _start_download(self):
+        if self._queue_busy or self._closing:
+            return
         self._save_current_ui_to_video_info()
-        url = self.url_input.text().strip()
-        selected_queue = self.cards_list.get_selected_videos()
-
-        if not url and not selected_queue and not self.current_video_info:
+        items = self.cards_list.get_selected_videos()
+        if not items:
+            if self.url_input.text().strip():
+                self._fetch_metadata()
             return
+        for item in items:
+            try:
+                validate_item(item)
+            except (ValueError, OSError) as error:
+                self._show_input_error(f"{item.get('title', 'Файл')}: {error}")
+                return
+        self._launch_queue(items, settings.get('download_dir'))
 
-        if self.download_worker and self.download_worker.isRunning():
+    def _launch_queue(self, items, save_dir):
+        if self._queue_busy or self._closing:
             return
+        self._last_queue_save_dir = save_dir
+        self._last_failed_items = []
+        self._pending_summary = None
+        self.progress_widget.start_progress("ПОДГОТОВКА ОЧЕРЕДИ...")
+        self._set_queue_busy(True)
+        worker = UnifiedBatchWorker(items, default_options(settings), save_dir)
+        self.download_worker = worker
+        for item in worker.items:
+            self.cards_list.update_item_state({'item_id': item['item_id'], 'state': 'waiting'})
+        worker.progress_updated.connect(self.progress_widget.update_progress)
+        worker.item_state_changed.connect(self.cards_list.update_item_state)
+        worker.item_completed.connect(self._on_queue_item_completed)
+        worker.batch_summary.connect(lambda summary: self._receive_queue_summary(worker, summary))
+        worker.status_message.connect(lambda message: self.progress_widget.status_label.setText(message))
+        worker.finished.connect(lambda: self._finish_queue(worker))
+        self._track_worker(worker)
+        start_worker(worker, self)
 
-        trim_start, trim_end = self.trim_widget.get_trim_range()
+    def _receive_queue_summary(self, worker, summary):
+        if worker is self.download_worker:
+            self._pending_summary = summary
 
-        options = {
-            'mode': self.current_mode,
-            'res': self.res_combo.currentText() if self.current_mode in ['custom', 'video_only'] else None,
-            'audio_fmt': self.audio_fmt_combo.currentText().split()[0].lower() if self.current_mode == 'audio_only' else 'mp3',
-            'audio_q': '320',
-            'trim_enabled': self.trim_widget.is_trim_enabled(),
-            'trim_start': trim_start,
-            'trim_end': trim_end,
-            'crop_enabled': self.crop_widget.is_crop_enabled(),
-            'crop_params': self.crop_widget.get_crop_params(),
-            'smooth_enabled': self.smooth_widget.is_smooth_enabled(),
-            'smooth_fps': self.smooth_widget.get_target_fps(),
-            'smooth_model': self.smooth_widget.get_model()
-        }
-
-        save_dir = settings.get("download_dir")
-        self.progress_widget.start_progress()
-        self.download_btn.setEnabled(False)
-
-        if len(selected_queue) > 1:
-            self._last_failed_items = []
-            self.download_worker = UnifiedBatchWorker(selected_queue, options, save_dir)
-            self._track_worker(self.download_worker)
-            self.download_worker.progress_updated.connect(self.progress_widget.update_progress)
-            self.download_worker.item_completed.connect(self._on_queue_item_completed)
-            self.download_worker.batch_summary.connect(self._on_batch_summary)
-            self.download_worker.status_message.connect(lambda msg: self.progress_widget.status_label.setText(msg.upper()))
-            self.download_worker.start()
+    def _finish_queue(self, worker):
+        if not worker.wait(0):
+            QTimer.singleShot(20, lambda: self._finish_queue(worker))
             return
-
-        active_video = selected_queue[0] if selected_queue else self.current_video_info
-        target_url = (active_video.get('url') if active_video else None) or url
-        is_local = (active_video and active_video.get('is_local')) or is_video_file(target_url)
-
-        if is_local:
-            self.download_worker = LocalProcessWorker(target_url, options, save_dir)
+        if worker is not self.download_worker or self._closing:
+            return
+        self._set_queue_busy(False)
+        summary = self._pending_summary
+        self._pending_summary = None
+        if summary:
+            self._on_batch_summary(summary)
         else:
-            if active_video and active_video.get('is_photo'):
-                options['is_photo'] = True
-                options['is_video'] = False
-                options['media_type'] = 'photo'
-                options['direct_media_url'] = active_video.get('direct_media_url')
-                options['title'] = active_video.get('title')
-            elif active_video and (active_video.get('is_video') or active_video.get('has_video')):
-                options['is_photo'] = False
-                options['is_video'] = True
-                options['media_type'] = 'video'
-                options['direct_media_url'] = active_video.get('direct_media_url')
-                options['title'] = active_video.get('title')
-            self.download_worker = DownloadWorker(target_url, options, save_dir)
-
-        self._last_single_recovery_dir = None
-        self._track_worker(self.download_worker)
-        self.download_worker.progress_updated.connect(self.progress_widget.update_progress)
-        self.download_worker.download_completed.connect(self._on_download_success)
-        self.download_worker.download_error.connect(self._on_download_fail)
-        if hasattr(self.download_worker, 'recovery_available'):
-            self.download_worker.recovery_available.connect(lambda info: setattr(self, '_last_single_recovery_dir', info.get('staging_dir')))
-        self.download_worker.status_message.connect(lambda msg: self.progress_widget.status_label.setText(msg.upper()))
-        self.download_worker.start()
+            self.progress_widget.set_error("Очередь остановилась до получения результата.")
 
     def _on_queue_item_completed(self, result: dict):
         fmt_title = result.get('mode', 'MP4').upper()
@@ -1056,7 +1088,7 @@ class MainWindow(QMainWindow):
             title=result.get('title'),
             url=result.get('url'),
             file_path=result.get('file_path'),
-            format_type=fmt_title,
+            format_type=result.get('format_type') or fmt_title,
             size_bytes=result.get('file_size', 0),
             thumbnail=result.get('thumbnail')
         )
@@ -1071,7 +1103,12 @@ class MainWindow(QMainWindow):
         recovery_dirs = summary.get('recovery_dirs', [])
         total = summary.get('total', len(results) + len(errors))
         success_count = summary.get('success_count', len(results))
-        self._last_failed_items = list(failed_items)
+        self._last_failed_items = copy.deepcopy(summary.get("retry_items", failed_items))
+        self._last_queue_save_dir = summary.get("save_dir") or self._last_queue_save_dir
+        self.progress_widget.cancel_btn.setEnabled(True)
+        if summary.get("cancelled"):
+            self.progress_widget.complete_cancelled(summary)
+            return
 
         # 1. Total failure (0 / N)
         if success_count == 0:
@@ -1084,7 +1121,7 @@ class MainWindow(QMainWindow):
             return
 
         # 2. Partial or Full Success
-        last_res = results[-1] if results else {'file_path': settings.get("download_dir"), 'file_size_str': f"{len(results)} файлов"}
+        last_res = dict(results[-1]) if results else {'file_path': settings.get("download_dir"), 'file_size_str': f"{len(results)} файлов"}
         last_res['success_count'] = success_count
         last_res['total_count'] = total
         is_all_photos = all(r.get('mode') in ['JPG', 'PNG', 'WEBP'] for r in results) if results else False
@@ -1100,7 +1137,7 @@ class MainWindow(QMainWindow):
         else:
             self.progress_widget.complete(last_res, errors=None, total=total, has_retry=False)
             if hasattr(self, 'notification_manager'):
-                notice_title = f"Скачивание завершено ({len(results)} фото)" if is_all_photos else f"Очередь завершена ({len(results)} видео)"
+                notice_title = f"Сохранено файлов: {len(results)}"
                 self.notification_manager.show_download_complete(
                     title=notice_title,
                     file_path=last_res.get('file_path')
@@ -1118,28 +1155,9 @@ class MainWindow(QMainWindow):
         })
 
     def _retry_failed_batch_items(self):
-        items_to_retry = getattr(self, '_last_failed_items', [])
-        if not items_to_retry:
+        if self._queue_busy or not self._last_failed_items:
             return
-        import copy
-        retry_queue = copy.deepcopy(items_to_retry)
-        self._last_failed_items = []
-        save_dir = settings.get("download_dir")
-        fallback_options = {
-            'mode': self.current_mode,
-            'res': self.res_combo.currentText() if self.current_mode in ['custom', 'video_only'] else None,
-            'audio_fmt': self.audio_fmt_combo.currentText().split()[0].lower() if self.current_mode == 'audio_only' else 'mp3',
-            'audio_q': '320',
-        }
-        self.progress_widget.start_progress("⚡ ПОВТОРНАЯ ОБРАБОТКА...")
-        self.download_btn.setEnabled(False)
-        self.download_worker = UnifiedBatchWorker(retry_queue, fallback_options, save_dir)
-        self._track_worker(self.download_worker)
-        self.download_worker.progress_updated.connect(self.progress_widget.update_progress)
-        self.download_worker.item_completed.connect(self._on_queue_item_completed)
-        self.download_worker.batch_summary.connect(self._on_batch_summary)
-        self.download_worker.status_message.connect(lambda msg: self.progress_widget.status_label.setText(msg.upper()))
-        self.download_worker.start()
+        self._launch_queue(copy.deepcopy(self._last_failed_items), self._last_queue_save_dir or settings.get('download_dir'))
 
     def _on_download_success(self, result: dict):
         self.download_btn.setEnabled(True)
@@ -1156,7 +1174,7 @@ class MainWindow(QMainWindow):
             title=result.get('title'),
             url=result.get('url'),
             file_path=result.get('file_path'),
-            format_type=fmt_title,
+            format_type=result.get('format_type') or fmt_title,
             size_bytes=result.get('file_size', 0),
             thumbnail=result.get('thumbnail')
         )
@@ -1183,29 +1201,18 @@ class MainWindow(QMainWindow):
         self._update_download_button_text()
 
     def _cancel_download(self):
-        worker_running = False
-        if self.download_worker and self.download_worker.isRunning():
-            worker_running = True
-            try:
-                self.download_worker.finished.connect(self._on_worker_cancelled)
-            except Exception:
-                pass
+        if self._queue_busy and self.download_worker:
             self.download_worker.cancel()
-
-        if self.metadata_worker and self.metadata_worker.isRunning():
-            self.metadata_worker.cancel()
-
-        if worker_running:
-            self.download_btn.setEnabled(False)
-            self.download_btn.setText("  ОТМЕНА...")
-            if hasattr(self.progress_widget, 'status_label'):
-                self.progress_widget.status_label.setText("ОТМЕНА...")
+            self.progress_widget.status_label.setText("ОСТАНОВКА ОЧЕРЕДИ...")
+            self.progress_widget.cancel_btn.setEnabled(False)
         else:
-            self._on_worker_cancelled()
+            self.progress_widget.hide_progress()
 
     def _open_batch_dialog(self):
         dialog = BatchDialog(self)
-        dialog.exec()
+        if dialog.exec():
+            options = {**self._read_current_options(), **dialog.options}
+            self._import_sources(dialog.sources, options)
 
     def _open_history_modal(self):
         modal = HistoryModal(self)

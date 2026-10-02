@@ -11,6 +11,21 @@ from PySide6.QtMultimediaWidgets import QVideoWidget
 from assets.icons import get_svg_icon
 from ui.timeline_slider import TimelineRangeSlider, ms_to_time_str
 from core.media_converter import get_or_create_preview_proxy
+from core.workers import CancellableThread, start_worker
+from ui.worker_dialog import WorkerDialog
+
+
+class PreviewProxyWorker(CancellableThread):
+    ready = Signal(str)
+
+    def __init__(self, source):
+        super().__init__()
+        self.source = source
+
+    def run(self):
+        proxy = get_or_create_preview_proxy(self.source, is_cancelled_cb=self.isInterruptionRequested)
+        if proxy and not self.isInterruptionRequested():
+            self.ready.emit(proxy)
 
 def parse_time_to_ms(time_str: str) -> int:
     if not time_str:
@@ -31,12 +46,12 @@ def ms_to_fmt(ms: int) -> str:
     total_sec = max(0, int(ms / 1000))
     m, s = divmod(total_sec, 60)
     h, m = divmod(m, 60)
-    if h > 0:
-        return f"{h:02d}:{m:02d}:{s:02d}"
-    return f"{m:02d}:{s:02d}"
+    result = f"{h:02d}:{m:02d}:{s:02d}" if h > 0 else f"{m:02d}:{s:02d}"
+    fraction = max(0, int(ms)) % 1000
+    return result + (f".{fraction:03d}".rstrip('0') if fraction else '')
 
 
-class TrimDialog(QDialog):
+class TrimDialog(WorkerDialog):
     def __init__(self, parent=None, video_source=None, duration_sec: float = 60, initial_start="00:00", initial_end=None):
         super().__init__(parent)
         self.setWindowTitle("Визуальная вырезка отрезка видео")
@@ -60,6 +75,8 @@ class TrimDialog(QDialog):
         self.is_looping = True
         self._drag_pos = None
         self.applied_range = None
+        self._proxy_worker = None
+        self._preview_loaded = False
 
         self._init_ui()
         self._init_player()
@@ -354,18 +371,24 @@ class TrimDialog(QDialog):
                 self.player.pause()
                 self._seek_to_ms(self.start_ms)
             elif os.path.exists(self.video_source):
-                playable = get_or_create_preview_proxy(self.video_source)
-                self.player.setSource(QUrl.fromLocalFile(playable))
-                self.player.pause()
-                self._seek_to_ms(self.start_ms)
+                self._proxy_worker = PreviewProxyWorker(self.video_source)
+                self.btn_play.setText(" ПОДГОТОВКА ПРЕВЬЮ...")
+                self.btn_play.setEnabled(False)
+                self._proxy_worker.ready.connect(self._on_proxy_ready)
+                start_worker(self._proxy_worker, self)
+
+    def _on_proxy_ready(self, playable):
+        if self._pending_result is not None:
+            return
+        self._preview_loaded = True
+        self.btn_play.setText(" ВОСПРОИЗВЕДЕНИЕ")
+        self.btn_play.setEnabled(True)
+        self.player.setSource(QUrl.fromLocalFile(playable))
+        self.player.pause()
+        self._seek_to_ms(self.start_ms)
 
     def _on_player_error(self, error, error_string):
-        if self.video_source and os.path.exists(self.video_source):
-            proxy = get_or_create_preview_proxy(self.video_source)
-            if proxy != self.video_source and os.path.exists(proxy):
-                self.player.setSource(QUrl.fromLocalFile(proxy))
-                self.player.pause()
-                self._seek_to_ms(self.current_pos_ms)
+        self.btn_play.setToolTip(f"Превью недоступно: {error_string}. Время фрагмента можно задать вручную.")
 
     def _on_player_duration_changed(self, dur_ms: int):
         if dur_ms > 0:
@@ -507,6 +530,11 @@ class TrimDialog(QDialog):
     def reject(self):
         self.player.stop()
         super().reject()
+
+    def done(self, result):
+        if hasattr(self, 'player'):
+            self.player.stop()
+        super().done(result)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:

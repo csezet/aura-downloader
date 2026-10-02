@@ -2,11 +2,12 @@ import os
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QSizePolicy
 )
-from PySide6.QtCore import Qt, QThread, Signal, QByteArray
+from PySide6.QtCore import Qt, Signal, QByteArray
 from PySide6.QtGui import QPixmap, QImage, QPainter, QPainterPath
 import requests
+from core.workers import CancellableThread, start_worker, cancel_worker
 
-class ImageLoaderWorker(QThread):
+class ImageLoaderWorker(CancellableThread):
     image_loaded = Signal(QPixmap)
 
     def __init__(self, url):
@@ -16,11 +17,12 @@ class ImageLoaderWorker(QThread):
     def run(self):
         try:
             resp = requests.get(self.url, timeout=6)
-            if resp.status_code == 200:
+            if resp.status_code == 200 and not self.isInterruptionRequested():
                 image = QImage()
                 image.loadFromData(QByteArray(resp.content))
                 pixmap = QPixmap.fromImage(image)
-                self.image_loaded.emit(pixmap)
+                if not self.isInterruptionRequested():
+                    self.image_loaded.emit(pixmap)
         except Exception:
             pass
 
@@ -140,10 +142,11 @@ class PreviewCard(QFrame):
             elif isinstance(thumb_val, str) and thumb_val.startswith("http"):
                 self.thumb_label.setText("LOADING...")
                 if self._image_worker and self._image_worker.isRunning():
-                    self._image_worker.terminate()
+                    cancel_worker(self._image_worker)
+                    self._image_worker.image_loaded.disconnect()
                 self._image_worker = ImageLoaderWorker(thumb_val)
                 self._image_worker.image_loaded.connect(self._on_image_loaded)
-                self._image_worker.start()
+                start_worker(self._image_worker, self)
             else:
                 self.thumb_label.setText("NO IMAGE")
         else:

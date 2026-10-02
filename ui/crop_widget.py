@@ -102,21 +102,18 @@ class CropWidget(QFrame):
 
     def set_source_info(self, pixmap: QPixmap = None, width: int = 1920, height: int = 1080):
         self._preview_pixmap = pixmap
-        if pixmap and not pixmap.isNull():
-            pix_is_portrait = pixmap.height() > pixmap.width()
-            source_is_portrait = height > width
-            if pix_is_portrait != source_is_portrait:
-                width, height = height, width
-        self._source_w = width if width > 0 else 1920
-        self._source_h = height if height > 0 else 1080
+        self._source_w = width or 0
+        self._source_h = height or 0
 
     def _on_toggled(self, checked: bool):
-        self.edit_btn.setEnabled(checked)
+        self.edit_btn.setEnabled(checked and self._source_w > 0 and self._source_h > 0)
         self.edit_btn.setIcon(get_svg_icon("crop", color="#FFFFFF" if checked else "#52525B", size=13))
         self.status_tag.setVisible(checked and self._crop_params is not None)
         self.crop_toggled.emit(checked)
 
     def _open_crop_dialog(self):
+        if not self._source_w or not self._source_h:
+            return
         dialog = CropDialog(
             parent=self.window(),
             pixmap=self._preview_pixmap,

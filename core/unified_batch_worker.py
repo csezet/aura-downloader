@@ -1,12 +1,15 @@
+import copy
+import math
 import os
-import re
 from pathlib import Path
 from PySide6.QtCore import QThread, Signal
-from core.downloader import DownloadWorker, format_bytes
+from core.downloader import DownloadWorker
+from core.queue_items import normalize_item
 
 
 class UnifiedBatchWorker(QThread):
     progress_updated = Signal(dict)
+    item_state_changed = Signal(dict)
     item_completed = Signal(dict)
     batch_completed = Signal(list)
     batch_summary = Signal(dict)
@@ -15,209 +18,147 @@ class UnifiedBatchWorker(QThread):
 
     def __init__(self, items: list, fallback_options: dict, save_dir: str):
         super().__init__()
-        self.items = list(items) if items else []
-        self.fallback_options = dict(fallback_options) if fallback_options else {}
+        self.fallback_options = copy.deepcopy(fallback_options or {})
+        self.items = [normalize_item(item, self.fallback_options) for item in (items or [])]
         self.save_dir = save_dir
         self.is_cancelled = False
         self._current_worker = None
-        self.results = []
-        self.errors = []
+        self.results, self.errors, self.failed_items = [], [], []
         self.total = len(self.items)
 
     def cancel(self):
         self.is_cancelled = True
+        self.requestInterruption()
         if self._current_worker:
-            try:
-                self._current_worker.cancel()
-            except Exception:
-                pass
+            self._current_worker.cancel()
 
     def run(self):
         from core.local_processor import process_single_local_file, is_video_file
-        results = []
-        errors = []
-        failed_items = []
-        total = len(self.items)
-        if total == 0:
-            return
+        results, errors, failed, pending = [], [], [], []
+        total = self.total
+        overall = 0.0
 
-        os.makedirs(self.save_dir, exist_ok=True)
+        def state(item, value, **extra):
+            self.item_state_changed.emit({"item_id": item["item_id"], "state": value, **extra})
+
+        try:
+            os.makedirs(self.save_dir, exist_ok=True)
+            directory_error = None
+        except OSError as error:
+            directory_error = str(error)
 
         for idx, item in enumerate(self.items):
             if self.is_cancelled:
+                pending.extend(self.items[idx:])
                 break
+            options = copy.deepcopy(item["options"])
+            path = item["url"]
+            title = item["title"]
+            local = item.get("is_local") or is_video_file(path)
+            item_result, item_error, recovery_dir = None, None, None
+            self.status_message.emit(f"[{idx + 1}/{total}] {title}")
+            state(item, "processing" if local else "downloading")
 
-            # 1. Parse item info and options
-            if isinstance(item, dict):
-                direct_url = item.get('direct_media_url') or item.get('best_image')
-                source_url = item.get('url') or item.get('file_path') or direct_url or ''
-                path_or_url = source_url.strip().strip('"').strip("'")
-                item_title = item.get('title') or Path(path_or_url).name or f"Элемент #{idx+1}"
-                is_local = item.get('is_local', False) or is_video_file(path_or_url)
-                is_photo = item.get('is_photo', False) or (item.get('media_type') == 'photo')
-                is_video = item.get('is_video', False) or (item.get('media_type') == 'video') or item.get('has_video', False)
-                card_opts = item.get('options') or {}
-                cur_opts = {**self.fallback_options, **card_opts}
-                if is_photo:
-                    cur_opts['is_photo'] = True
-                    cur_opts['media_type'] = 'photo'
-                    if direct_url:
-                        cur_opts['direct_media_url'] = direct_url
-                    cur_opts['title'] = item_title
-                elif is_video:
-                    cur_opts['is_video'] = True
-                    cur_opts['media_type'] = 'video'
-                    if direct_url:
-                        cur_opts['direct_media_url'] = direct_url
-                    cur_opts['title'] = item_title
-            elif isinstance(item, tuple):
-                path_or_url = str(item[0]).strip().strip('"').strip("'")
-                item_title = Path(path_or_url).name or f"Элемент #{idx+1}"
-                is_local = is_video_file(path_or_url)
-                is_photo = False
-                is_video = True
-                direct_url = None
-                cur_opts = {**self.fallback_options, **(item[1] or {})}
-            else:
-                path_or_url = str(item).strip().strip('"').strip("'")
-                item_title = Path(path_or_url).name or f"Элемент #{idx+1}"
-                is_local = is_video_file(path_or_url)
-                is_photo = False
-                is_video = True
-                direct_url = None
-                cur_opts = dict(self.fallback_options)
+            def on_progress(data):
+                nonlocal overall
+                if not isinstance(data, dict):
+                    return
+                try:
+                    percent = float(data.get("percent", 0))
+                    if not math.isfinite(percent):
+                        percent = 0
+                except (TypeError, ValueError):
+                    percent = 0
+                percent = max(0.0, min(99.0, percent))
+                overall = max(overall, (idx + percent / 100) / max(1, total) * 100)
+                self.progress_updated.emit({**data, "percent": overall,
+                                            "downloaded_str": f"{len(results)}/{total} готово",
+                                            "total_str": f"{total} файлов", "status": "processing"})
+                state(item, "processing" if local or data.get("status") != "downloading" else "downloading",
+                      percent=percent)
 
-            self.status_message.emit(f"[{idx+1}/{total}] {item_title}")
-
-            def forward_item_progress(prog_data):
-                if isinstance(prog_data, dict):
-                    item_pct = prog_data.get('percent', 0.0)
-                    speed_str = prog_data.get('speed_str', '-- MB/s')
-                    overall_pct = ((idx + (item_pct / 100.0)) / total) * 100.0
-                    self.progress_updated.emit({
-                        'percent': overall_pct,
-                        'speed_str': speed_str,
-                        'eta_str': prog_data.get('eta_str', '--:--'),
-                        'downloaded_str': f"{len(results)}/{total} готово",
-                        'total_str': f"{total} в очереди",
-                        'status': 'processing'
-                    })
-
-            item_result = None
-            item_error = None
+            def on_status(message):
+                self.status_message.emit(f"[{idx + 1}/{total}] {message}")
 
             try:
-                if is_local:
-                    # Execute local file processing (FFmpeg)
-                    item_result = process_single_local_file(
-                        path_or_url,
-                        cur_opts,
-                        self.save_dir,
-                        status_cb=lambda msg: self.status_message.emit(f"[{idx+1}/{total}] {msg}"),
-                        progress_cb=forward_item_progress,
-                        is_cancelled_cb=lambda: self.is_cancelled
-                    )
+                if directory_error:
+                    raise OSError(f"Папка сохранения недоступна: {directory_error}")
+                if local:
+                    item_result = process_single_local_file(path, options, self.save_dir,
+                                                            status_cb=on_status, progress_cb=on_progress,
+                                                            is_cancelled_cb=lambda: self.is_cancelled)
                 else:
-                    # Online media download (video/audio/photo)
-                    worker = DownloadWorker(path_or_url, cur_opts, self.save_dir)
+                    direct = item.get("direct_media_url") or item.get("best_image")
+                    photo = item.get("is_photo") or item.get("media_type") == "photo"
+                    options.update(title=title, is_photo=bool(photo),
+                                   is_video=bool(not photo and (item.get("is_video") or item.get("has_video"))),
+                                   media_type="photo" if photo else "video")
+                    if direct:
+                        options["direct_media_url"] = direct
+                    worker = DownloadWorker(path, options, self.save_dir)
                     self._current_worker = worker
-
-                    item_recovery_dir = None
-                    def on_done(res):
+                    def on_done(result):
                         nonlocal item_result
-                        item_result = res
-
-                    def on_err(err):
+                        item_result = result
+                    def on_error(error):
                         nonlocal item_error
-                        item_error = err
-
-                    def on_rec(info):
-                        nonlocal item_recovery_dir
-                        item_recovery_dir = info.get('staging_dir')
-
-                    worker.progress_updated.connect(forward_item_progress)
-                    worker.status_message.connect(lambda msg: self.status_message.emit(f"[{idx+1}/{total}] {msg}"))
+                        item_error = error
+                    def on_recovery(info):
+                        nonlocal recovery_dir
+                        recovery_dir = info.get("staging_dir")
                     worker.download_completed.connect(on_done)
-                    worker.download_error.connect(on_err)
-                    try:
-                        worker.recovery_available.connect(on_rec)
-                    except Exception:
-                        pass
-
-                    # Run synchronously on this batch thread
+                    worker.download_error.connect(on_error)
+                    worker.progress_updated.connect(on_progress)
+                    worker.status_message.connect(on_status)
+                    if hasattr(worker, "recovery_available"):
+                        worker.recovery_available.connect(on_recovery)
                     worker.run()
-                    self._current_worker = None
+            except Exception as error:
+                item_error = str(error)
+            finally:
+                self._current_worker = None
 
-                if self.is_cancelled:
-                    break
-
-                if item_result:
-                    results.append(item_result)
-                    self.item_completed.emit(item_result)
-                elif item_error:
-                    errors.append(f"{item_title}: {item_error}")
-                    item_rec = dict(item)
-                    if item_recovery_dir:
-                        item_rec['recovery_dir'] = item_recovery_dir
-                    failed_items.append(item_rec)
-                    self.status_message.emit(f"[{idx+1}/{total}] ОШИБКА: {item_error}")
-            except Exception as e:
-                errors.append(f"{item_title}: {e}")
-                failed_items.append(item)
-                self.status_message.emit(f"[{idx+1}/{total}] ОШИБКА: {e}")
-
-        self.results = results
-        self.errors = errors
-        self.failed_items = failed_items
-        self.total = total
-
-        if not self.is_cancelled:
-            recovery_dirs = [it.get('recovery_dir') for it in failed_items if it.get('recovery_dir')]
-            summary = {
-                'results': results,
-                'errors': errors,
-                'failed_items': failed_items,
-                'recovery_dirs': recovery_dirs,
-                'total': total,
-                'success_count': len(results),
-                'error_count': len(errors),
-                'is_partial': len(errors) > 0 and len(results) > 0,
-                'is_all_failed': len(results) == 0 and len(errors) > 0,
-                'is_full_success': len(results) > 0 and len(errors) == 0
-            }
-            if results and not errors:
-                self.progress_updated.emit({
-                    'percent': 100.0,
-                    'speed_str': "ГОТОВО",
-                    'eta_str': "00:00",
-                    'downloaded_str': f"{len(results)}/{total} готово",
-                    'total_str': f"{total} файлов",
-                    'status': 'finished'
-                })
-                self.batch_completed.emit(results)
-                self.batch_summary.emit(summary)
-            elif results and errors:
-                pct = (len(results) / total) * 100.0
-                self.progress_updated.emit({
-                    'percent': pct,
-                    'speed_str': f"ЧАСТИЧНО ({len(results)}/{total})",
-                    'eta_str': "00:00",
-                    'downloaded_str': f"{len(results)}/{total} (ошибок: {len(errors)})",
-                    'total_str': f"{total} в очереди",
-                    'status': 'finished_with_errors'
-                })
-                self.batch_completed.emit(results)
-                self.batch_summary.emit(summary)
-            elif errors:
-                self.progress_updated.emit({
-                    'percent': 0.0,
-                    'speed_str': "СБОЙ ОЧЕРЕДИ",
-                    'eta_str': "00:00",
-                    'downloaded_str': f"0/{total} (ошибок: {len(errors)})",
-                    'total_str': f"{total} в очереди",
-                    'status': 'error'
-                })
-                self.download_error.emit("\n".join(errors))
-                self.batch_summary.emit(summary)
+            if item_result:
+                result = {**item_result, "item_id": item["item_id"], "save_dir": self.save_dir,
+                          "format_type": Path(item_result.get("file_path", "")).suffix.lstrip(".").upper()}
+                results.append(result)
+                self.item_completed.emit(result)
+                state(item, "completed", result=result, percent=100)
+                overall = (idx + 1) / max(1, total) * 100
+                self.progress_updated.emit({"percent": overall, "speed_str": "ГОТОВО", "eta_str": "--:--",
+                                            "downloaded_str": f"{len(results)}/{total} готово",
+                                            "total_str": f"{total} файлов", "status": "processing"})
+            elif self.is_cancelled:
+                pending.extend(self.items[idx:])
+                break
             else:
-                self.download_error.emit("Очередь пуста или отменена.")
+                item_error = item_error or "Обработка завершилась без сохранённого файла."
+                errors.append(f"{title}: {item_error}")
+                snapshot = copy.deepcopy(item)
+                if recovery_dir:
+                    snapshot["recovery_dir"] = recovery_dir
+                failed.append(snapshot)
+                state(item, "error", error=item_error, recovery_dir=recovery_dir)
+                on_status(f"Ошибка: {item_error}")
+
+        for item in pending:
+            state(item, "cancelled")
+        self.results, self.errors, self.failed_items = results, errors, failed
+        cancelled = self.is_cancelled
+        status = "cancelled" if cancelled else ("finished_with_errors" if results and errors else "error" if errors else "finished")
+        self.progress_updated.emit({"percent": len(results) / max(1, total) * 100,
+                                    "speed_str": "ОСТАНОВЛЕНО" if cancelled else f"ЧАСТИЧНО ({len(results)}/{total})" if errors and results else "СБОЙ ОЧЕРЕДИ" if errors else "ГОТОВО",
+                                    "eta_str": "00:00", "downloaded_str": f"{len(results)}/{total} готово",
+                                    "total_str": f"{total} файлов", "status": status})
+        summary = {"results": results, "errors": errors, "failed_items": failed,
+                   "pending_items": copy.deepcopy(pending), "retry_items": copy.deepcopy(failed + pending),
+                   "recovery_dirs": [it["recovery_dir"] for it in failed if it.get("recovery_dir")],
+                   "save_dir": self.save_dir, "total": total, "success_count": len(results),
+                   "error_count": len(errors), "cancelled": cancelled,
+                   "is_partial": bool(results and (errors or pending)), "is_all_failed": not results and bool(errors),
+                   "is_full_success": bool(results) and not errors and not cancelled}
+        if results:
+            self.batch_completed.emit(results)
+        elif errors and not cancelled:
+            self.download_error.emit("\n".join(errors))
+        self.batch_summary.emit(summary)

@@ -1,5 +1,7 @@
+import os
 import ctypes
 from ctypes import c_int, c_void_p, Structure, sizeof, byref
+
 
 class ACCENT_POLICY(Structure):
     _fields_ = [
@@ -72,12 +74,64 @@ class MARGINS(Structure):
         ('cyBottomHeight', c_int)
     ]
 
-def apply_acrylic_effect(hwnd: int, gradient_color: int = 0x400A0D12):
+
+WM_SETICON = 0x0080
+ICON_SMALL = 0
+ICON_BIG = 1
+IMAGE_ICON = 1
+LR_LOADFROMFILE = 0x00000010
+LR_DEFAULTSIZE = 0x00000040
+GCLP_HICON = -14
+GCLP_HICONSM = -34
+
+def set_native_window_icon(hwnd: int, icon_path: str):
     """
-    Applies real Acrylic frosted blur, native Windows 11 rounded corners, and native DWM animations.
+    Sets the native Win32 icons (both big 32/48px and small 16px) on the window HWND
+    and window class. Ensures the Windows Taskbar, Alt+Tab, and title area show the
+    exact icon even for custom frameless DWM windows.
+    """
+    if not icon_path or not os.path.exists(icon_path):
+        return None, None
+    try:
+        user32 = ctypes.windll.user32
+        h_icon_big = user32.LoadImageW(
+            None, str(icon_path), IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE
+        )
+        h_icon_small = user32.LoadImageW(
+            None, str(icon_path), IMAGE_ICON, 16, 16, LR_LOADFROMFILE
+        )
+
+        SetClassLongPtr = getattr(user32, 'SetClassLongPtrW', None) or getattr(user32, 'SetClassLongW')
+
+        if h_icon_big:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, h_icon_big)
+            try:
+                SetClassLongPtr(ctypes.c_void_p(hwnd), GCLP_HICON, ctypes.c_void_p(h_icon_big))
+            except Exception:
+                pass
+
+        if h_icon_small:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, h_icon_small)
+            try:
+                SetClassLongPtr(ctypes.c_void_p(hwnd), GCLP_HICONSM, ctypes.c_void_p(h_icon_small))
+            except Exception:
+                pass
+
+        return h_icon_big, h_icon_small
+    except Exception as e:
+        print(f"Failed to set native window icon: {e}")
+        return None, None
+
+def apply_acrylic_effect(hwnd: int, gradient_color: int = 0x400A0D12, icon_path: str = None):
+    """
+    Applies real Acrylic frosted blur, native Windows 11 rounded corners, native DWM animations,
+    and sets native Win32 icons for proper Taskbar and Alt+Tab rendering.
     """
     try:
         enable_native_window_animations(hwnd)
+
+        if icon_path:
+            set_native_window_icon(hwnd, icon_path)
 
         # 1. Extend DWM frame into client area for seamless rounded corners (ELIMINATES BLACK SQUARES!)
         try:

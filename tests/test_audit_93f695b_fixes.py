@@ -7,6 +7,7 @@ from unittest.mock import patch, MagicMock
 
 from core.downloader import DownloadWorker
 from core.media_converter import cleanup_aura_temp_files
+from core.temp_files import OwnedDirectory
 
 
 class TestAudit93f695bFixes(unittest.TestCase):
@@ -212,8 +213,9 @@ class TestAudit93f695bFixes(unittest.TestCase):
         or when max_age_hours <= 0.
         """
         # Create an orphaned staging dir in self.save_dir
-        old_staging = os.path.join(self.save_dir, ".aura_staging_old123")
-        os.makedirs(old_staging, exist_ok=True)
+        old_session = OwnedDirectory(self.save_dir, ".aura_staging_", "staging")
+        old_staging = str(old_session.path)
+        old_session.release()
         with open(os.path.join(old_staging, "stale.part"), "w") as f:
             f.write("stale")
 
@@ -221,8 +223,9 @@ class TestAudit93f695bFixes(unittest.TestCase):
         past_time = time.time() - (26 * 3600)
         os.utime(old_staging, (past_time, past_time))
 
-        fresh_staging = os.path.join(self.save_dir, ".aura_staging_fresh456")
-        os.makedirs(fresh_staging, exist_ok=True)
+        fresh_session = OwnedDirectory(self.save_dir, ".aura_staging_", "staging")
+        fresh_staging = str(fresh_session.path)
+        fresh_session.release()
 
         # 1. Cleanup with max_age_hours=24 should delete old_staging, keep fresh_staging
         cleaned = cleanup_aura_temp_files(max_age_hours=24, extra_dirs=[self.save_dir])

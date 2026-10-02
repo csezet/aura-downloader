@@ -35,6 +35,14 @@ except Exception:
 
 from ui.main_window import MainWindow
 from core.media_converter import cleanup_aura_temp_files
+from core.temp_files import release_cache_session
+from core.workers import shutdown_background_tasks
+
+
+def finalize_background_work():
+    shutdown_background_tasks()
+    release_cache_session()
+    cleanup_aura_temp_files(max_age_hours=0)
 
 def main():
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
@@ -46,7 +54,7 @@ def main():
     # Clean up any leftover temporary proxies/thumbs
     try:
         cleanup_aura_temp_files(max_age_hours=24)
-        app.aboutToQuit.connect(lambda: cleanup_aura_temp_files(max_age_hours=0))
+        app.aboutToQuit.connect(finalize_background_work)
     except Exception:
         pass
 
@@ -59,6 +67,8 @@ def main():
         app.setWindowIcon(QIcon(icon_path))
 
     window = MainWindow(icon_path=icon_path)
+    if os.path.exists(icon_path):
+        window.setWindowIcon(QIcon(icon_path))
     window.show()
 
     sys.exit(app.exec())

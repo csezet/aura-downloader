@@ -95,6 +95,8 @@ class TestStage1P0Fixes(unittest.TestCase):
         local_processes = []
 
         def mock_download_worker_init(self, url, options, save_dir):
+            from PySide6.QtCore import QThread
+            QThread.__init__(self)
             self.url = url
             self.options = options
             self.save_dir = save_dir

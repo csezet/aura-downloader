@@ -14,4 +14,4 @@ ElseIf fso.FileExists(hermesPython) Then
 End If
 
 cmd = """" & pythonExe & """ """ & scriptDir & "\main.pyw"""
-WshShell.Run cmd, 0, False
+WshShell.Run cmd, 1, False

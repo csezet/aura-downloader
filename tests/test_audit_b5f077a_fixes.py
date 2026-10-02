@@ -221,9 +221,17 @@ class TestAuditB5F077AFixes(unittest.TestCase):
             self.assertEqual(mock_run.call_args[0][0][0], dummy_ffprobe)
 
             # 3. get_or_create_preview_proxy for hevc
-            with patch('core.media_converter.get_video_codec', return_value='hevc'):
+            real_stat = os.stat
+            from types import SimpleNamespace
+            def source_stat(path, *args, **kwargs):
+                if str(path) == 'video.mp4':
+                    return SimpleNamespace(st_mtime_ns=1, st_size=1)
+                return real_stat(path, *args, **kwargs)
+            with patch('core.media_converter.get_video_codec', return_value='hevc'), \
+                 patch('core.media_converter.os.stat', side_effect=source_stat), \
+                 patch('core.media_converter.run_ffmpeg_cancellable', return_value=False) as mock_proxy:
                 get_or_create_preview_proxy("video.mp4")
-                self.assertEqual(mock_run.call_args[0][0][0], dummy_ffmpeg)
+                self.assertEqual(mock_proxy.call_args[0][0][0], dummy_ffmpeg)
 
             # 4. get_local_media_info thumbnail generation
             with patch('core.local_processor.get_video_duration', return_value=5.0), \

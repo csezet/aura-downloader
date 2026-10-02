@@ -10,13 +10,14 @@ import yt_dlp
 from yt_dlp.extractor.instagram import InstagramIE
 from core.settings import settings
 from core.cookies_helper import get_cookies_config
-import tempfile
 import json
 from core.media_converter import (
     convert_to_gif, compress_to_target_size, crop_video, get_unique_path,
-    get_unique_base_for_group, get_video_duration, probe_video_stream, get_ffmpeg_path
+    get_unique_base_for_group, get_video_duration, probe_video_stream, get_ffmpeg_path, transform_video
 )
 from core.interpolator import interpolate_video
+from core.media_options import parse_time_str, trim_range, resolution_bounds
+from core.temp_files import OwnedDirectory, OWNER_FILE, LOCK_FILE, remove_owned_directory
 
 def format_bytes(bytes_val):
     if bytes_val is None or bytes_val <= 0:
@@ -35,22 +36,6 @@ def format_seconds(seconds_val):
     if h > 0:
         return f"{h:02d}:{m:02d}:{s:02d}"
     return f"{m:02d}:{s:02d}"
-
-def parse_time_str(time_str):
-    if not time_str:
-        return None
-    time_str = time_str.strip()
-    parts = time_str.split(":")
-    try:
-        if len(parts) == 1:
-            return float(parts[0])
-        elif len(parts) == 2:
-            return float(parts[0]) * 60 + float(parts[1])
-        elif len(parts) == 3:
-            return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
-    except Exception:
-        return None
-    return None
 
 def detect_platform(url):
     url_lower = url.lower()
@@ -112,6 +97,7 @@ class MetadataWorker(QThread):
             'geo_bypass': True,
             'http_headers': DEFAULT_HTTP_HEADERS,
             'extractor_args': DEFAULT_EXTRACTOR_ARGS,
+            'socket_timeout': 10,
         }
         cookies = get_cookies_config()
         if cookies:
@@ -126,6 +112,8 @@ class MetadataWorker(QThread):
 
             for try_url in urls_to_try:
                 for with_cookies in [True, False]:
+                    if self.is_cancelled:
+                        return
                     try:
                         cur_opts = dict(ydl_opts)
                         if not with_cookies and 'cookiesfrombrowser' in cur_opts:
@@ -399,6 +387,7 @@ class DownloadWorker(QThread):
 
     def run(self):
         staging_dir = None
+        staging_session = None
         download_succeeded = False
         preserve_staging_for_recovery = False
         try:
@@ -410,6 +399,7 @@ class DownloadWorker(QThread):
             trim_start = self.options.get('trim_start', '')
             trim_end = self.options.get('trim_end', '')
 
+            trim_range(self.options)
             os.makedirs(self.save_dir, exist_ok=True)
 
             # Direct Image / Instagram Photo or Direct Video Download
@@ -449,7 +439,9 @@ class DownloadWorker(QThread):
 
                 title = self.options.get('title') or ("Instagram_Video" if is_direct_video else "Instagram_Photo")
                 clean_title = re.sub(r'[^\w\-]', '_', title)
-                file_path = get_unique_path(os.path.join(self.save_dir, f"{clean_title}.{media_ext}"))
+                staging_session = OwnedDirectory(self.save_dir, ".aura_staging_", "staging")
+                staging_dir = str(staging_session.path)
+                file_path = os.path.join(staging_dir, f"{clean_title}.{media_ext}")
                 part_path = f"{file_path}.part"
 
                 try:
@@ -462,7 +454,7 @@ class DownloadWorker(QThread):
                             dt = time.time() - t0
                             speed = downloaded_bytes / dt if dt > 0 else 0
                             speed_str = f"{speed / (1024 * 1024):.1f} MB/s" if speed > 0 else "-- MB/s"
-                            pct = (downloaded_bytes / total_bytes * 100.0) if total_bytes > 0 else 100.0
+                            pct = min(100.0, downloaded_bytes / total_bytes * 100.0) if total_bytes > 0 else 0.0
                             self.progress_updated.emit({
                                 'percent': pct,
                                 'speed_str': speed_str,
@@ -487,8 +479,6 @@ class DownloadWorker(QThread):
                         except Exception:
                             raise Exception("Скачанный файл не является корректным изображением.")
 
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
                     os.rename(part_path, file_path)
                 except Exception as ex:
                     if os.path.exists(part_path):
@@ -497,7 +487,33 @@ class DownloadWorker(QThread):
                         except Exception:
                             pass
                     raise ex
+                finally:
+                    resp.close()
 
+                if is_direct_video and (mode != "best" or self.options.get("trim_enabled") or
+                                        self.options.get("crop_enabled") or self.options.get("smooth_enabled") or
+                                        target_clean.endswith((".mkv", ".webm"))):
+                    from core.local_processor import process_single_local_file
+                    processed = process_single_local_file(file_path, self.options, staging_dir,
+                                                          status_cb=self.status_message.emit,
+                                                          progress_cb=self.progress_updated.emit,
+                                                          is_cancelled_cb=lambda: self.is_cancelled)
+                    if not processed or self.is_cancelled:
+                        return
+                    file_path = processed["file_path"]
+                if self.is_cancelled:
+                    return
+                while True:
+                    destination = get_unique_path(os.path.join(self.save_dir, Path(file_path).name))
+                    try:
+                        os.rename(file_path, destination)
+                        file_path = destination
+                        break
+                    except FileExistsError:
+                        continue
+                if self.is_cancelled:
+                    os.remove(file_path)
+                    return
                 file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
                 self.download_completed.emit({
                     'title': title,
@@ -506,12 +522,13 @@ class DownloadWorker(QThread):
                     'file_size': file_size,
                     'file_size_str': format_bytes(file_size),
                     'thumbnail': file_path if not is_direct_video else None,
-                    'mode': 'MP4' if is_direct_video else 'JPG'
+                    'mode': Path(file_path).suffix.lstrip('.').upper() if is_direct_video else 'JPG'
                 })
                 return
 
             # Network video download via yt-dlp using isolated staging folder to prevent collision
-            staging_dir = tempfile.mkdtemp(prefix=".aura_staging_", dir=self.save_dir)
+            staging_session = OwnedDirectory(self.save_dir, ".aura_staging_", "staging")
+            staging_dir = str(staging_session.path)
             out_template = os.path.join(staging_dir, '%(title)s [%(id)s].%(ext)s')
 
             ydl_opts = {
@@ -526,6 +543,7 @@ class DownloadWorker(QThread):
                 'geo_bypass': True,
                 'http_headers': DEFAULT_HTTP_HEADERS,
                 'extractor_args': DEFAULT_EXTRACTOR_ARGS,
+                'socket_timeout': 10,
             }
 
             cookies = get_cookies_config()
@@ -536,14 +554,12 @@ class DownloadWorker(QThread):
             if ffmpeg_exe and (shutil.which(ffmpeg_exe) or os.path.isfile(ffmpeg_exe)):
                 ydl_opts['ffmpeg_location'] = ffmpeg_exe
 
-            # Trimmer section
+            # Validate ranges before network work; yt-dlp performs the download-side cut.
             if trim_enabled and (trim_start or trim_end):
-                start_sec = parse_time_str(trim_start) or 0
-                end_sec = parse_time_str(trim_end)
-                if end_sec is not None and end_sec > start_sec:
-                    ydl_opts['download_ranges'] = yt_dlp.utils.download_range_func(None, [(start_sec, end_sec)])
-                elif start_sec > 0:
-                    ydl_opts['download_ranges'] = yt_dlp.utils.download_range_func(None, [(start_sec, float('inf'))])
+                start_sec, end_sec = trim_range(self.options)
+                ydl_opts['download_ranges'] = yt_dlp.utils.download_range_func(
+                    None, [(start_sec, end_sec if end_sec is not None else float('inf'))])
+                ydl_opts['force_keyframes_at_cuts'] = True
 
             # Subtitle support
             download_subs = self.options.get('download_subs', settings.get('download_subtitles', False))
@@ -572,14 +588,14 @@ class DownloadWorker(QThread):
                 })
             elif mode == 'video_only':
                 if target_res:
-                    height_match = re.search(r'(\d+)p', target_res)
-                    h = height_match.group(1) if height_match else '1080'
+                    bounds = resolution_bounds(target_res)
+                    h = bounds[-1]
                     ydl_opts['format'] = f'bestvideo[height<={h}]/bestvideo'
                 else:
                     ydl_opts['format'] = 'bestvideo/best'
             elif mode == 'custom' and target_res:
-                height_match = re.search(r'(\d+)p', target_res)
-                h = height_match.group(1) if height_match else '1080'
+                bounds = resolution_bounds(target_res)
+                h = bounds[-1]
                 ydl_opts.update({
                     'format': f'bestvideo[height<={h}]+bestaudio/best[height<={h}]/best',
                     'merge_output_format': 'mp4',
@@ -643,7 +659,7 @@ class DownloadWorker(QThread):
             if not os.path.exists(final_path) and staging_dir and os.path.exists(staging_dir):
                 for f in os.listdir(staging_dir):
                     candidate = os.path.join(staging_dir, f)
-                    if os.path.isfile(candidate) and not candidate.endswith('.part') and not any(candidate.endswith(ext) for ext in ['.srt', '.vtt', '.lrc', '.ass']):
+                    if os.path.isfile(candidate) and not f.startswith('.') and not candidate.endswith('.part') and not any(candidate.endswith(ext) for ext in ['.srt', '.vtt', '.lrc', '.ass']):
                         final_path = candidate
                         break
 
@@ -653,36 +669,21 @@ class DownloadWorker(QThread):
             if self.is_cancelled:
                 return
 
-            # GIF post processing
-            if mode == 'gif' and os.path.exists(final_path):
-                self.status_message.emit("Конвертация в GIF...")
-                gif_path = convert_to_gif(final_path, is_cancelled_cb=lambda: self.is_cancelled)
-                if not gif_path or self.is_cancelled:
+            needs_transform = mode == "video_only" or (mode == "custom" and target_res)
+            if needs_transform:
+                self.status_message.emit("Применение разрешения и параметров видео...")
+                transformed = transform_video(final_path, {**self.options, "trim_enabled": False},
+                                              is_cancelled_cb=lambda: self.is_cancelled)
+                if not transformed or self.is_cancelled:
                     return
-                if gif_path != final_path:
-                    try:
-                        os.remove(final_path)
-                    except Exception:
-                        pass
-                final_path = gif_path
-
-            # Discord compression post processing
-            elif mode == 'discord_8mb' and os.path.exists(final_path):
-                self.status_message.emit("Сжатие для Discord (< 8 МБ)...")
-                comp_path = compress_to_target_size(final_path, target_mb=7.8, is_cancelled_cb=lambda: self.is_cancelled)
-                if not comp_path or self.is_cancelled:
-                    return
-                if comp_path != final_path:
-                    try:
-                        os.remove(final_path)
-                    except Exception:
-                        pass
-                final_path = comp_path
+                if transformed != final_path:
+                    os.remove(final_path)
+                final_path = transformed
 
             # Crop post processing
             crop_enabled = self.options.get('crop_enabled', False)
             crop_params = self.options.get('crop_params')
-            if crop_enabled and crop_params and mode != 'audio_only' and os.path.exists(final_path):
+            if crop_enabled and crop_params and mode != 'audio_only' and not needs_transform and os.path.exists(final_path):
                 self.status_message.emit("Кадрирование видео (FFmpeg Crop)...")
                 cropped_path = crop_video(final_path, crop_params, is_cancelled_cb=lambda: self.is_cancelled)
                 if not cropped_path or self.is_cancelled:
@@ -699,7 +700,8 @@ class DownloadWorker(QThread):
             smooth_fps = self.options.get('smooth_fps', 60)
             smooth_model = self.options.get('smooth_model', 'auto')
             if smooth_enabled and mode not in ['audio_only', 'gif'] and os.path.exists(final_path):
-                self.status_message.emit(f"AI Увеличение плавности ({smooth_fps} FPS)...")
+                fps_label = "2x" if smooth_fps == 0 else f"{smooth_fps} FPS"
+                self.status_message.emit(f"Увеличение плавности ({fps_label})...")
                 smooth_path = interpolate_video(
                     final_path,
                     target_fps=smooth_fps,
@@ -716,6 +718,33 @@ class DownloadWorker(QThread):
                         pass
                 final_path = smooth_path
 
+            # GIF post processing
+            if mode == 'gif' and os.path.exists(final_path):
+                self.status_message.emit("Конвертация в GIF...")
+                gif_path = convert_to_gif(final_path, is_cancelled_cb=lambda: self.is_cancelled)
+                if not gif_path or self.is_cancelled:
+                    return
+                if gif_path != final_path:
+                    try:
+                        os.remove(final_path)
+                    except Exception:
+                        pass
+                final_path = gif_path
+
+            # Discord compression post processing
+            elif mode in ('discord_8mb', 'telegram_50mb') and os.path.exists(final_path):
+                self.status_message.emit("Сжатие до выбранного лимита...")
+                comp_path = compress_to_target_size(final_path, target_mb=7.8 if mode == "discord_8mb" else 49.0, is_cancelled_cb=lambda: self.is_cancelled)
+                if not comp_path or self.is_cancelled:
+                    return
+                if comp_path != final_path:
+                    try:
+                        os.remove(final_path)
+                    except Exception:
+                        pass
+                final_path = comp_path
+
+
             if self.is_cancelled:
                 return
 
@@ -723,7 +752,7 @@ class DownloadWorker(QThread):
                 # Search inside staging_dir for any matching media file if name changed
                 for f in os.listdir(staging_dir):
                     candidate = os.path.join(staging_dir, f)
-                    if os.path.isfile(candidate) and not candidate.endswith('.part') and not any(candidate.endswith(ext) for ext in ['.srt', '.vtt', '.lrc', '.ass']):
+                    if os.path.isfile(candidate) and not f.startswith('.') and not candidate.endswith('.part') and not any(candidate.endswith(ext) for ext in ['.srt', '.vtt', '.lrc', '.ass']):
                         final_path = candidate
                         break
 
@@ -737,6 +766,8 @@ class DownloadWorker(QThread):
             sidecar_files = []
             if os.path.exists(staging_dir):
                 for f in sorted(os.listdir(staging_dir)):
+                    if f in (OWNER_FILE, LOCK_FILE):
+                        continue
                     full_p = os.path.join(staging_dir, f)
                     if not os.path.isfile(full_p) or full_p.endswith('.part') or full_p == final_path:
                         continue
@@ -782,7 +813,7 @@ class DownloadWorker(QThread):
                 if os.path.exists(staging_dir):
                     try:
                         for item_name in os.listdir(staging_dir):
-                            if item_name.startswith(".aura_recovery"):
+                            if item_name.startswith("."):
                                 continue
                             item_p = os.path.join(staging_dir, item_name)
                             if os.path.isfile(item_p):
@@ -876,11 +907,13 @@ class DownloadWorker(QThread):
             if not self.is_cancelled:
                 self.download_error.emit(str(e))
         finally:
+            if staging_session:
+                staging_session.release()
             if staging_dir and os.path.exists(staging_dir):
                 if not preserve_staging_for_recovery:
                     for _ in range(3):
                         try:
-                            shutil.rmtree(staging_dir, ignore_errors=True)
+                            remove_owned_directory(staging_dir, self.save_dir, "staging")
                             if not os.path.exists(staging_dir):
                                 break
                             time.sleep(0.05)
@@ -889,9 +922,10 @@ class DownloadWorker(QThread):
 
 
 class GalleryDownloadWorker(QThread):
-    progress_updated = Signal(float, str, str, str, str)  # percent, speed, eta, downloaded, total
+    progress_updated = Signal(dict)
     item_completed = Signal(dict)
     batch_completed = Signal(list)
+    batch_summary = Signal(dict)
     download_error = Signal(str)
     status_message = Signal(str)
 
@@ -900,12 +934,17 @@ class GalleryDownloadWorker(QThread):
         self.items = items
         self.save_dir = save_dir
         self.is_cancelled = False
+        self.results = []
+        self.errors = []
+        self.failed_items = []
+        self.total = len(items)
 
     def cancel(self):
         self.is_cancelled = True
 
     def run(self):
         os.makedirs(self.save_dir, exist_ok=True)
+        self.failed_items = []
         total_items = len(self.items)
         if total_items == 0:
             return
@@ -939,6 +978,7 @@ class GalleryDownloadWorker(QThread):
                 download_url = item.get('best_image') or item.get('url')
 
             part_path = f"{file_path}.part"
+            resp = None
 
             try:
                 resp = requests.get(download_url, headers=headers, stream=True, timeout=25)
@@ -957,15 +997,14 @@ class GalleryDownloadWorker(QThread):
                         speed = downloaded_bytes / dt if dt > 0 else 0
                         speed_str = f"{speed / (1024 * 1024):.1f} MB/s" if speed > 0 else "-- MB/s"
 
-                        item_pct = (downloaded_bytes / total_bytes) if total_bytes > 0 else 1.0
+                        item_pct = min(1.0, downloaded_bytes / total_bytes) if total_bytes > 0 else 0.0
                         overall_pct = ((i + item_pct) / total_items) * 100.0
-                        self.progress_updated.emit(
-                            overall_pct,
-                            speed_str,
-                            "--:--",
-                            format_bytes(downloaded_bytes),
-                            format_bytes(total_bytes) if total_bytes > 0 else "--"
-                        )
+                        self.progress_updated.emit({
+                            'percent': min(100.0, overall_pct), 'speed_str': speed_str, 'eta_str': "--:--",
+                            'downloaded_str': format_bytes(downloaded_bytes),
+                            'total_str': format_bytes(total_bytes) if total_bytes > 0 else "--",
+                            'status': 'downloading'
+                        })
 
                 if self.is_cancelled:
                     if os.path.exists(part_path):
@@ -990,10 +1029,13 @@ class GalleryDownloadWorker(QThread):
                     except Exception:
                         raise Exception(f"Файл {filename} не является корректным изображением.")
 
-                file_path = get_unique_path(file_path)
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-                os.rename(part_path, file_path)
+                while True:
+                    file_path = get_unique_path(file_path)
+                    try:
+                        os.rename(part_path, file_path)
+                        break
+                    except FileExistsError:
+                        continue
 
                 file_size = os.path.getsize(file_path)
                 default_title = f"Instagram {'Видео' if is_video else 'Фото'} #{i + 1}"
@@ -1008,6 +1050,10 @@ class GalleryDownloadWorker(QThread):
                 }
                 results.append(result_item)
                 self.item_completed.emit(result_item)
+                self.progress_updated.emit({'percent': (i + 1) / total_items * 100.0,
+                                            'speed_str': "ГОТОВО", 'eta_str': "--:--",
+                                            'downloaded_str': f"{len(results)}/{total_items} готово",
+                                            'total_str': f"{total_items} файлов", 'status': 'downloading'})
 
             except Exception as e:
                 if os.path.exists(part_path):
@@ -1017,7 +1063,11 @@ class GalleryDownloadWorker(QThread):
                         pass
                 err_msg = f"{filename}: {e}"
                 errors.append(err_msg)
-                self.download_error.emit(f"Ошибка при скачивании: {err_msg}")
+                self.failed_items.append(item)
+                self.status_message.emit(f"Ошибка при скачивании: {err_msg}")
+            finally:
+                if resp is not None:
+                    resp.close()
 
         self.results = results
         self.errors = errors
@@ -1027,8 +1077,13 @@ class GalleryDownloadWorker(QThread):
                 total_sz = sum(r['file_size'] for r in results)
                 pct = 100.0 if not errors else ((len(results) / total_items) * 100.0)
                 speed_txt = "0 MB/s" if not errors else f"ЧАСТИЧНО ({len(results)}/{total_items})"
-                self.progress_updated.emit(pct, speed_txt, "00:00", format_bytes(total_sz), format_bytes(total_sz))
+                self.progress_updated.emit({'percent': pct, 'speed_str': speed_txt, 'eta_str': "00:00",
+                                            'downloaded_str': format_bytes(total_sz), 'total_str': format_bytes(total_sz),
+                                            'status': 'finished' if not errors else 'partial'})
                 self.batch_completed.emit(results)
             elif errors:
                 self.download_error.emit("\n".join(errors))
+            self.batch_summary.emit({'results': results, 'errors': errors, 'failed_items': self.failed_items,
+                                     'total': total_items, 'success_count': len(results),
+                                     'is_partial': bool(results and errors), 'is_all_failed': not results and bool(errors)})
 
