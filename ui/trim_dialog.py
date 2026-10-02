@@ -64,6 +64,12 @@ def ms_to_fmt(ms: int) -> str:
     return result + (f".{fraction:03d}".rstrip('0') if fraction else '')
 
 
+def ms_to_clock(ms: int) -> str:
+    hours, remainder = divmod(max(0, int(ms)) // 1000, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f'{hours:02d}:{minutes:02d}:{seconds:02d}'
+
+
 class TrimDialog(WorkerDialog):
     def __init__(self, parent=None, video_source=None, duration_sec: float = 60, initial_start="00:00", initial_end=None):
         super().__init__(parent)
@@ -242,7 +248,8 @@ class TrimDialog(WorkerDialog):
         play_bar.addStretch()
 
         # Current Time / Duration Badge
-        self.time_lbl = QLabel("00:00 / 00:00")
+        self.time_lbl = QLabel("00:00:00 / 00:00:00")
+        self.time_lbl.setToolTip("Текущая позиция / длительность — часы:минуты:секунды")
         self.time_lbl.setStyleSheet("""
             color: #FFFFFF;
             font-size: 12px;
@@ -447,14 +454,14 @@ class TrimDialog(WorkerDialog):
             self.timeline_slider.set_range(self.start_ms, self.end_ms)
             self.timeline_slider.set_current_position(self.current_pos_ms)
             self._update_badges()
-            self.time_lbl.setText(f"{ms_to_fmt(self.current_pos_ms)} / {ms_to_fmt(self.duration_ms)}")
+            self.time_lbl.setText(f"{ms_to_clock(self.current_pos_ms)} / {ms_to_clock(self.duration_ms)}")
 
     def _on_player_position_changed(self, pos_ms: int):
         if pos_ms < 0 or pos_ms > self.duration_ms:
             return
         self.current_pos_ms = pos_ms
         self.timeline_slider.set_current_position(pos_ms)
-        self.time_lbl.setText(f"{ms_to_fmt(pos_ms)} / {ms_to_fmt(self.duration_ms)}")
+        self.time_lbl.setText(f"{ms_to_clock(pos_ms)} / {ms_to_clock(self.duration_ms)}")
 
         # Loop check within trimmed range (or when reaching end)
         loop_target = self.end_ms - 80 if self.duration_ms > 500 else self.end_ms
@@ -488,7 +495,7 @@ class TrimDialog(WorkerDialog):
         player_pos = min(pos_ms, safe_max)
         self.player.setPosition(player_pos)
         self.timeline_slider.set_current_position(pos_ms)
-        self.time_lbl.setText(f"{ms_to_fmt(pos_ms)} / {ms_to_fmt(self.duration_ms)}")
+        self.time_lbl.setText(f"{ms_to_clock(pos_ms)} / {ms_to_clock(self.duration_ms)}")
 
     def _seek_relative(self, delta_ms: int):
         cur = self.current_pos_ms

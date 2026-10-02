@@ -36,11 +36,6 @@ class CropCanvas(QWidget):
 
     def set_source_image(self, pixmap: QPixmap, source_w: int = 1920, source_h: int = 1080):
         self.pixmap = pixmap
-        if pixmap and not pixmap.isNull():
-            pix_is_portrait = pixmap.height() > pixmap.width()
-            source_is_portrait = source_h > source_w
-            if pix_is_portrait != source_is_portrait:
-                source_w, source_h = source_h, source_w
         self.source_width = source_w if source_w > 0 else (pixmap.width() if pixmap else 1920)
         self.source_height = source_h if source_h > 0 else (pixmap.height() if pixmap else 1080)
         self.update()
@@ -321,11 +316,6 @@ class CropDialog(QDialog):
         self.setMinimumSize(720, 520)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
-        if pixmap and not pixmap.isNull():
-            pix_is_portrait = pixmap.height() > pixmap.width()
-            source_is_portrait = source_h > source_w
-            if pix_is_portrait != source_is_portrait:
-                source_w, source_h = source_h, source_w
 
         self.source_w = source_w
         self.source_h = source_h

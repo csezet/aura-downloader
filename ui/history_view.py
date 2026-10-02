@@ -7,6 +7,20 @@ from PySide6.QtCore import Qt, QSize
 from core.history import history
 from assets.icons import get_svg_icon
 
+
+class ElidedLabel(QLabel):
+    def __init__(self, text, parent=None, elide_mode=Qt.ElideMiddle):
+        super().__init__(text, parent)
+        self.full_text = text
+        self.elide_mode = elide_mode
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setMinimumWidth(0)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        QLabel.setText(self, self.fontMetrics().elidedText(self.full_text, self.elide_mode, self.contentsRect().width()))
+
+
 class HistoryItemWidget(QFrame):
     def __init__(self, item: dict, parent=None):
         super().__init__(parent)
@@ -52,15 +66,18 @@ class HistoryItemWidget(QFrame):
         info_layout.setSpacing(3)
 
         title = item.get("title", "Без названия")
-        self.title_lbl = QLabel(title)
+        self.title_lbl = ElidedLabel(title, elide_mode=Qt.ElideRight)
         self.title_lbl.setStyleSheet("font-size: 12px; font-weight: 700; color: #FFFFFF; background: transparent; border: none;")
-        self.title_lbl.setWordWrap(True)
+        self.title_lbl.setMinimumWidth(0)
+        self.title_lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.title_lbl.setToolTip(title)
         info_layout.addWidget(self.title_lbl)
 
         short_path = os.path.basename(file_path) if file_path else ""
         status_text = f"📁 {short_path}" if file_exists else "⚠️ Файл перемещен или удален"
         status_color = "#71717A" if file_exists else "#EF4444"
-        self.sub_lbl = QLabel(status_text)
+        self.sub_lbl = ElidedLabel(status_text)
+        self.sub_lbl.setToolTip(file_path if file_exists else status_text)
         self.sub_lbl.setStyleSheet(f"font-size: 10px; color: {status_color}; font-family: 'Consolas', monospace; background: transparent; border: none;")
         info_layout.addWidget(self.sub_lbl)
 

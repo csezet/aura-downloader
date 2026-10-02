@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QComboBox, QFrame, QApplication,
     QSizePolicy, QFileDialog, QSizeGrip, QGridLayout
 )
-from PySide6.QtCore import Qt, QSize, QEvent, QTimer
+from PySide6.QtCore import Qt, QSize, QEvent, QTimer, Slot
 from PySide6.QtGui import QColor, QPixmap, QIcon, QShortcut, QKeySequence
 
 from core.settings import settings
@@ -1007,7 +1007,9 @@ class MainWindow(QMainWindow):
             try:
                 validate_item(item)
             except (ValueError, OSError) as error:
-                self._show_input_error(f"{item.get('title', 'Файл')}: {error}")
+                message = f"{item.get('title', 'Файл')}: {error}"
+                self._show_input_error(message)
+                self.progress_widget.set_error(message)
                 return
         self._launch_queue(items, settings.get('download_dir'))
 
@@ -1026,11 +1028,24 @@ class MainWindow(QMainWindow):
         worker.progress_updated.connect(self.progress_widget.update_progress)
         worker.item_state_changed.connect(self.cards_list.update_item_state)
         worker.item_completed.connect(self._on_queue_item_completed)
-        worker.batch_summary.connect(lambda summary: self._receive_queue_summary(worker, summary))
-        worker.status_message.connect(lambda message: self.progress_widget.status_label.setText(message))
-        worker.finished.connect(lambda: self._finish_queue(worker))
+        worker.batch_summary.connect(self._on_queue_summary_received, Qt.QueuedConnection)
+        worker.status_message.connect(self._on_queue_status, Qt.QueuedConnection)
+        worker.finished.connect(self._on_queue_finished, Qt.QueuedConnection)
         self._track_worker(worker)
         start_worker(worker, self)
+
+    @Slot(dict)
+    def _on_queue_summary_received(self, summary):
+        self._receive_queue_summary(self.sender(), summary)
+
+    @Slot(str)
+    def _on_queue_status(self, message):
+        if self.sender() is self.download_worker:
+            self.progress_widget.status_label.setText(message)
+
+    @Slot()
+    def _on_queue_finished(self):
+        self._finish_queue(self.sender())
 
     def _receive_queue_summary(self, worker, summary):
         if worker is self.download_worker:
@@ -1042,9 +1057,10 @@ class MainWindow(QMainWindow):
             return
         if worker is not self.download_worker or self._closing:
             return
-        self._set_queue_busy(False)
         summary = self._pending_summary
         self._pending_summary = None
+        self.download_worker = None
+        self._set_queue_busy(False)
         if summary:
             self._on_batch_summary(summary)
         else:

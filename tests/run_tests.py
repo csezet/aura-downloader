@@ -25,6 +25,13 @@ def main():
         from core.workers import shutdown_background_tasks
         from core.temp_files import release_cache_session
         app = QApplication([])
+        # Offscreen Qt on Windows does not discover the native font database.
+        # Use the system UI fonts so layout checks measure real text, not boxes.
+        from PySide6.QtGui import QFontDatabase, QFont
+        fonts = Path(os.environ['SystemRoot']) / 'Fonts'
+        for name in ('segoeui.ttf', 'segoeuib.ttf', 'consola.ttf', 'consolab.ttf'):
+            QFontDatabase.addApplicationFont(str(fonts / name))
+        app.setFont(QFont('Segoe UI', 10))
         try:
             suite = unittest.defaultTestLoader.discover(str(PROJECT_DIR / "tests"))
             result = unittest.TextTestRunner(verbosity=2).run(suite)

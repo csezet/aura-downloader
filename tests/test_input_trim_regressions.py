@@ -79,9 +79,9 @@ class TestTrimTimeline(unittest.TestCase):
         slider = dialog.timeline_slider
         QTest.mouseClick(slider, Qt.LeftButton, pos=QPoint(400, 26))
         self.assertEqual(dialog.current_pos_ms, 900_000)
-        self.assertEqual(dialog.time_lbl.text(), '15:00 / 30:00')
+        self.assertEqual(dialog.time_lbl.text(), '00:15:00 / 00:30:00')
         dialog._on_player_position_changed(108_900_000)
-        self.assertEqual(dialog.time_lbl.text(), '15:00 / 30:00')
+        self.assertEqual(dialog.time_lbl.text(), '00:15:00 / 00:30:00')
         self.assertEqual(slider.duration_ms, 1_800_000)
         self.assertEqual(slider.current_pos_ms, 900_000)
         dialog._apply()

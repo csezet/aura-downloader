@@ -20,6 +20,7 @@ class CropWidget(QFrame):
         self._source_w = 1920
         self._source_h = 1080
         self._crop_params = None
+        self._crop_dialog = None
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 6, 12, 6)
@@ -104,11 +105,16 @@ class CropWidget(QFrame):
         self._preview_pixmap = pixmap
         self._source_w = width or 0
         self._source_h = height or 0
+        if self._crop_dialog and pixmap and not pixmap.isNull():
+            self._crop_dialog.canvas.set_source_image(pixmap, self._source_w, self._source_h)
 
     def _on_toggled(self, checked: bool):
         self.edit_btn.setEnabled(checked and self._source_w > 0 and self._source_h > 0)
         self.edit_btn.setIcon(get_svg_icon("crop", color="#FFFFFF" if checked else "#52525B", size=13))
-        self.status_tag.setVisible(checked and self._crop_params is not None)
+        params = self.get_crop_params()
+        self.status_tag.setVisible(checked and params is not None)
+        if params:
+            self.status_tag.setText(f"{params.get('w', self._source_w)}×{params.get('h', self._source_h)}")
         self.crop_toggled.emit(checked)
 
     def _open_crop_dialog(self):
@@ -121,7 +127,12 @@ class CropWidget(QFrame):
             source_h=self._source_h,
             initial_params=self._crop_params
         )
-        if dialog.exec() and dialog.applied_crop_params:
+        self._crop_dialog = dialog
+        try:
+            accepted = dialog.exec()
+        finally:
+            self._crop_dialog = None
+        if accepted and dialog.applied_crop_params:
             self._crop_params = dialog.applied_crop_params
             w = self._crop_params.get('w', self._source_w)
             h = self._crop_params.get('h', self._source_h)
@@ -135,4 +146,10 @@ class CropWidget(QFrame):
     def get_crop_params(self) -> dict:
         if not self.is_crop_enabled():
             return None
+        if self._crop_params is None and self._source_w and self._source_h:
+            # Enabling crop starts with the whole frame, just like the editor.
+            # Cancelling the editor leaves this valid selection in place.
+            return {'x': 0, 'y': 0, 'w': self._source_w, 'h': self._source_h,
+                    'x_norm': 0.0, 'y_norm': 0.0, 'w_norm': 1.0, 'h_norm': 1.0,
+                    'source_w': self._source_w, 'source_h': self._source_h}
         return self._crop_params

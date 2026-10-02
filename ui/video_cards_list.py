@@ -5,20 +5,21 @@ from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QWidget, QSizePolicy, QApplication, QCheckBox
 )
-from PySide6.QtCore import Qt, Signal, QSize, QByteArray
+from PySide6.QtCore import Qt, Signal, Slot, QSize, QByteArray
 from PySide6.QtGui import QPixmap, QImage, QPainter, QPainterPath
 import requests
 from assets.icons import get_svg_icon
 from core.workers import CancellableThread, start_worker, cancel_worker
 
 class ImageLoaderWorker(CancellableThread):
-    image_loaded = Signal(QPixmap)
+    image_loaded = Signal(QImage)
 
     def __init__(self, url):
         super().__init__()
         self.url = url
 
     def run(self):
+        resp = None
         try:
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
@@ -28,11 +29,13 @@ class ImageLoaderWorker(CancellableThread):
             if resp.status_code == 200 and not self.isInterruptionRequested():
                 image = QImage()
                 image.loadFromData(QByteArray(resp.content))
-                pixmap = QPixmap.fromImage(image)
-                if not self.isInterruptionRequested():
-                    self.image_loaded.emit(pixmap)
+                if not image.isNull() and not self.isInterruptionRequested():
+                    self.image_loaded.emit(image)
         except Exception:
             pass
+        finally:
+            if resp is not None:
+                resp.close()
 
 
 class VideoCardWidget(QFrame):
@@ -40,6 +43,7 @@ class VideoCardWidget(QFrame):
     card_clicked = Signal(str, object)  # item_id, mouse_event
     thumb_loaded = Signal(str, QPixmap)  # item_id, pixmap
     selection_toggled = Signal(str, bool)
+    selection_changed = Signal()
 
     def __init__(self, data: dict, item_id: str, parent=None):
         super().__init__(parent)
@@ -275,10 +279,13 @@ class VideoCardWidget(QFrame):
             """)
 
     def set_selected(self, selected: bool):
+        changed = self._is_selected != selected
         self.select_check.blockSignals(True)
         self.select_check.setChecked(selected)
         self.select_check.blockSignals(False)
         self._update_style(selected)
+        if changed:
+            self.selection_changed.emit()
 
     def is_selected(self) -> bool:
         return self._is_selected
@@ -305,7 +312,10 @@ class VideoCardWidget(QFrame):
         else:
             self.thumb_label.setText("Без превью")
 
-    def _on_image_loaded(self, pixmap: QPixmap):
+    @Slot(QImage)
+    def _on_image_loaded(self, pixmap):
+        if isinstance(pixmap, QImage):
+            pixmap = QPixmap.fromImage(pixmap)
         if pixmap and not pixmap.isNull():
             self._raw_pixmap = pixmap
             scaled = pixmap.scaled(115, 72, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
@@ -401,6 +411,7 @@ class VideoCardsListWidget(QWidget):
         card.card_clicked.connect(self._on_card_clicked)
         card.thumb_loaded.connect(self._on_card_thumb_loaded)
         card.selection_toggled.connect(self._on_card_check)
+        card.selection_changed.connect(self._on_selection_changed)
         card.close_btn.setEnabled(not self.busy)
 
         self.cards.append(card)
@@ -415,6 +426,10 @@ class VideoCardsListWidget(QWidget):
         self._update_container_height()
         self.list_changed.emit(len(self.cards))
         return item_id
+
+    @Slot()
+    def _on_selection_changed(self):
+        self.list_changed.emit(len(self.cards))
 
     def _on_card_check(self, item_id, selected):
         card = self._get_card(item_id)

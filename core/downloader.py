@@ -76,6 +76,16 @@ DEFAULT_EXTRACTOR_ARGS = {
 }
 
 
+def metadata_thumbnail(info):
+    if info.get('thumbnail'):
+        return info['thumbnail']
+    thumbnails = [t for t in info.get('thumbnails') or [] if t.get('url')]
+    if not thumbnails:
+        return None
+    return max(enumerate(thumbnails), key=lambda pair: (
+        (pair[1].get('width') or 0) * (pair[1].get('height') or 0), pair[0]))[1]['url']
+
+
 class MetadataWorker(QThread):
     info_ready = Signal(dict)
     playlist_ready = Signal(dict)
@@ -169,8 +179,8 @@ class MetadataWorker(QThread):
                                 for idx, e in enumerate(entries):
                                     is_vid = bool(e.get('formats'))
                                     thumbs = e.get('thumbnails', [])
-                                    best_img = thumbs[-1]['url'] if thumbs else None
-                                    preview_thumb = thumbs[0]['url'] if thumbs else best_img
+                                    best_img = metadata_thumbnail(e)
+                                    preview_thumb = best_img
                                     vid_url = e.get('formats', [])[-1].get('url') if is_vid else None
                                     items.append({
                                         'id': e.get('id', f'item_{idx+1}'),
@@ -199,7 +209,7 @@ class MetadataWorker(QThread):
                             is_vid = bool(target_entry.get('formats'))
                             thumbs = target_entry.get('thumbnails', [])
                             if not is_vid and thumbs:
-                                best_img = thumbs[-1]['url']
+                                best_img = metadata_thumbnail(target_entry)
                                 uploader = info.get('uploader') or target_entry.get('uploader') or 'Instagram'
                                 title = target_entry.get('title') or info.get('title') or f"Фото от @{uploader}"
                                 if not self.is_cancelled:
@@ -292,7 +302,7 @@ class MetadataWorker(QThread):
             title = info.get('title', 'Без названия')
             uploader = info.get('uploader') or info.get('channel') or info.get('creator') or 'Неизвестный автор'
             duration = info.get('duration', 0)
-            thumbnail = info.get('thumbnail')
+            thumbnail = metadata_thumbnail(info)
             
             formats = info.get('formats', [])
             resolutions = set()

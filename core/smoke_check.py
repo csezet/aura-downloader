@@ -35,6 +35,11 @@ def smoke_main(argv):
             log_path = configure_logging()
             from PySide6.QtWidgets import QApplication
             app = QApplication([])
+            from PySide6.QtGui import QFontDatabase, QFont
+            fonts = Path(os.environ['SystemRoot']) / 'Fonts'
+            for name in ('segoeui.ttf', 'segoeuib.ttf', 'consola.ttf', 'consolab.ttf'):
+                QFontDatabase.addApplicationFont(str(fonts / name))
+            app.setFont(QFont('Segoe UI', 10))
             install_qt_logging()
             report["version"] = APP_VERSION
             from core.media_converter import (get_ffmpeg_path, get_ffprobe_path, check_ffmpeg_available,
@@ -143,8 +148,79 @@ def smoke_main(argv):
             long_dialog._seek_to_ms(900_000)
             long_dialog._on_player_position_changed(108_900_000)
             checked("Half-hour timeline ignores absolute stream timestamps",
-                    long_dialog.duration_ms == 1_800_000 and long_dialog.time_lbl.text() == '15:00 / 30:00')
+                    long_dialog.duration_ms == 1_800_000 and long_dialog.time_lbl.text() == '00:15:00 / 00:30:00')
             long_dialog.reject()
+            # Exercise the same button and queue twice, using real HTTP download
+            # and FFmpeg processing with both cards already present.
+            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+            from threading import Thread
+            portrait = root / 'Вертикальное видео.mp4'
+            execute([ffmpeg, '-y', '-i', str(source), '-vf', 'transpose=1',
+                     '-c:v', 'libx264', '-c:a', 'aac', str(portrait)])
+            portrait_info = get_local_media_info(str(portrait))
+            bodies = {'/first.mp4': source.read_bytes(), '/second.mp4': portrait.read_bytes()}
+
+            class VideoServer(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    body = bodies.get(self.path)
+                    if body is None:
+                        self.send_error(404)
+                        return
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'video/mp4')
+                    self.send_header('Content-Length', str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+                def log_message(self, *args):
+                    pass
+
+            server = ThreadingHTTPServer(('127.0.0.1', 0), VideoServer)
+            server_thread = Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+            try:
+                settings.set('download_dir', str(output))
+                window.notification_manager.show_download_complete = lambda **kw: None
+                for index, media_info in enumerate((info, portrait_info), 1):
+                    url = f'http://127.0.0.1:{server.server_port}/' + ('first.mp4' if index == 1 else 'second.mp4')
+                    window._add_queue_item({**media_info, 'url': url, 'is_local': False,
+                                           'is_video': True, 'direct_media_url': url, 'title': f'Smoke download {index}'})
+                first, second = window.cards_list.cards
+                for card in (first, second):
+                    window.cards_list._select_single(card.item_id)
+                    if card is second:
+                        window.crop_widget.toggle.setChecked(True)
+                        window.crop_widget._crop_params = {'x_norm': 0, 'y_norm': 0, 'w_norm': 1, 'h_norm': .75}
+                    checked('First download button ready' if card is first else 'Second download button ready',
+                            window.download_btn.isEnabled())
+                    window.download_btn.click()
+                    deadline = time.monotonic() + 20
+                    while window._queue_busy and time.monotonic() < deadline:
+                        app.processEvents()
+                        time.sleep(.01)
+                    checked('First download saved' if card is first else 'Second download saved without clearing queue',
+                            not window._queue_busy and card.result_path and Path(card.result_path).is_file())
+                checked('Portrait crop has correct dimensions', get_video_dimensions(second.result_path) == (96, 96))
+            finally:
+                server.shutdown()
+                server.server_close()
+                server_thread.join(timeout=2)
+
+            from ui.history_view import HistoryModal, HistoryItemWidget
+            long_path = root / (('Длинное название файла ' * 8) + '.mp4')
+            long_path.touch()
+            history.add_entry('Создаем свою AI модель — длинное название ' * 5, 'https://example.test/video', str(long_path), 'MP4')
+            history_dialog = HistoryModal(window)
+            history_dialog.resize(580, 420)
+            history_dialog.show()
+            app.processEvents()
+            rows = history_dialog.findChildren(HistoryItemWidget)
+            checked('History buttons fit with long filenames',
+                    history_dialog.list_container.width() <= history_dialog.scroll.viewport().width()
+                    and rows and all(not hasattr(row, 'folder_btn') or
+                                     row.folder_btn.geometry().right() <= history_dialog.scroll.viewport().width()
+                                     for row in rows))
+            history_dialog.close()
             settings_dialog = SettingsModal(window)
             settings_dialog.show()
             app.processEvents()
