@@ -15,6 +15,8 @@ DEFAULT_SETTINGS = {
     "quality_preset": "best",
     "audio_format": "mp3",
     "audio_quality": "320",
+    "preview_volume": 100,
+    "preview_muted": False,
     "acrylic_blur": True,
     "glass_opacity": 0.45,
     "browser_cookies": "none",
@@ -52,6 +54,9 @@ def _validate_settings(data):
                 result[key] = list(dict.fromkeys(langs)) or copy.deepcopy(default)
         elif key == "glass_opacity":
             if type(value) in (int, float) and 0 <= value <= 1:
+                result[key] = value
+        elif key == "preview_volume":
+            if type(value) is int and 0 <= value <= 100:
                 result[key] = value
         elif key in choices:
             if isinstance(value, str) and value in choices[key]:

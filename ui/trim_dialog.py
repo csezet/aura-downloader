@@ -1,7 +1,7 @@
 import os
 from PySide6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFrame, QSizePolicy
+    QFrame, QSizePolicy, QSlider
 )
 from PySide6.QtCore import Qt, QUrl, Signal, QSize
 from PySide6.QtGui import QIcon, QColor, QFont
@@ -13,6 +13,7 @@ from ui.timeline_slider import TimelineRangeSlider, ms_to_time_str
 from core.media_converter import get_or_create_preview_proxy
 from core.workers import CancellableThread, start_worker
 from ui.worker_dialog import WorkerDialog
+from core.settings import settings
 
 
 class PreviewProxyWorker(CancellableThread):
@@ -97,6 +98,7 @@ class TrimDialog(WorkerDialog):
         self.applied_range = None
         self._proxy_worker = None
         self._preview_loaded = False
+        self._last_audible_volume = settings.get('preview_volume') or 50
 
         self._init_ui()
         self._init_player()
@@ -247,6 +249,52 @@ class TrimDialog(WorkerDialog):
 
         play_bar.addStretch()
 
+        c_layout.addLayout(play_bar)
+
+        # Keep sound controls on their own row so narrow windows remain usable.
+        sound_bar = QHBoxLayout()
+        sound_bar.setSpacing(8)
+        volume_title = QLabel("Громкость")
+        volume_title.setStyleSheet("color: #A1A1AA; font-size: 11px; background: transparent; border: none;")
+        sound_bar.addWidget(volume_title)
+
+        self.btn_mute = QPushButton()
+        self.btn_mute.setProperty("class", "GlassButton")
+        self.btn_mute.setFixedSize(30, 28)
+        self.btn_mute.setCheckable(True)
+        self.btn_mute.setCursor(Qt.PointingHandCursor)
+        self.btn_mute.setIconSize(QSize(16, 16))
+        self.btn_mute.setAccessibleName("Звук предпросмотра")
+        self.btn_mute.clicked.connect(self._toggle_preview_mute)
+        sound_bar.addWidget(self.btn_mute)
+
+        self.volume_slider = QSlider(Qt.Horizontal)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setValue(settings.get('preview_volume'))
+        self.volume_slider.setFixedWidth(130)
+        self.volume_slider.setAccessibleName("Громкость предпросмотра")
+        self.volume_slider.setToolTip("Громкость только при просмотре видео")
+        self.volume_slider.setStyleSheet("""
+            QSlider::groove:horizontal {
+                height: 4px; background: #3F3F46; border-radius: 2px;
+            }
+            QSlider::sub-page:horizontal {
+                background: #FFFFFF; border-radius: 2px;
+            }
+            QSlider::handle:horizontal {
+                background: #FFFFFF; width: 12px; margin: -4px 0;
+                border-radius: 6px;
+            }
+        """)
+        self.volume_slider.valueChanged.connect(self._on_preview_volume_changed)
+        sound_bar.addWidget(self.volume_slider)
+        self.volume_lbl = QLabel()
+        self.volume_lbl.setFixedWidth(42)
+        self.volume_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.volume_lbl.setStyleSheet("color: #EDEDED; font-size: 11px; background: transparent; border: none;")
+        sound_bar.addWidget(self.volume_lbl)
+        sound_bar.addStretch()
+
         # Current Time / Duration Badge
         self.time_lbl = QLabel("00:00:00 / 00:00:00")
         self.time_lbl.setToolTip("Текущая позиция / длительность — часы:минуты:секунды")
@@ -260,9 +308,8 @@ class TrimDialog(WorkerDialog):
             border-radius: 6px;
             padding: 4px 10px;
         """)
-        play_bar.addWidget(self.time_lbl)
-
-        c_layout.addLayout(play_bar)
+        sound_bar.addWidget(self.time_lbl)
+        c_layout.addLayout(sound_bar)
 
         # 4. Interactive Timeline Range Slider
         self.timeline_slider = TimelineRangeSlider()
@@ -384,6 +431,9 @@ class TrimDialog(WorkerDialog):
     def _init_player(self):
         self.player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
+        self.audio_output.setVolume(self.volume_slider.value() / 100.0)
+        self.audio_output.setMuted(settings.get('preview_muted'))
+        self._refresh_preview_volume()
         self.player.setAudioOutput(self.audio_output)
         self.player.setVideoOutput(self.video_widget)
 
@@ -408,6 +458,27 @@ class TrimDialog(WorkerDialog):
                 self._on_preview_failed("Исходный файл недоступен.")
         else:
             self._on_preview_failed("Источник предпросмотра отсутствует.")
+
+    def _on_preview_volume_changed(self, volume):
+        self.audio_output.setVolume(volume / 100.0)
+        if volume > 0:
+            self._last_audible_volume = volume
+            self.audio_output.setMuted(False)
+        self._refresh_preview_volume()
+
+    def _toggle_preview_mute(self):
+        muted = not (self.audio_output.isMuted() or self.volume_slider.value() == 0)
+        if not muted and self.volume_slider.value() == 0:
+            self.volume_slider.setValue(self._last_audible_volume)
+        self.audio_output.setMuted(muted)
+        self._refresh_preview_volume()
+
+    def _refresh_preview_volume(self):
+        muted = self.audio_output.isMuted() or self.volume_slider.value() == 0
+        self.btn_mute.setChecked(muted)
+        self.btn_mute.setIcon(get_svg_icon('mute' if muted else 'volume', color='#FFFFFF', size=16))
+        self.btn_mute.setToolTip(('Включить' if muted else 'Выключить') + ' звук предпросмотра [M]')
+        self.volume_lbl.setText(f"{0 if muted else self.volume_slider.value()}%")
 
     def _on_preview_info(self, info):
         if not self._duration_known and info.get('duration'):
@@ -590,6 +661,10 @@ class TrimDialog(WorkerDialog):
         if hasattr(self, 'player'):
             self.player.stop()
             self.player.setSource(QUrl())
+            for key, value in (('preview_volume', self.volume_slider.value()),
+                               ('preview_muted', self.audio_output.isMuted())):
+                if settings.get(key) != value:
+                    settings.set(key, value)
         super().done(result)
 
     def mousePressEvent(self, event):
@@ -608,6 +683,10 @@ class TrimDialog(WorkerDialog):
 
         if key == Qt.Key_Space:
             self._toggle_playback()
+            event.accept()
+            return
+        elif key in (Qt.Key_M, 1068, 1100):  # M or Russian Ь / ь
+            self._toggle_preview_mute()
             event.accept()
             return
         elif key == Qt.Key_Left:
