@@ -14,16 +14,18 @@ from core.workers import CancellableThread, start_worker, cancel_worker
 class ImageLoaderWorker(CancellableThread):
     image_loaded = Signal(QImage)
 
-    def __init__(self, url):
+    def __init__(self, url, headers=None):
         super().__init__()
         self.url = url
+        self.headers = headers or {}
 
     def run(self):
         resp = None
         try:
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-                'Referer': 'https://www.instagram.com/'
+                'Referer': 'https://www.instagram.com/',
+                **self.headers,
             }
             resp = requests.get(self.url, headers=headers, timeout=8)
             if resp.status_code == 200 and not self.isInterruptionRequested():
@@ -306,7 +308,7 @@ class VideoCardWidget(QFrame):
                     self._image_worker.image_loaded.disconnect()
                 except Exception:
                     pass
-            self._image_worker = ImageLoaderWorker(thumb_val)
+            self._image_worker = ImageLoaderWorker(thumb_val, self.data.get('http_headers'))
             self._image_worker.image_loaded.connect(self._on_image_loaded)
             start_worker(self._image_worker, self)
         else:

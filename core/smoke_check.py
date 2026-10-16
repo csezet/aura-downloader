@@ -80,6 +80,9 @@ def smoke_main(argv):
                 checked("Deno comes from the bundle", Path(deno).resolve().is_relative_to(bundle))
             with yt_dlp.YoutubeDL({"quiet": True, **javascript_options()}) as downloader:
                 checked("YouTube extractor and EJS are available", downloader.get_info_extractor("Youtube") is not None)
+                checked("TikTok extractor and browser TLS are available",
+                        downloader.get_info_extractor("TikTok") is not None
+                        and bool(downloader._get_available_impersonate_targets()))
             from importlib.resources import files
             checked("EJS scripts are bundled", any(files("yt_dlp_ejs").rglob("*.js")))
 
@@ -201,6 +204,40 @@ def smoke_main(argv):
                     checked('First download saved' if card is first else 'Second download saved without clearing queue',
                             not window._queue_busy and card.result_path and Path(card.result_path).is_file())
                 checked('Portrait crop has correct dimensions', get_video_dimensions(second.result_path) == (96, 96))
+                # Test the new gallery path using an original photo served locally.
+                import io
+                from PIL import Image
+                from core.tiktok import gallery_from_post
+                from ui.gallery_dialog import InstagramGalleryDialog
+                image_data = io.BytesIO()
+                Image.new('RGB', (108, 153), '#547fbc').save(image_data, 'PNG')
+                bodies['/photo.image'] = image_data.getvalue()
+                photo_url = f'http://127.0.0.1:{server.server_port}/photo.image'
+                photo_page = 'https://www.tiktok.com/@smoke/photo/1234567890'
+                gallery = gallery_from_post({'id': '1234567890', 'author': {'uniqueId': 'smoke'},
+                            'imagePost': {'images': [{'imageURL': {'urlList': [photo_url]},
+                                                     'imageWidth': 108, 'imageHeight': 153}]}}, photo_page)
+                window._add_queue_item({**gallery['items'][0], 'url': photo_page})
+                photo_card = window.cards_list.cards[-1]
+                window.cards_list._select_single(photo_card.item_id)
+                window.download_btn.click()
+                deadline = time.monotonic() + 10
+                while window._queue_busy and time.monotonic() < deadline:
+                    app.processEvents()
+                    time.sleep(.01)
+                checked('TikTok photo saves original bytes and correct extension',
+                        photo_card.result_path and Path(photo_card.result_path).suffix == '.png'
+                        and Path(photo_card.result_path).read_bytes() == image_data.getvalue())
+                gallery_dialog = InstagramGalleryDialog(gallery, window)
+                gallery_dialog.show()
+                thumbnail = gallery_dialog.item_widgets[0].thumb_lbl
+                deadline = time.monotonic() + 5
+                while thumbnail.pixmap().width() != 70 and time.monotonic() < deadline:
+                    app.processEvents()
+                    time.sleep(.01)
+                checked('TikTok gallery renders its decoded photo', thumbnail.pixmap().width() == 70
+                        and 'TikTok' in gallery_dialog.windowTitle())
+                gallery_dialog.reject()
             finally:
                 server.shutdown()
                 server.server_close()

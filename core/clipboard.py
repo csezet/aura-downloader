@@ -3,7 +3,7 @@ from PySide6.QtCore import QObject, Signal, QTimer
 from PySide6.QtWidgets import QApplication
 
 URL_PATTERN = re.compile(
-    r'(https?://(?:www\.)?(?:youtube\.com|youtu\.be|tiktok\.com|instagram\.com|twitter\.com|x\.com|vk\.com|vkvideo\.ru|twitch\.tv|reddit\.com|pinterest\.com|vimeo\.com|facebook\.com|fb\.watch)[^\s]+)',
+    r'(https?://(?:www\.)?(?:youtube\.com|youtu\.be|(?:(?:m|vm|vt)\.)?tiktok\.com|instagram\.com|twitter\.com|x\.com|vk\.com|vkvideo\.ru|twitch\.tv|reddit\.com|pinterest\.com|vimeo\.com|facebook\.com|fb\.watch)[^\s]+)',
     re.IGNORECASE
 )
 

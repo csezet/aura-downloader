@@ -52,6 +52,7 @@ def build_command(tools, deno, onefile=False):
                "--hidden-import=PySide6.QtSvg", "--hidden-import=PySide6.QtMultimedia",
                "--hidden-import=PySide6.QtMultimediaWidgets", "--collect-all=yt_dlp",
                "--collect-all=yt_dlp_ejs", "--collect-all=Cryptodome",
+               "--collect-all=curl_cffi", "--recursive-copy-metadata=curl-cffi",
                "--recursive-copy-metadata=yt-dlp", "--copy-metadata=deno",
                "--copy-metadata=yt-dlp-ejs"]
     for name in ("ffmpeg.exe", "ffprobe.exe"):

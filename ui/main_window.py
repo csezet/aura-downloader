@@ -863,20 +863,22 @@ class MainWindow(QMainWindow):
 
             # Display cards for all selected items in main cards_list
             for item in selected:
+                platform = item.get('platform') or gallery_data.get('platform') or 'Instagram'
                 is_vid = bool(item.get('is_video') or item.get('media_type') == 'video')
                 media_url = item.get('url') if is_vid else (item.get('best_image') or item.get('url'))
                 info = {
-                    'url': media_url,
+                    'url': item.get('source_url') or media_url,
                     'direct_url': media_url,
                     'direct_media_url': media_url,
                     'playable_url': media_url,
-                    'title': item.get('title') or f"Instagram {'Видео' if is_vid else 'Фото'} #{item.get('index', 1)}",
-                    'uploader': item.get('uploader') or gallery_data.get('uploader') or 'Instagram',
+                    'title': item.get('title') or f"{platform} {'Видео' if is_vid else 'Фото'} #{item.get('index', 1)}",
+                    'uploader': item.get('uploader') or gallery_data.get('uploader') or platform,
                     'duration': item.get('duration') or 0,
                     'duration_str': 'ФОТО' if not is_vid else 'ВИДЕО',
                     'thumbnail': item.get('thumbnail') or item.get('best_image'),
-                    'platform': 'Instagram',
-                    'available_res': ['Оригинал (JPG)'] if not is_vid else ['1080p Full HD'],
+                    'platform': platform,
+                    'http_headers': item.get('http_headers') or {},
+                    'available_res': ['Оригинал'] if not is_vid else ['1080p Full HD'],
                     'has_video': is_vid,
                     'is_photo': not is_vid,
                     'is_video': is_vid,

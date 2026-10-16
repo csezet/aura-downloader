@@ -4,53 +4,48 @@ from PySide6.QtWidgets import (
     QDialog, QFrame, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QScrollArea, QWidget, QCheckBox, QGraphicsDropShadowEffect
 )
-from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtCore import Qt, Signal, Slot, QSize
 from PySide6.QtGui import QColor, QPixmap, QImage, QPainter, QPainterPath
 from assets.icons import get_svg_icon, get_svg_pixmap
 from core.workers import CancellableThread, start_worker
 from ui.worker_dialog import WorkerDialog
 
 class ThumbnailLoader(CancellableThread):
-    loaded = Signal(QPixmap)
+    loaded = Signal(QImage)
 
-    def __init__(self, url: str, target_size: QSize = QSize(70, 70)):
+    def __init__(self, url: str, target_size: QSize = QSize(70, 70), headers=None):
         super().__init__()
         self.url = url
         self.target_size = target_size
+        self.headers = headers or {}
 
     def run(self):
+        resp = None
         try:
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-                'Referer': 'https://www.instagram.com/'
+                'Referer': 'https://www.instagram.com/',
+                **self.headers,
             }
             resp = requests.get(self.url, headers=headers, timeout=8)
             if resp.status_code == 200 and not self.isInterruptionRequested():
                 image = QImage.fromData(resp.content)
                 if not image.isNull():
-                    pix = QPixmap.fromImage(image).scaled(
+                    image = image.scaled(
                         self.target_size,
                         Qt.KeepAspectRatioByExpanding,
                         Qt.SmoothTransformation
                     )
-                    if pix.width() > self.target_size.width() or pix.height() > self.target_size.height():
-                        x = max(0, (pix.width() - self.target_size.width()) // 2)
-                        y = max(0, (pix.height() - self.target_size.height()) // 2)
-                        pix = pix.copy(x, y, self.target_size.width(), self.target_size.height())
-
-                    rounded = QPixmap(self.target_size)
-                    rounded.fill(Qt.transparent)
-                    painter = QPainter(rounded)
-                    painter.setRenderHint(QPainter.Antialiasing, True)
-                    path = QPainterPath()
-                    path.addRoundedRect(0, 0, self.target_size.width(), self.target_size.height(), 9, 9)
-                    painter.setClipPath(path)
-                    painter.drawPixmap(0, 0, pix)
-                    painter.end()
+                    x = max(0, (image.width() - self.target_size.width()) // 2)
+                    y = max(0, (image.height() - self.target_size.height()) // 2)
+                    image = image.copy(x, y, self.target_size.width(), self.target_size.height())
                     if not self.isInterruptionRequested():
-                        self.loaded.emit(rounded)
+                        self.loaded.emit(image)
         except Exception:
             pass
+        finally:
+            if resp is not None:
+                resp.close()
 
 
 class CheckmarkBox(QFrame):
@@ -135,7 +130,7 @@ class GalleryItemWidget(QFrame):
         # Asynchronously load thumbnail
         thumb_url = item.get('thumbnail') or item.get('best_image') or item.get('url')
         if thumb_url and thumb_url.startswith('http'):
-            self.loader = ThumbnailLoader(thumb_url, QSize(70, 70))
+            self.loader = ThumbnailLoader(thumb_url, QSize(70, 70), item.get('http_headers'))
             self.loader.loaded.connect(self._on_thumb_loaded)
             start_worker(self.loader, self)
 
@@ -151,7 +146,7 @@ class GalleryItemWidget(QFrame):
         self.type_badge = QLabel(f"ВИДЕО #{item.get('index', 1)}" if is_video else f"ФОТО #{item.get('index', 1)}")
         tags_layout.addWidget(self.type_badge)
 
-        self.format_badge = QLabel("MP4 VIDEO" if is_video else "JPG ORIGINAL (HD)")
+        self.format_badge = QLabel("MP4 VIDEO" if is_video else "ФОТО · ОРИГИНАЛ")
         tags_layout.addWidget(self.format_badge)
         tags_layout.addStretch()
         info_layout.addLayout(tags_layout)
@@ -170,8 +165,18 @@ class GalleryItemWidget(QFrame):
         layout.addLayout(info_layout, stretch=1)
         self._update_appearance()
 
-    def _on_thumb_loaded(self, pix: QPixmap):
-        self.thumb_lbl.setPixmap(pix)
+    @Slot(QImage)
+    def _on_thumb_loaded(self, image):
+        rounded = QPixmap(image.size())
+        rounded.fill(Qt.transparent)
+        painter = QPainter(rounded)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        path = QPainterPath()
+        path.addRoundedRect(0, 0, image.width(), image.height(), 9, 9)
+        painter.setClipPath(path)
+        painter.drawImage(0, 0, image)
+        painter.end()
+        self.thumb_lbl.setPixmap(rounded)
 
     def _update_appearance(self):
         if self._is_selected:
@@ -262,7 +267,7 @@ class GalleryItemWidget(QFrame):
 class InstagramGalleryDialog(WorkerDialog):
     def __init__(self, gallery_data: dict, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Галерея Instagram — Выбор фото")
+        self.setWindowTitle(f"Галерея {gallery_data.get('platform') or 'Instagram'} — Выбор фото")
         self.resize(680, 560)
         self.setMinimumSize(580, 460)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
@@ -317,11 +322,11 @@ class InstagramGalleryDialog(WorkerDialog):
         title_vbox = QVBoxLayout()
         title_vbox.setSpacing(2)
 
-        title_lbl = QLabel("ГАЛЕРЕЯ INSTAGRAM")
+        title_lbl = QLabel(f"ГАЛЕРЕЯ {self.gallery_data.get('platform', 'Instagram').upper()}")
         title_lbl.setStyleSheet("font-size: 14px; font-weight: 800; color: #FFFFFF; letter-spacing: 1px;")
         title_vbox.addWidget(title_lbl)
 
-        author = self.gallery_data.get('uploader') or 'Instagram'
+        author = self.gallery_data.get('uploader') or self.gallery_data.get('platform') or 'Instagram'
         subtitle_lbl = QLabel(f"Пост от @{author} • Найдено {len(self.items)} фото/видео")
         subtitle_lbl.setStyleSheet("font-size: 11px; color: #71717A; font-weight: 500;")
         title_vbox.addWidget(subtitle_lbl)

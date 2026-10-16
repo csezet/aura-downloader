@@ -92,6 +92,7 @@ class UnifiedBatchWorker(QThread):
                     direct = item.get("direct_media_url") or item.get("best_image")
                     photo = item.get("is_photo") or item.get("media_type") == "photo"
                     options.update(title=title, is_photo=bool(photo),
+                                   http_headers=copy.deepcopy(item.get('http_headers') or {}),
                                    is_video=bool(not photo and (item.get("is_video") or item.get("has_video"))),
                                    media_type="photo" if photo else "video")
                     if direct:

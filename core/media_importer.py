@@ -28,6 +28,20 @@ class MediaImportWorker(CancellableThread):
             source = pending.pop()
             try:
                 if source.lower().startswith(("http://", "https://")):
+                    from core.tiktok import is_tiktok_url, resolve_tiktok_post
+                    if is_tiktok_url(source):
+                        source, gallery = resolve_tiktok_post(source, self.isInterruptionRequested)
+                        if gallery:
+                            for item in gallery['items']:
+                                if self.isInterruptionRequested():
+                                    break
+                                self.item_ready.emit(normalize_item({**item, 'url': source,
+                                                      'duration': 0, 'duration_str': 'ФОТО',
+                                                      'available_res': ['Оригинал']}, self.options))
+                                added += 1
+                            continue
+                        if self.isInterruptionRequested():
+                            break
                     ext = Path(urlsplit(source).path).suffix.lower()
                     photo = ext in (".jpg", ".jpeg", ".png", ".webp")
                     direct_video = ext in (".mp4", ".webm", ".mkv")

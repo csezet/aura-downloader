@@ -12,6 +12,7 @@
 | FFmpeg, FFprobe | GPLv3, сборка Gyan essentials: https://www.gyan.dev/ffmpeg/builds/ |
 | Pillow | MIT-CMU: https://github.com/python-pillow/Pillow |
 | Requests и зависимости | Лицензии в `licenses/`; https://github.com/psf/requests |
+| curl-cffi, cffi и зависимости libcurl | Лицензии в `licenses/`; https://github.com/lexiforest/curl_cffi |
 
 Версии Python-пакетов зафиксированы в `requirements-lock.txt`. Сборка копирует тексты лицензий установленных пакетов, включая дополнительные зависимости yt-dlp. Qt остаётся набором отдельных динамических библиотек в `_internal/`, доступных для замены совместимыми версиями.
 

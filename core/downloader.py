@@ -130,6 +130,14 @@ class MetadataWorker(QThread):
         getattr(self, signal_name).emit(data)
 
     def _extract(self):
+        from core.tiktok import is_tiktok_url, resolve_tiktok_post
+        if is_tiktok_url(self.url):
+            self.url, gallery = resolve_tiktok_post(self.url, lambda: self.is_cancelled)
+            if self.is_cancelled:
+                return
+            if gallery:
+                self._publish('gallery_ready', gallery)
+                return
         parsed = urlsplit(self.url)
         query = parse_qs(parsed.query)
         is_playlist_url = '/playlist' in parsed.path or ('list' in query and 'v' not in query)
@@ -354,6 +362,7 @@ class MetadataWorker(QThread):
                 'duration_str': format_seconds(duration) if duration else "--:--",
                 'thumbnail': thumbnail,
                 'platform': platform,
+                'http_headers': info.get('http_headers') or {},
                 'available_res': available_res,
                 'has_video': has_video,
                 'width': width or None,
@@ -482,7 +491,8 @@ class DownloadWorker(QThread):
                 self.status_message.emit(f"Скачивание {media_kind}...")
                 headers = {
                     'User-Agent': DEFAULT_HTTP_HEADERS['User-Agent'],
-                    'Referer': 'https://www.instagram.com/'
+                    'Referer': 'https://www.instagram.com/',
+                    **(self.options.get('http_headers') or {}),
                 }
                 resp = requests.get(download_target, headers=headers, stream=True, timeout=25)
                 resp.raise_for_status()
@@ -528,7 +538,12 @@ class DownloadWorker(QThread):
                         try:
                             from PIL import Image
                             with Image.open(part_path) as img:
+                                image_format = img.format
                                 img.verify()
+                            extension = {'JPEG': 'jpg', 'PNG': 'png', 'WEBP': 'webp',
+                                         'AVIF': 'avif', 'GIF': 'gif'}.get(image_format)
+                            if extension:
+                                file_path = str(Path(file_path).with_suffix('.' + extension))
                         except Exception:
                             raise Exception("Скачанный файл не является корректным изображением.")
 
@@ -575,7 +590,7 @@ class DownloadWorker(QThread):
                     'file_size': file_size,
                     'file_size_str': format_bytes(file_size),
                     'thumbnail': file_path if not is_direct_video else None,
-                    'mode': Path(file_path).suffix.lstrip('.').upper() if is_direct_video else 'JPG'
+                    'mode': Path(file_path).suffix.lstrip('.').upper()
                 })
                 return
 

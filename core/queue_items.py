@@ -62,11 +62,14 @@ def validate_item(item):
 
 
 def parse_sources(text):
+    from core.tiktok import find_tiktok_url, is_tiktok_url
     sources, errors = [], []
     for number, line in enumerate(str(text).splitlines(), 1):
         source = line.strip().strip('"').strip("'").strip()
         if not source:
             continue
+        if not source.lower().startswith(('http://', 'https://')) or is_tiktok_url(source):
+            source = find_tiktok_url(source) or source
         try:
             url = urlsplit(source) if source.lower().startswith(("http://", "https://")) else None
             valid_url = url and url.hostname
