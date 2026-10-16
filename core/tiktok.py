@@ -57,6 +57,8 @@ def resolve_tiktok_post(url, is_cancelled_cb=lambda: False):
     match = POST_PATH.fullmatch(parsed.path)
     if match and match['kind'].lower() == 'video':
         return f'https://www.tiktok.com{parsed.path.rstrip("/")}', None
+    if not match and TikTokIE.suitable(url):
+        return url, None
     from core.cookies_helper import get_cookies_config
     from core.js_runtime import javascript_options
     options = {**javascript_options(), 'quiet': True, 'no_warnings': True,

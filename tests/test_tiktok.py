@@ -65,6 +65,7 @@ class TestTikTokLinksAndPhotos(unittest.TestCase):
     def test_short_photo_link_resolves_and_closes_redirect_response(self):
         with patch('core.tiktok.yt_dlp.YoutubeDL') as factory, \
              patch('core.tiktok.TikTokIE') as extractor:
+            extractor.suitable.return_value = False
             response = factory.return_value.__enter__.return_value.urlopen.return_value
             response.url = URL + '?shared=1'
             extractor.return_value._extract_web_data_and_status.return_value = (photo_post(), 0)
@@ -122,6 +123,11 @@ class TestTikTokLinksAndPhotos(unittest.TestCase):
         self.assertEqual(videos[0]['platform'], 'TikTok')
         self.assertTrue(videos[0]['has_video'])
         self.assertEqual(resolve_tiktok_post(url), (url, None))
+        for path in ('/embed/6742501081818877190', '/share/video/6742501081818877190'):
+            legacy = 'https://www.tiktok.com' + path
+            with patch('core.tiktok.yt_dlp.YoutubeDL') as factory:
+                self.assertEqual(resolve_tiktok_post(legacy), (legacy, None))
+                factory.assert_not_called()
 
     def test_batch_import_adds_each_original_photo_with_video_tools_disabled(self):
         worker = MediaImportWorker([URL], {'mode': 'audio_only', 'crop_enabled': True})
