@@ -1,10 +1,12 @@
 import os
+from pathlib import Path
+import re
 from PySide6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFrame, QSizePolicy, QSlider
+    QFrame, QSizePolicy, QSlider, QStackedWidget, QFileDialog
 )
-from PySide6.QtCore import Qt, QUrl, Signal, QSize
-from PySide6.QtGui import QIcon, QColor, QFont
+from PySide6.QtCore import Qt, QUrl, Signal, Slot, QSize
+from PySide6.QtGui import QIcon, QColor, QFont, QImage, QPixmap, QDesktopServices
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
 
@@ -14,6 +16,55 @@ from core.media_converter import get_or_create_preview_proxy
 from core.workers import CancellableThread, start_worker
 from ui.worker_dialog import WorkerDialog
 from core.settings import settings
+from core.frame_capture import FrameCaptureSession, CaptureCancelled, save_frame
+
+
+class FramePreview(QLabel):
+    def __init__(self):
+        super().__init__()
+        self.image = QImage()
+        self.setAlignment(Qt.AlignCenter)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self.setStyleSheet('background: black; border: none;')
+
+    def set_image(self, image):
+        self.image = image
+        self._render()
+
+    def _render(self):
+        if not self.image.isNull():
+            self.setPixmap(QPixmap.fromImage(self.image).scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._render()
+
+
+class FrameCaptureWorker(CancellableThread):
+    ready = Signal(dict)
+    status = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, session, position, direction=0, destination=None):
+        super().__init__()
+        self.session, self.position, self.direction = session, position, direction
+        self.destination = destination
+
+    def run(self):
+        try:
+            frame = self.session.capture(self.position, self.direction, self.isInterruptionRequested, self.status.emit)
+            image = QImage(frame['path'])
+            if image.isNull():
+                raise ValueError('Не удалось открыть изображение извлечённого кадра.')
+            if self.destination:
+                frame['saved_path'] = save_frame(frame, self.destination, self.isInterruptionRequested)
+            if not self.isInterruptionRequested():
+                self.ready.emit({**frame, 'image': image})
+        except CaptureCancelled:
+            pass
+        except Exception as error:
+            if not self.isInterruptionRequested():
+                self.failed.emit(str(error))
 
 
 class PreviewProxyWorker(CancellableThread):
@@ -72,7 +123,7 @@ def ms_to_clock(ms: int) -> str:
 
 
 class TrimDialog(WorkerDialog):
-    def __init__(self, parent=None, video_source=None, duration_sec: float = 60, initial_start="00:00", initial_end=None):
+    def __init__(self, parent=None, video_source=None, duration_sec: float = 60, initial_start="00:00", initial_end=None, capture_source=None):
         super().__init__(parent)
         self.setWindowTitle("Визуальная вырезка отрезка видео")
         self.resize(880, 680)
@@ -81,6 +132,12 @@ class TrimDialog(WorkerDialog):
         self.setAttribute(Qt.WA_TranslucentBackground, True)
 
         self.video_source = video_source
+        self.capture_source = capture_source if capture_source is not None else video_source
+        self._frame_session = None
+        self._frame_worker = None
+        self._frame_busy = False
+        self._frame_result = None
+        self._saved_frame_path = None
         self._duration_known = bool(duration_sec and float(duration_sec) > 0)
         self.duration_ms = max(100, int(round((float(duration_sec) if duration_sec else 60.0) * 1000.0)))
         self.start_ms = max(0, min(self.duration_ms - 1, parse_time_to_ms(initial_start)))
@@ -172,7 +229,11 @@ class TrimDialog(WorkerDialog):
 
         self.video_widget = QVideoWidget()
         self.video_widget.setStyleSheet("background-color: #000000; border-radius: 8px;")
-        v_layout.addWidget(self.video_widget)
+        self.video_stack = QStackedWidget()
+        self.video_stack.addWidget(self.video_widget)
+        self.frame_preview = FramePreview()
+        self.video_stack.addWidget(self.frame_preview)
+        v_layout.addWidget(self.video_stack)
         self.preview_status = QLabel()
         self.preview_status.setWordWrap(True)
         self.preview_status.setStyleSheet("color: #A1A1AA; padding: 6px; font-size: 11px;")
@@ -319,6 +380,56 @@ class TrimDialog(WorkerDialog):
         self.timeline_slider.seek_requested.connect(self._on_slider_seek)
         c_layout.addWidget(self.timeline_slider)
 
+        frame_bar = QHBoxLayout()
+        frame_bar.setSpacing(8)
+        self.btn_previous_frame = QPushButton('Предыдущий кадр')
+        self.btn_next_frame = QPushButton('Следующий кадр')
+        for button, icon in ((self.btn_previous_frame, 'skip-back'), (self.btn_next_frame, 'skip-forward')):
+            button.setIcon(get_svg_icon(icon, color='#FFFFFF', size=13))
+            button.setIconSize(QSize(13, 13))
+            button.setProperty('class', 'GlassButton')
+            button.setCursor(Qt.PointingHandCursor)
+            frame_bar.addWidget(button)
+        self.btn_previous_frame.setToolTip('Предыдущий кадр исходного ролика [,]')
+        self.btn_next_frame.setToolTip('Следующий кадр исходного ролика [.]')
+        self.btn_previous_frame.clicked.connect(lambda: self._request_frame(-1))
+        self.btn_next_frame.clicked.connect(lambda: self._request_frame(1))
+        self.btn_save_frame = QPushButton(' Сохранить кадр')
+        self.btn_save_frame.setIcon(get_svg_icon('camera', color='#FFFFFF', size=16))
+        self.btn_save_frame.setProperty('class', 'GlassButton')
+        self.btn_save_frame.setCursor(Qt.PointingHandCursor)
+        self.btn_save_frame.setToolTip('Сохранить фотографию из исходного видео [Ctrl+S]')
+        self.btn_save_frame.clicked.connect(self._save_current_frame)
+        frame_bar.addWidget(self.btn_save_frame)
+        frame_bar.addStretch()
+        self.btn_cancel_frame = QPushButton('Отменить')
+        self.btn_cancel_frame.setToolTip('Отменить получение кадра')
+        self.btn_cancel_frame.setProperty('class', 'GlassButton')
+        self.btn_cancel_frame.clicked.connect(self._cancel_frame)
+        self.btn_cancel_frame.hide()
+        frame_bar.addWidget(self.btn_cancel_frame)
+        c_layout.addLayout(frame_bar)
+
+        photo_bar = QHBoxLayout()
+        self.frame_status = QLabel('PNG / JPG · исходное разрешение')
+        self.frame_status.setWordWrap(True)
+        self.frame_status.setMinimumWidth(0)
+        self.frame_status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.frame_status.setStyleSheet('color: #A1A1AA; font-size: 11px; background: transparent; border: none;')
+        photo_bar.addWidget(self.frame_status, 1)
+        self.btn_open_frame = QPushButton('Открыть фото')
+        self.btn_frame_folder = QPushButton('Папка')
+        self.btn_open_frame.clicked.connect(lambda: self._open_saved_frame(False))
+        self.btn_frame_folder.clicked.connect(lambda: self._open_saved_frame(True))
+        for button in (self.btn_open_frame, self.btn_frame_folder):
+            button.setProperty('class', 'GlassButton')
+            button.setCursor(Qt.PointingHandCursor)
+            button.hide()
+            photo_bar.addWidget(button)
+        c_layout.addLayout(photo_bar)
+        for button in (self.btn_previous_frame, self.btn_next_frame, self.btn_save_frame):
+            button.setEnabled(bool(self.capture_source))
+
         # 5. Quick Marker Buttons, Loop Toggle & Precise Time Info
         info_bar = QHBoxLayout()
         info_bar.setSpacing(8)
@@ -405,6 +516,7 @@ class TrimDialog(WorkerDialog):
         actions_layout.addStretch()
 
         apply_btn = QPushButton(" ПРИМЕНИТЬ ОТРЕЗОК")
+        self.apply_btn = apply_btn
         apply_btn.setIcon(get_svg_icon("check", color="#000000", size=15))
         apply_btn.setIconSize(QSize(15, 15))
         apply_btn.setObjectName("PrimaryButton")
@@ -498,11 +610,12 @@ class TrimDialog(WorkerDialog):
             return
         self._preview_loaded = True
         self.btn_play.setText(" ВОСПРОИЗВЕДЕНИЕ")
-        self.btn_play.setEnabled(True)
+        self.btn_play.setEnabled(not self._frame_busy)
         self.preview_status.hide()
         self.player.setSource(QUrl(playable) if playable.startswith(('http://', 'https://')) else QUrl.fromLocalFile(playable))
         self.player.pause()
-        self._seek_to_ms(self.start_ms)
+        if not self._frame_busy and not self._frame_result:
+            self._seek_to_ms(self.start_ms)
 
     def _on_player_error(self, error, error_string):
         self._on_preview_failed(error_string)
@@ -528,6 +641,8 @@ class TrimDialog(WorkerDialog):
             self.time_lbl.setText(f"{ms_to_clock(self.current_pos_ms)} / {ms_to_clock(self.duration_ms)}")
 
     def _on_player_position_changed(self, pos_ms: int):
+        if self._frame_busy or self.video_stack.currentWidget() is self.frame_preview:
+            return
         if pos_ms < 0 or pos_ms > self.duration_ms:
             return
         self.current_pos_ms = pos_ms
@@ -540,6 +655,12 @@ class TrimDialog(WorkerDialog):
             self._seek_to_ms(self.start_ms)
 
     def _toggle_playback(self):
+        if self._frame_busy:
+            return
+        if self.video_stack.currentWidget() is self.frame_preview:
+            self.video_stack.setCurrentWidget(self.video_widget)
+            self.player.setPosition(self.current_pos_ms)
+            self._frame_result = None
         if self.player.playbackState() == QMediaPlayer.PlayingState:
             self.player.pause()
             self.btn_play.setText(" ВОСПРОИЗВЕДЕНИЕ")
@@ -552,6 +673,10 @@ class TrimDialog(WorkerDialog):
             self.btn_play.setIcon(get_svg_icon("pause", color="#000000", size=13))
 
     def _seek_to_ms(self, pos_ms: int):
+        if self._frame_busy:
+            return
+        self._frame_result = None
+        self.video_stack.setCurrentWidget(self.video_widget)
         pos_ms = max(0, min(self.duration_ms, pos_ms))
         self.current_pos_ms = pos_ms
         
@@ -653,6 +778,90 @@ class TrimDialog(WorkerDialog):
         self.player.stop()
         self.accept()
 
+    def _request_frame(self, direction=0, destination=None):
+        if self._frame_busy or not self.capture_source or self._pending_result is not None:
+            return
+        self.player.pause()
+        self.btn_play.setText(' ВОСПРОИЗВЕДЕНИЕ')
+        self.btn_play.setIcon(get_svg_icon('play', color='#000000', size=13))
+        if self._frame_session is None:
+            self._frame_session = FrameCaptureSession(self.capture_source)
+        position = self._frame_result['position'] if self._frame_result else self.current_pos_ms / 1000
+        self._set_frame_busy(True)
+        self.frame_status.setText('Получение кадра из оригинала…')
+        worker = FrameCaptureWorker(self._frame_session, position, direction, destination)
+        self._frame_worker = worker
+        worker.ready.connect(self._on_frame_ready)
+        worker.status.connect(self.frame_status.setText)
+        worker.failed.connect(self._on_frame_failed)
+        worker.finished.connect(self._on_frame_finished)
+        start_worker(worker, self)
+
+    def _set_frame_busy(self, busy):
+        self._frame_busy = busy
+        for button in (self.btn_previous_frame, self.btn_next_frame, self.btn_save_frame):
+            button.setEnabled(not busy and bool(self.capture_source))
+        for widget in (self.timeline_slider, self.btn_jump_start, self.btn_jump_end, self.btn_step_back,
+                       self.btn_step_fwd, self.btn_mark_start, self.btn_mark_end, self.btn_loop, self.apply_btn):
+            widget.setEnabled(not busy)
+        self.btn_play.setEnabled(not busy and self._preview_loaded)
+        self.btn_cancel_frame.setVisible(busy)
+
+    @Slot(dict)
+    def _on_frame_ready(self, frame):
+        if self._pending_result is not None:
+            return
+        self._frame_result = frame
+        self.current_pos_ms = round(frame['position'] * 1000)
+        self.timeline_slider.set_current_position(self.current_pos_ms)
+        self.time_lbl.setText(f'{ms_to_clock(self.current_pos_ms)} / {ms_to_clock(self.duration_ms)}')
+        self.frame_preview.set_image(frame['image'])
+        self.video_stack.setCurrentWidget(self.frame_preview)
+        self.preview_status.hide()
+        self.frame_status.setText(f"Кадр {ms_to_fmt(self.current_pos_ms)} · {frame['width']}×{frame['height']}")
+        if frame.get('saved_path'):
+            self._saved_frame_path = frame['saved_path']
+            self.frame_status.setText(f"Сохранено · {frame['width']}×{frame['height']} · {ms_to_fmt(self.current_pos_ms)}")
+            self.frame_status.setToolTip(frame['saved_path'])
+            self.btn_open_frame.show()
+            self.btn_frame_folder.show()
+
+    @Slot(str)
+    def _on_frame_failed(self, error):
+        if self._pending_result is None:
+            self.frame_status.setText(f'Не удалось получить кадр: {error}')
+
+    @Slot()
+    def _on_frame_finished(self):
+        if self._pending_result is None:
+            self._set_frame_busy(False)
+
+    def _cancel_frame(self):
+        if self._frame_worker:
+            self._frame_worker.cancel()
+            self.frame_status.setText('Получение кадра отменено.')
+
+    def _save_current_frame(self):
+        if self._frame_busy or not self.capture_source:
+            return
+        self.player.pause()
+        source = self.capture_source if isinstance(self.capture_source, dict) else {'url': self.capture_source}
+        title = source.get('title') or Path(source.get('url') or 'Кадр').stem
+        title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', title).strip(' .')[:100] or 'Кадр'
+        stamp = ms_to_clock(self.current_pos_ms).replace(':', '-') + f'-{self.current_pos_ms % 1000:03d}'
+        default = str(Path(settings.get('download_dir')) / f'{title}_{stamp}.png')
+        path, selected_filter = QFileDialog.getSaveFileName(self, 'Сохранить кадр как фото', default,
+                                                          'PNG без потери качества (*.png);;JPEG высокого качества (*.jpg *.jpeg)')
+        if path:
+            if not Path(path).suffix:
+                path += '.jpg' if selected_filter.startswith('JPEG') else '.png'
+            self._request_frame(0, path)
+
+    def _open_saved_frame(self, folder):
+        if self._saved_frame_path:
+            path = Path(self._saved_frame_path)
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent if folder else path)))
+
     def reject(self):
         self.player.stop()
         super().reject()
@@ -665,6 +874,9 @@ class TrimDialog(WorkerDialog):
                                ('preview_muted', self.audio_output.isMuted())):
                 if settings.get(key) != value:
                     settings.set(key, value)
+        if self._frame_session and not (self._frame_worker and self._frame_worker.isRunning()):
+            self._frame_session.close()
+            self._frame_session = None
         super().done(result)
 
     def mousePressEvent(self, event):
@@ -680,6 +892,20 @@ class TrimDialog(WorkerDialog):
     def keyPressEvent(self, event):
         key = event.key()
         modifiers = event.modifiers()
+
+        if self._frame_busy:
+            if key == Qt.Key_Escape:
+                self._cancel_frame()
+            event.accept()
+            return
+        if key in (Qt.Key_Comma, Qt.Key_Period):
+            self._request_frame(-1 if key == Qt.Key_Comma else 1)
+            event.accept()
+            return
+        if key == Qt.Key_S and modifiers & Qt.ControlModifier:
+            self._save_current_frame()
+            event.accept()
+            return
 
         if key == Qt.Key_Space:
             self._toggle_playback()

@@ -727,7 +727,9 @@ class MainWindow(QMainWindow):
                 playable = playable or info.get('url')
             # A website page is not a media stream. Resolve it when opening the editor.
             playable = playable or {'url': info.get('url')}
-            self.trim_widget.set_source_video(playable, info.get('duration') or 0)
+            self.trim_widget.set_source_video(playable, info.get('duration') or 0,
+                                             capture_source={key: info.get(key) for key in
+                                             ('url', 'direct_media_url', 'title', 'is_local', 'http_headers')})
             self._restore_ui_from_video_info(info)
             self._refresh_editor_visibility()
             self._update_download_button_text()
@@ -744,7 +746,7 @@ class MainWindow(QMainWindow):
         dimensions_known = bool(info.get('width') and info.get('height'))
         self.crop_widget.toggle.setEnabled(dimensions_known and not self._queue_busy)
         self.crop_widget.edit_btn.setEnabled(dimensions_known and self.crop_widget.is_crop_enabled() and not self._queue_busy)
-        self.trim_widget.visual_btn.setEnabled(bool(info.get('url')) and self.trim_widget.is_trim_enabled() and not self._queue_busy)
+        self.trim_widget.visual_btn.setEnabled(bool(info.get('url')) and not self._queue_busy)
         unknown = bool(info and not photo and not dimensions_known and not info.get('is_local'))
         self.metadata_details_btn.setVisible(unknown)
         self.metadata_details_btn.setEnabled(not self._queue_busy)

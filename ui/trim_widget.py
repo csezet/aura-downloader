@@ -16,6 +16,7 @@ class TrimWidget(QFrame):
         self.setFixedHeight(44)
 
         self._video_source = None
+        self._capture_source = None
         self._duration_sec = 60
 
         layout = QHBoxLayout(self)
@@ -45,7 +46,7 @@ class TrimWidget(QFrame):
         ctrl_layout.setSpacing(8)
 
         # Visual Trim Button (Opens interactive video player trim modal)
-        self.visual_btn = QPushButton(" НАСТРОИТЬ ОТРЕЗОК")
+        self.visual_btn = QPushButton(" ПРОСМОТР / КАДР")
         self.visual_btn.setIcon(get_svg_icon("scissors", color="#52525B", size=13))
         self.visual_btn.setIconSize(QSize(13, 13))
         self.visual_btn.setProperty("class", "GlassButton")
@@ -140,8 +141,11 @@ class TrimWidget(QFrame):
         layout.addWidget(self.controls_container)
         layout.addStretch(1)
 
-    def set_source_video(self, video_source: str, duration_sec: float = 60):
+    def set_source_video(self, video_source: str, duration_sec: float = 60, capture_source=None):
         self._video_source = video_source
+        self._capture_source = capture_source
+        self.visual_btn.setEnabled(bool(video_source))
+        self.visual_btn.setIcon(get_svg_icon('scissors', color='#FFFFFF' if video_source else '#52525B', size=13))
         self._duration_sec = duration_sec or 0
         self.start_input.setText("00:00")
         self.end_input.setText("")
@@ -153,8 +157,8 @@ class TrimWidget(QFrame):
             self.end_input.setText(ms_to_fmt(round(duration_sec * 1000)))
 
     def _on_toggled(self, checked: bool):
-        self.visual_btn.setEnabled(checked and bool(self._video_source))
-        self.visual_btn.setIcon(get_svg_icon("scissors", color="#FFFFFF" if checked else "#52525B", size=13))
+        self.visual_btn.setEnabled(bool(self._video_source))
+        self.visual_btn.setIcon(get_svg_icon("scissors", color="#FFFFFF" if self._video_source else "#52525B", size=13))
         self.start_input.setEnabled(checked)
         self.end_input.setEnabled(checked)
         self.lbl_from.setStyleSheet("color: #EDEDED; font-size: 11px; font-weight: bold;" if checked else "color: #52525B; font-size: 11px; font-weight: bold;")
@@ -165,6 +169,7 @@ class TrimWidget(QFrame):
         dialog = TrimDialog(
             parent=self.window(),
             video_source=self._video_source,
+            capture_source=self._capture_source,
             duration_sec=self._duration_sec,
             initial_start=self.start_input.text().strip(),
             initial_end=self.end_input.text().strip()

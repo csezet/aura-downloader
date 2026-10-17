@@ -144,6 +144,25 @@ def smoke_main(argv):
                 time.sleep(0.01)
             checked("Trim preview decodes a real video frame", bool(frames))
             trim_dialog.player.pause()
+            trim_dialog._request_frame(1)
+            deadline = time.monotonic() + 15
+            while trim_dialog._frame_busy and time.monotonic() < deadline:
+                app.processEvents()
+                time.sleep(.01)
+            checked('Previous and next frame controls decode original pixels',
+                    trim_dialog._frame_result and trim_dialog._frame_result['width'] == 128
+                    and trim_dialog.video_stack.currentWidget() is trim_dialog.frame_preview)
+            frame_path = output / 'Кадр из ролика.png'
+            trim_dialog._request_frame(0, str(frame_path))
+            deadline = time.monotonic() + 15
+            while trim_dialog._frame_busy and time.monotonic() < deadline:
+                app.processEvents()
+                time.sleep(.01)
+            from PIL import Image as FrameImage
+            with FrameImage.open(frame_path) as snapshot:
+                checked('Frame PNG preserves original resolution', snapshot.size == (128, 96))
+            checked('Saved photo has open and folder actions', not trim_dialog.btn_open_frame.isHidden()
+                    and not trim_dialog.btn_frame_folder.isHidden())
             trim_dialog._apply()
             checked("Trim editor preserves subsecond selection", trim_dialog.applied_range == ('00:00.2', '00:01'))
             long_dialog = TrimDialog(window, duration_sec=1800)
