@@ -1,11 +1,11 @@
 # Tested release environment: CPython 3.12.10, Windows x64.
 altgraph==0.17.5
 brotli==1.2.0
-certifi==2026.7.22
+certifi==2026.10.23
 cffi==2.1.1
 charset-normalizer==3.5.1
 curl-cffi==0.16.3
-deno==2.9.7
+deno==2.9.8
 idna==3.20
 mutagen==1.48.1
 packaging==26.3
@@ -25,5 +25,5 @@ setuptools==84.0.0
 shiboken6==6.11.2
 urllib3==2.8.0
 websockets==17.1
-yt-dlp==2026.8.19
+yt-dlp==2026.11.23
 yt-dlp-ejs==0.8.0
