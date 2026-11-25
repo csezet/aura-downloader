@@ -1,16 +1,18 @@
-import os
 import requests
 from PySide6.QtWidgets import (
-    QDialog, QFrame, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QScrollArea, QWidget, QCheckBox, QGraphicsDropShadowEffect
+    QFrame, QVBoxLayout, QHBoxLayout, QLabel,
+    QPushButton, QScrollArea, QWidget, QGraphicsDropShadowEffect
 )
 from PySide6.QtCore import Qt, Signal, Slot, QSize
 from PySide6.QtGui import QColor, QPixmap, QImage, QPainter, QPainterPath
 from assets.icons import get_svg_icon, get_svg_pixmap
-from core.workers import CancellableThread, start_worker
+from core.http_utils import MAX_THUMBNAIL_BYTES, read_limited_response
+from core.workers import PooledWorker, start_worker
+from ui.common_widgets import CheckmarkBox, DraggableMixin
 from ui.worker_dialog import WorkerDialog
 
-class ThumbnailLoader(CancellableThread):
+
+class ThumbnailLoader(PooledWorker):
     loaded = Signal(QImage)
 
     def __init__(self, url: str, target_size: QSize = QSize(70, 70), headers=None):
@@ -27,74 +29,27 @@ class ThumbnailLoader(CancellableThread):
                 'Referer': 'https://www.instagram.com/',
                 **self.headers,
             }
-            resp = requests.get(self.url, headers=headers, timeout=8)
+            resp = requests.get(self.url, headers=headers, timeout=8, stream=True)
             if resp.status_code == 200 and not self.isInterruptionRequested():
-                image = QImage.fromData(resp.content)
-                if not image.isNull():
-                    image = image.scaled(
-                        self.target_size,
-                        Qt.KeepAspectRatioByExpanding,
-                        Qt.SmoothTransformation
-                    )
-                    x = max(0, (image.width() - self.target_size.width()) // 2)
-                    y = max(0, (image.height() - self.target_size.height()) // 2)
-                    image = image.copy(x, y, self.target_size.width(), self.target_size.height())
-                    if not self.isInterruptionRequested():
-                        self.loaded.emit(image)
+                data = read_limited_response(resp, MAX_THUMBNAIL_BYTES, self.isInterruptionRequested)
+                if data and not self.isInterruptionRequested():
+                    image = QImage.fromData(data)
+                    if not image.isNull():
+                        image = image.scaled(
+                            self.target_size,
+                            Qt.KeepAspectRatioByExpanding,
+                            Qt.SmoothTransformation
+                        )
+                        x = max(0, (image.width() - self.target_size.width()) // 2)
+                        y = max(0, (image.height() - self.target_size.height()) // 2)
+                        image = image.copy(x, y, self.target_size.width(), self.target_size.height())
+                        if not self.isInterruptionRequested():
+                            self.loaded.emit(image)
         except Exception:
             pass
         finally:
             if resp is not None:
                 resp.close()
-
-
-class CheckmarkBox(QFrame):
-    def __init__(self, checked=True, parent=None):
-        super().__init__(parent)
-        self.setObjectName("CheckmarkBox")
-        self.setFixedSize(22, 22)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self._checked = checked
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setAlignment(Qt.AlignCenter)
-
-        self.icon_lbl = QLabel(self)
-        self.icon_lbl.setAlignment(Qt.AlignCenter)
-        self.icon_lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self.icon_lbl.setStyleSheet("border: none; background: transparent;")
-        layout.addWidget(self.icon_lbl)
-
-        self._update_appearance()
-
-    def isChecked(self) -> bool:
-        return self._checked
-
-    def setChecked(self, val: bool):
-        if self._checked != val:
-            self._checked = val
-            self._update_appearance()
-
-    def _update_appearance(self):
-        if self._checked:
-            self.icon_lbl.setPixmap(get_svg_pixmap("check", color="#000000", size=13))
-            self.setStyleSheet("""
-                QFrame#CheckmarkBox {
-                    background-color: #FFFFFF;
-                    border: 1px solid #FFFFFF;
-                    border-radius: 6px;
-                }
-            """)
-        else:
-            self.icon_lbl.clear()
-            self.setStyleSheet("""
-                QFrame#CheckmarkBox {
-                    background-color: rgba(0, 0, 0, 0.45);
-                    border: 1.5px solid rgba(255, 255, 255, 0.40);
-                    border-radius: 6px;
-                }
-            """)
 
 
 class GalleryItemWidget(QFrame):
@@ -129,7 +84,7 @@ class GalleryItemWidget(QFrame):
 
         # Asynchronously load thumbnail
         thumb_url = item.get('thumbnail') or item.get('best_image') or item.get('url')
-        if thumb_url and thumb_url.startswith('http'):
+        if thumb_url and str(thumb_url).lower().startswith(('http://', 'https://')):
             self.loader = ThumbnailLoader(thumb_url, QSize(70, 70), item.get('http_headers'))
             self.loader.loaded.connect(self._on_thumb_loaded)
             start_worker(self.loader, self)
@@ -253,6 +208,8 @@ class GalleryItemWidget(QFrame):
         if event.button() == Qt.LeftButton:
             self.set_selected(not self._is_selected)
             self.toggled.emit()
+            event.accept()
+            return
         super().mousePressEvent(event)
 
     def is_selected(self) -> bool:
@@ -264,9 +221,10 @@ class GalleryItemWidget(QFrame):
         self._update_appearance()
 
 
-class InstagramGalleryDialog(WorkerDialog):
+class InstagramGalleryDialog(DraggableMixin, WorkerDialog):
     def __init__(self, gallery_data: dict, parent=None):
         super().__init__(parent)
+        self._init_draggable(drag_height=60)
         self.setWindowTitle(f"Галерея {gallery_data.get('platform') or 'Instagram'} — Выбор фото")
         self.resize(680, 560)
         self.setMinimumSize(580, 460)
@@ -499,16 +457,6 @@ class InstagramGalleryDialog(WorkerDialog):
     def get_selected_items(self) -> list:
         return [w.item for w in self.item_widgets if w.is_selected()]
 
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton and event.position().y() < 60:
-            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-            event.accept()
-
-    def mouseMoveEvent(self, event):
-        if self._drag_pos and event.buttons() == Qt.LeftButton:
-            self.move(event.globalPosition().toPoint() - self._drag_pos)
-            event.accept()
-
     def showEvent(self, event):
         super().showEvent(event)
         if self.parent():
@@ -518,6 +466,3 @@ class InstagramGalleryDialog(WorkerDialog):
             self.move(max(0, x), max(0, y))
         self.raise_()
         self.activateWindow()
-
-    def mouseReleaseEvent(self, event):
-        self._drag_pos = None

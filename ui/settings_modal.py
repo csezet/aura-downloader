@@ -1,30 +1,41 @@
 import os
 import shutil
-import time
 import sys
 import logging
 from pathlib import Path
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFileDialog,
-    QSlider, QComboBox, QFrame, QWidget, QScrollArea, QMessageBox
+    QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFileDialog,
+    QSlider, QComboBox, QFrame, QMessageBox
 )
-from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtCore import Qt, Signal, QSize, QTimer
 from core.settings import settings
 from core.cookies_helper import SUPPORTED_BROWSERS
 from core.media_converter import cleanup_aura_temp_files
+from core.process_utils import CREATE_NO_WINDOW, get_startupinfo
 from ui.toggle_switch import ToggleSwitch
+from ui.common_widgets import DraggableMixin, show_recovery_sessions_dialog
 from assets.icons import get_svg_icon
 from core.workers import start_worker, worker_registry, CancellableThread
-from core.temp_files import release_cache_session, directory_is_active
+from core.temp_files import (
+    release_cache_session, directory_is_active, owned_directory, remove_owned_directory
+)
 from ui.worker_dialog import WorkerDialog
 from core.version import APP_VERSION, RELEASES_URL
 from core.app_logging import get_log_dir
 
-class SettingsModal(WorkerDialog):
+
+class SettingsModal(DraggableMixin, WorkerDialog):
     opacity_changed = Signal(float)
+    blur_changed = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._init_draggable()
+        self._pending_opacity = None
+        self._opacity_save_timer = QTimer(self)
+        self._opacity_save_timer.setSingleShot(True)
+        self._opacity_save_timer.setInterval(250)
+        self._opacity_save_timer.timeout.connect(self._commit_opacity)
         self.setWindowTitle("Настройки Aura")
         self.setFixedWidth(520)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
@@ -178,7 +189,7 @@ class SettingsModal(WorkerDialog):
         lbl_clip.setStyleSheet("color: #E4E4E7; font-size: 12px; font-weight: 600;")
         clip_row.addWidget(lbl_clip, stretch=1)
 
-        self.clip_toggle = ToggleSwitch(checked=settings.get("auto_paste", True))
+        self.clip_toggle = ToggleSwitch(checked=settings.get("auto_paste", False))
         self.clip_toggle.toggled.connect(lambda v: self._save_setting("auto_paste", v))
         clip_row.addWidget(self.clip_toggle)
         c1_layout.addLayout(clip_row)
@@ -210,7 +221,7 @@ class SettingsModal(WorkerDialog):
         lbl_opacity.setProperty("class", "SectionHeader")
         opacity_header.addWidget(lbl_opacity)
 
-        self.opacity_val_lbl = QLabel(f"{int(settings.get('glass_opacity', 0.50) * 100)}%")
+        self.opacity_val_lbl = QLabel(f"{int(settings.get('glass_opacity', 0.45) * 100)}%")
         self.opacity_val_lbl.setStyleSheet("""
             background-color: rgba(255, 255, 255, 0.10);
             border-radius: 5px;
@@ -225,7 +236,7 @@ class SettingsModal(WorkerDialog):
 
         self.slider = QSlider(Qt.Horizontal)
         self.slider.setRange(20, 90)
-        self.slider.setValue(int(settings.get("glass_opacity", 0.50) * 100))
+        self.slider.setValue(int(settings.get("glass_opacity", 0.45) * 100))
         self.slider.setStyleSheet("""
             QSlider::groove:horizontal {
                 border: 1px solid rgba(255, 255, 255, 0.12);
@@ -247,7 +258,20 @@ class SettingsModal(WorkerDialog):
             }
         """)
         self.slider.valueChanged.connect(self._on_opacity_slider_changed)
+        self.slider.sliderReleased.connect(self._commit_opacity)
         c2_layout.addWidget(self.slider)
+
+        # Acrylic blur row
+        blur_row = QHBoxLayout()
+        blur_row.setContentsMargins(0, 2, 0, 0)
+        lbl_blur = QLabel("Размытие фона окна (Acrylic Blur)")
+        lbl_blur.setStyleSheet("color: #E4E4E7; font-size: 12px; font-weight: 600;")
+        blur_row.addWidget(lbl_blur, stretch=1)
+
+        self.blur_toggle = ToggleSwitch(checked=settings.get("acrylic_blur", True))
+        self.blur_toggle.toggled.connect(self._on_blur_toggled)
+        blur_row.addWidget(self.blur_toggle)
+        c2_layout.addLayout(blur_row)
 
         # Audio format & Cookies rows
         dropdown_row = QHBoxLayout()
@@ -428,8 +452,25 @@ class SettingsModal(WorkerDialog):
     def _on_opacity_slider_changed(self, val):
         opacity = val / 100.0
         self.opacity_val_lbl.setText(f"{val}%")
-        if self._save_setting("glass_opacity", opacity):
-            self.opacity_changed.emit(opacity)
+        self._pending_opacity = opacity
+        self.opacity_changed.emit(opacity)
+        if not self.slider.isSliderDown():
+            self._opacity_save_timer.start()
+
+    def _commit_opacity(self):
+        self._opacity_save_timer.stop()
+        if self._pending_opacity is not None:
+            opacity = self._pending_opacity
+            self._pending_opacity = None
+            self._save_setting("glass_opacity", opacity)
+
+    def _on_blur_toggled(self, enabled: bool):
+        if self._save_setting("acrylic_blur", bool(enabled)):
+            self.blur_changed.emit(bool(enabled))
+
+    def done(self, result):
+        self._commit_opacity()
+        super().done(result)
 
     def _on_cookies_changed(self, idx):
         browser_id = self.cookies_combo.itemData(idx)
@@ -457,133 +498,45 @@ class SettingsModal(WorkerDialog):
             QMessageBox.information(self, "Восстановление файлов", "Сохранённых сессий восстановления не обнаружено.")
             return
 
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Сохранённые сессии восстановления")
-        dialog.setMinimumWidth(560)
-        dialog.setMinimumHeight(340)
-        dialog.setStyleSheet("""
-            QDialog { background-color: #121217; color: #EDEDED; }
-            QLabel { color: #EDEDED; }
-            QPushButton {
-                background-color: rgba(255, 255, 255, 0.08);
-                border: 1px solid rgba(255, 255, 255, 0.15);
-                border-radius: 6px;
-                padding: 4px 10px;
-                color: #EDEDED;
-                font-weight: 600;
-                font-size: 11px;
-            }
-            QPushButton:hover { background-color: rgba(255, 255, 255, 0.16); }
-            QScrollArea { border: none; background: transparent; }
-        """)
-
-        d_layout = QVBoxLayout(dialog)
-        d_layout.setContentsMargins(16, 16, 16, 16)
-        d_layout.setSpacing(12)
-
-        header = QLabel("📁 Сохранённые файлы после сбоев перемещения:")
-        header.setStyleSheet("font-weight: 700; font-size: 13px; color: #FFFFFF;")
-        d_layout.addWidget(header)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll_content = QWidget()
-        scroll_layout = QVBoxLayout(scroll_content)
-        scroll_layout.setSpacing(8)
-
-        for s in sessions:
-            card = QFrame()
-            card.setStyleSheet("background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; padding: 8px;")
-            card_layout = QVBoxLayout(card)
-
-            path = s.get('path', '')
-            is_accessible = s.get('is_accessible', True)
-            files_info = ", ".join(f.get('name', '') for f in s.get('files', [])) if s.get('files') else "(нет файлов)"
-            dt_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(s.get('timestamp', time.time())))
-
-            if not is_accessible:
-                lbl_title = QLabel(f"⚠️ ДИСК НЕДОСТУПЕН // {dt_str}")
-                lbl_title.setStyleSheet("font-weight: 700; color: #F59E0B; font-size: 11px;")
-            else:
-                lbl_title = QLabel(f"📅 {dt_str} // {len(s.get('files', []))} файлов")
-                lbl_title.setStyleSheet("font-weight: 700; color: #60A5FA; font-size: 11px;")
-            card_layout.addWidget(lbl_title)
-
-            lbl_path = QLabel(f"Путь: {path}")
-            lbl_path.setStyleSheet("color: #9CA3AF; font-size: 10px; font-family: monospace;")
-            lbl_path.setWordWrap(True)
-            card_layout.addWidget(lbl_path)
-
-            if is_accessible:
-                lbl_files = QLabel(f"Файлы: {files_info}")
-                lbl_files.setStyleSheet("color: #D1D5DB; font-size: 11px;")
-                lbl_files.setWordWrap(True)
-                card_layout.addWidget(lbl_files)
-
-            lbl_err = QLabel(f"Причина: {s.get('error', '')}")
-            lbl_err.setStyleSheet("color: #9CA3AF; font-size: 10px;")
-            lbl_err.setWordWrap(True)
-            card_layout.addWidget(lbl_err)
-
-            btn_row = QHBoxLayout()
-            btn_open = QPushButton("📂 Открыть в Проводнике")
-            btn_open.setEnabled(is_accessible and os.path.exists(path))
-            btn_open.clicked.connect(lambda _, p=path: os.startfile(p) if os.path.exists(p) else None)
-            btn_row.addWidget(btn_open)
-
-            def make_delete_handler(p_to_del, card_widget, accessible):
-                def handler():
-                    reply = QMessageBox.question(
+        def handle_delete(dialog, p_to_del, card_widget, accessible):
+            reply = QMessageBox.question(
+                dialog,
+                "Удаление",
+                f"Удалить сохранённую папку {os.path.basename(p_to_del)}?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+            if accessible and os.path.exists(p_to_del):
+                target = Path(p_to_del)
+                resolved = target.resolve()
+                expected_parent = target.parent.resolve()
+                if (resolved.parent != expected_parent or not resolved.name.startswith(".aura_staging_")
+                        or os.path.normcase(os.path.abspath(target)) != os.path.normcase(str(resolved))
+                        or directory_is_active(target)):
+                    QMessageBox.warning(dialog, "Папка используется", "Активный или небезопасный каталог нельзя удалить.")
+                    return
+                if owned_directory(target, "staging"):
+                    removed = remove_owned_directory(target, expected_parent, "staging")
+                else:
+                    shutil.rmtree(resolved, ignore_errors=True)
+                    removed = not os.path.exists(p_to_del)
+                if removed:
+                    settings.unregister_recovery_session(p_to_del)
+                    card_widget.setVisible(False)
+                    self._refresh_recovery_button()
+                else:
+                    QMessageBox.warning(
                         dialog,
-                        "Удаление",
-                        f"Удалить сохранённую папку {os.path.basename(p_to_del)}?",
-                        QMessageBox.Yes | QMessageBox.No
+                        "Ошибка удаления",
+                        f"Не удалось удалить папку {os.path.basename(p_to_del)} (возможно, файлы открыты в другой программе)."
                     )
-                    if reply == QMessageBox.Yes:
-                        if accessible and os.path.exists(p_to_del):
-                            target = Path(p_to_del)
-                            resolved = target.resolve()
-                            expected_parent = target.parent.resolve()
-                            if (resolved.parent != expected_parent or not resolved.name.startswith(".aura_staging_")
-                                    or os.path.normcase(os.path.abspath(target)) != os.path.normcase(str(resolved))
-                                    or directory_is_active(target)):
-                                QMessageBox.warning(dialog, "Папка используется", "Активный или небезопасный каталог нельзя удалить.")
-                                return
-                            shutil.rmtree(resolved, ignore_errors=True)
-                            if not os.path.exists(p_to_del):
-                                settings.unregister_recovery_session(p_to_del)
-                                card_widget.setVisible(False)
-                                self._refresh_recovery_button()
-                            else:
-                                QMessageBox.warning(
-                                    dialog,
-                                    "Ошибка удаления",
-                                    f"Не удалось удалить папку {os.path.basename(p_to_del)} (возможно, файлы открыты в другой программе)."
-                                )
-                        else:
-                            settings.unregister_recovery_session(p_to_del)
-                            card_widget.setVisible(False)
-                            self._refresh_recovery_button()
-                return handler
+            else:
+                settings.unregister_recovery_session(p_to_del)
+                card_widget.setVisible(False)
+                self._refresh_recovery_button()
 
-            btn_del = QPushButton("🗑️ Удалить" if is_accessible else "🗑️ Удалить из списка")
-            btn_del.setStyleSheet("color: #EF4444;")
-            btn_del.clicked.connect(make_delete_handler(path, card, is_accessible))
-            btn_row.addWidget(btn_del)
-
-            btn_row.addStretch()
-            card_layout.addLayout(btn_row)
-            scroll_layout.addWidget(card)
-
-        scroll_layout.addStretch()
-        scroll.setWidget(scroll_content)
-        d_layout.addWidget(scroll)
-
-        btn_close = QPushButton("Закрыть")
-        btn_close.clicked.connect(dialog.accept)
-        d_layout.addWidget(btn_close, alignment=Qt.AlignRight)
-
-        dialog.exec()
+        show_recovery_sessions_dialog(self, sessions, on_delete=handle_delete)
         self._refresh_recovery_button()
 
     def _clear_cache(self):
@@ -676,7 +629,8 @@ class UpdateYtdlpWorker(CancellableThread):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True, encoding="utf-8", errors="replace",
-                creationflags=0x08000000
+                startupinfo=get_startupinfo(),
+                creationflags=CREATE_NO_WINDOW
             )
             try:
                 while True:
@@ -702,6 +656,11 @@ class UpdateYtdlpWorker(CancellableThread):
             if proc.returncode == 0:
                 self.finished_signal.emit("yt-dlp и компоненты обновлены. Перезапустите приложение для применения.", True)
             else:
-                self.finished_signal.emit(f"Ошибка обновления: {stderr[:60]}", False)
+                lines = [line.strip() for line in (stderr or stdout or "").splitlines() if line.strip()]
+                detail = next(
+                    (line for line in reversed(lines) if "error" in line.lower()),
+                    lines[-1] if lines else f"код {proc.returncode}"
+                )
+                self.finished_signal.emit(f"Ошибка обновления: {detail[-160:]}", False)
         except Exception as e:
-            self.finished_signal.emit(f"Ошибка: {str(e)[:60]}", False)
+            self.finished_signal.emit(f"Ошибка: {str(e)[:160]}", False)

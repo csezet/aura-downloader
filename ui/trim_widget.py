@@ -1,8 +1,7 @@
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QWidget, QSizePolicy
 )
-from PySide6.QtCore import Qt, Signal, QSize
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import Signal, QSize
 from assets.icons import get_svg_icon
 from ui.toggle_switch import ToggleSwitch
 from ui.trim_dialog import TrimDialog, ms_to_fmt
@@ -178,6 +177,8 @@ class TrimWidget(QFrame):
             start_str, end_str = dialog.applied_range
             self.start_input.setText(start_str)
             self.end_input.setText(end_str)
+            if not self.toggle.isChecked():
+                self.toggle.setChecked(True)
 
     def is_trim_enabled(self) -> bool:
         return self.toggle.isChecked()

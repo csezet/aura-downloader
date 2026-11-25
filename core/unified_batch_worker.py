@@ -2,6 +2,7 @@ import copy
 import math
 import logging
 import os
+import threading
 from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 from core.downloader import DownloadWorker
@@ -22,16 +23,19 @@ class UnifiedBatchWorker(QThread):
         self.fallback_options = copy.deepcopy(fallback_options or {})
         self.items = [normalize_item(item, self.fallback_options) for item in (items or [])]
         self.save_dir = save_dir
+        self._worker_lock = threading.Lock()
         self.is_cancelled = False
         self._current_worker = None
         self.results, self.errors, self.failed_items = [], [], []
         self.total = len(self.items)
 
     def cancel(self):
-        self.is_cancelled = True
+        with self._worker_lock:
+            self.is_cancelled = True
+            current = self._current_worker
         self.requestInterruption()
-        if self._current_worker:
-            self._current_worker.cancel()
+        if current is not None:
+            current.cancel()
 
     def run(self):
         from core.local_processor import process_single_local_file, is_video_file
@@ -98,27 +102,35 @@ class UnifiedBatchWorker(QThread):
                     if direct:
                         options["direct_media_url"] = direct
                     worker = DownloadWorker(path, options, self.save_dir)
-                    self._current_worker = worker
-                    def on_done(result):
-                        nonlocal item_result
-                        item_result = result
-                    def on_error(error):
-                        nonlocal item_error
-                        item_error = error
-                    def on_recovery(info):
-                        nonlocal recovery_dir
-                        recovery_dir = info.get("staging_dir")
-                    worker.download_completed.connect(on_done)
-                    worker.download_error.connect(on_error)
-                    worker.progress_updated.connect(on_progress)
-                    worker.status_message.connect(on_status)
-                    if hasattr(worker, "recovery_available"):
-                        worker.recovery_available.connect(on_recovery)
-                    worker.run()
+                    with self._worker_lock:
+                        if self.is_cancelled:
+                            worker.cancel()
+                        self._current_worker = worker
+                    if not self.is_cancelled:
+                        def on_done(result):
+                            nonlocal item_result
+                            item_result = result
+
+                        def on_error(error):
+                            nonlocal item_error
+                            item_error = error
+
+                        def on_recovery(info):
+                            nonlocal recovery_dir
+                            recovery_dir = info.get("staging_dir")
+
+                        worker.download_completed.connect(on_done)
+                        worker.download_error.connect(on_error)
+                        worker.progress_updated.connect(on_progress)
+                        worker.status_message.connect(on_status)
+                        if hasattr(worker, "recovery_available"):
+                            worker.recovery_available.connect(on_recovery)
+                        worker.run()
             except Exception as error:
                 item_error = str(error)
             finally:
-                self._current_worker = None
+                with self._worker_lock:
+                    self._current_worker = None
 
             if item_result:
                 result = {**item_result, "item_id": item["item_id"], "save_dir": self.save_dir,
@@ -126,7 +138,7 @@ class UnifiedBatchWorker(QThread):
                 results.append(result)
                 self.item_completed.emit(result)
                 state(item, "completed", result=result, percent=100)
-                overall = (idx + 1) / max(1, total) * 100
+                overall = max(overall, (idx + 1) / max(1, total) * 100)
                 self.progress_updated.emit({"percent": overall, "speed_str": "ГОТОВО", "eta_str": "--:--",
                                             "downloaded_str": f"{len(results)}/{total} готово",
                                             "total_str": f"{total} файлов", "status": "processing"})
@@ -143,13 +155,18 @@ class UnifiedBatchWorker(QThread):
                 failed.append(snapshot)
                 state(item, "error", error=item_error, recovery_dir=recovery_dir)
                 on_status(f"Ошибка: {item_error}")
+                overall = max(overall, (idx + 1) / max(1, total) * 100)
+                self.progress_updated.emit({"percent": overall, "speed_str": "ОШИБКА", "eta_str": "--:--",
+                                            "downloaded_str": f"{len(results)}/{total} готово",
+                                            "total_str": f"{total} файлов", "status": "processing"})
 
         for item in pending:
             state(item, "cancelled")
         self.results, self.errors, self.failed_items = results, errors, failed
         cancelled = self.is_cancelled
         status = "cancelled" if cancelled else ("finished_with_errors" if results and errors else "error" if errors else "finished")
-        self.progress_updated.emit({"percent": len(results) / max(1, total) * 100,
+        final_percent = overall if cancelled else (100.0 if total > 0 else 0.0)
+        self.progress_updated.emit({"percent": final_percent,
                                     "speed_str": "ОСТАНОВЛЕНО" if cancelled else f"ЧАСТИЧНО ({len(results)}/{total})" if errors and results else "СБОЙ ОЧЕРЕДИ" if errors else "ГОТОВО",
                                     "eta_str": "00:00", "downloaded_str": f"{len(results)}/{total} готово",
                                     "total_str": f"{total} файлов", "status": status})

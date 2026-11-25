@@ -1,3 +1,4 @@
+import hashlib
 import os
 import subprocess
 from pathlib import Path
@@ -5,21 +6,14 @@ from PySide6.QtCore import QThread, Signal
 from core.downloader import format_bytes, format_seconds
 from core.media_converter import (
     convert_to_gif, compress_to_target_size,
-    get_video_dimensions, get_video_duration, get_unique_path, run_ffmpeg_cancellable,
-    get_ffmpeg_path, transform_video, extract_audio
+    get_video_dimensions, get_video_duration, run_ffmpeg_cancellable,  # noqa: F401
+    get_unique_path, get_ffmpeg_path, transform_video, extract_audio, probe_media_info
 )
-from core.interpolator import interpolate_video, get_video_fps
+from core.interpolator import interpolate_video, get_video_fps  # noqa: F401
+from core.process_utils import CREATE_NO_WINDOW, get_startupinfo
 from core.temp_files import get_cache_dir, OwnedDirectory, remove_owned_directory
 
-CREATE_NO_WINDOW = 0x08000000
-
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.mkv', '.webm', '.avi', '.flv', '.wmv', '.m4v', '.ts'}
-
-def get_startupinfo():
-    startupinfo = subprocess.STARTUPINFO()
-    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = subprocess.SW_HIDE
-    return startupinfo
 
 def is_video_file(file_path: str) -> bool:
     if not file_path or not isinstance(file_path, str):
@@ -37,20 +31,11 @@ def get_local_media_info(file_path: str) -> dict:
     if not os.path.exists(file_path):
         return None
 
-    try:
-        duration = get_video_duration(file_path)
-    except Exception:
-        duration = None
-
-    try:
-        width, height = get_video_dimensions(file_path)
-    except Exception:
-        width, height = None, None
-
-    try:
-        fps = get_video_fps(file_path)
-    except Exception:
-        fps = None
+    probe = probe_media_info(file_path)
+    duration = probe["duration"]
+    width = probe["width"]
+    height = probe["height"]
+    fps = probe["fps"]
 
     try:
         size = os.path.getsize(file_path)
@@ -60,7 +45,8 @@ def get_local_media_info(file_path: str) -> dict:
     thumb_path = None
     try:
         temp_dir = get_cache_dir()
-        thumb_path = os.path.join(temp_dir, f"aura_thumb_{abs(hash(file_path))}.jpg")
+        thumb_key = hashlib.md5(f"{os.path.abspath(file_path)}:{size}".encode("utf-8")).hexdigest()[:12]
+        thumb_path = os.path.join(temp_dir, f"aura_thumb_{thumb_key}.jpg")
         seek_sec = "00:00:00.5" if (duration and duration > 1) else "00:00:00"
         cmd = [
             get_ffmpeg_path(), "-y",
@@ -78,7 +64,7 @@ def get_local_media_info(file_path: str) -> dict:
             stderr=subprocess.PIPE,
             timeout=10
         )
-        if not os.path.exists(thumb_path):
+        if not os.path.exists(thumb_path) or os.path.getsize(thumb_path) == 0:
             thumb_path = None
     except Exception:
         thumb_path = None
@@ -230,4 +216,4 @@ class LocalProcessWorker(QThread):
 
 
 # UnifiedBatchWorker replaces the legacy local-only batch worker
-from core.unified_batch_worker import UnifiedBatchWorker as LocalBatchProcessWorker
+from core.unified_batch_worker import UnifiedBatchWorker as LocalBatchProcessWorker  # noqa: F401

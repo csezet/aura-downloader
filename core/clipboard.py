@@ -1,11 +1,42 @@
 import re
-from PySide6.QtCore import QObject, Signal, QTimer
+from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication
 
 URL_PATTERN = re.compile(
-    r'(https?://(?:www\.)?(?:youtube\.com|youtu\.be|(?:(?:m|vm|vt)\.)?tiktok\.com|instagram\.com|twitter\.com|x\.com|vk\.com|vkvideo\.ru|twitch\.tv|reddit\.com|pinterest\.com|vimeo\.com|facebook\.com|fb\.watch)[^\s]+)',
-    re.IGNORECASE
+    r'(https?://(?:www\.)?(?:'
+    r'(?:m\.|music\.)?youtube\.com|youtu\.be|'
+    r'(?:(?:m|vm|vt)\.)?tiktok\.com|'
+    r'instagram\.com|instagr\.am|'
+    r'twitter\.com|x\.com|'
+    r'vk\.com|vkvideo\.ru|'
+    r'(?:clips\.)?twitch\.tv|'
+    r'reddit\.com|redd\.it|'
+    r'pinterest\.com|pin\.it|'
+    r'vimeo\.com|facebook\.com|fb\.watch'
+    r')[^\s<>"\']+)',
+    re.IGNORECASE,
 )
+
+_TRAILING_PUNCTUATION = '.,;:!?)]}>"\'»）。，！？'
+
+
+def extract_supported_url(text: str):
+    match = URL_PATTERN.search(str(text or ""))
+    if not match:
+        return None
+    url = match.group(1)
+    while url:
+        last = url[-1]
+        if last == ')' and url.count(')') <= url.count('('):
+            break
+        if last == ']' and url.count(']') <= url.count('['):
+            break
+        if last in _TRAILING_PUNCTUATION:
+            url = url[:-1]
+        else:
+            break
+    return url or None
+
 
 class ClipboardWatcher(QObject):
     url_detected = Signal(str)
@@ -26,7 +57,6 @@ class ClipboardWatcher(QObject):
         text = self._clipboard.text().strip()
         if text and text != self._last_clipboard_text:
             self._last_clipboard_text = text
-            match = URL_PATTERN.search(text)
-            if match:
-                detected_url = match.group(1)
+            detected_url = extract_supported_url(text)
+            if detected_url:
                 self.url_detected.emit(detected_url)

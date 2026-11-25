@@ -1,11 +1,11 @@
-import os
 from PySide6.QtWidgets import (
-    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame, QSizePolicy
+    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame
 )
-from PySide6.QtCore import Qt, QRectF, QPointF, Signal, QSize
+from PySide6.QtCore import Qt, QRectF, QPointF, Signal
 from PySide6.QtGui import (
-    QPainter, QColor, QPen, QBrush, QPixmap, QCursor, QPainterPath, QFont
+    QPainter, QColor, QPen, QBrush, QPixmap, QPainterPath, QFont
 )
+from ui.common_widgets import DraggableMixin
 
 HANDLE_NONE = 0
 HANDLE_TL = 1
@@ -44,7 +44,7 @@ class CropCanvas(QWidget):
     def set_aspect_ratio(self, ratio: float):
         self.aspect_ratio = ratio
         if ratio is not None:
-            # Adjust current normalized crop to fit ratio centered
+            # Adjust current normalized crop to fit ratio centered within [0, 1] x [0, 1]
             img_aspect = self.source_width / max(1, self.source_height)
             norm_ratio = ratio / img_aspect
 
@@ -56,6 +56,9 @@ class CropCanvas(QWidget):
             if cur_h > 1.0:
                 cur_h = 1.0
                 cur_w = cur_h * norm_ratio
+            if cur_w > 1.0:
+                cur_w = 1.0
+                cur_h = cur_w / norm_ratio
 
             x = max(0.0, min(1.0 - cur_w, cx - cur_w / 2))
             y = max(0.0, min(1.0 - cur_h, cy - cur_h / 2))
@@ -104,7 +107,8 @@ class CropCanvas(QWidget):
             'x': crop_x,
             'y': crop_y,
             'source_w': self.source_width,
-            'source_h': self.source_height
+            'source_h': self.source_height,
+            'aspect_ratio': self.aspect_ratio
         }
 
     def _get_image_draw_rect(self) -> QRectF:
@@ -216,24 +220,76 @@ class CropCanvas(QWidget):
             if self.aspect_ratio is not None:
                 img_aspect = self.source_width / max(1, self.source_height)
                 norm_ratio = self.aspect_ratio / img_aspect
+                min_w = max(min_size, min_size * norm_ratio)
+                min_h = max(min_size, min_size / norm_ratio)
 
                 w = right - left
                 h = bottom - top
 
-                if self.active_handle in [HANDLE_L, HANDLE_R]:
+                if self.active_handle == HANDLE_L:
+                    max_w = min(r.right(), 1.0 * norm_ratio)
+                    w = max(min(min_w, max_w), min(max_w, w))
                     h = w / norm_ratio
+                    left = r.right() - w
+                    right = r.right()
                     top = max(0.0, min(1.0 - h, r.center().y() - h / 2))
                     bottom = top + h
-                elif self.active_handle in [HANDLE_T, HANDLE_B]:
+                elif self.active_handle == HANDLE_R:
+                    max_w = min(1.0 - r.left(), 1.0 * norm_ratio)
+                    w = max(min(min_w, max_w), min(max_w, w))
+                    h = w / norm_ratio
+                    left = r.left()
+                    right = r.left() + w
+                    top = max(0.0, min(1.0 - h, r.center().y() - h / 2))
+                    bottom = top + h
+                elif self.active_handle == HANDLE_T:
+                    max_h = min(r.bottom(), 1.0 / norm_ratio)
+                    h = max(min(min_h, max_h), min(max_h, h))
                     w = h * norm_ratio
+                    top = r.bottom() - h
+                    bottom = r.bottom()
+                    left = max(0.0, min(1.0 - w, r.center().x() - w / 2))
+                    right = left + w
+                elif self.active_handle == HANDLE_B:
+                    max_h = min(1.0 - r.top(), 1.0 / norm_ratio)
+                    h = max(min(min_h, max_h), min(max_h, h))
+                    w = h * norm_ratio
+                    top = r.top()
+                    bottom = r.top() + h
                     left = max(0.0, min(1.0 - w, r.center().x() - w / 2))
                     right = left + w
                 elif self.active_handle in [HANDLE_TL, HANDLE_TR, HANDLE_BL, HANDLE_BR]:
-                    target_h = w / norm_ratio
-                    if self.active_handle in [HANDLE_TL, HANDLE_TR]:
-                        top = max(0.0, bottom - target_h)
+                    if self.active_handle == HANDLE_TL:
+                        ax, ay = r.right(), r.bottom()
+                        max_w, max_h = ax, ay
+                    elif self.active_handle == HANDLE_TR:
+                        ax, ay = r.left(), r.bottom()
+                        max_w, max_h = 1.0 - ax, ay
+                    elif self.active_handle == HANDLE_BL:
+                        ax, ay = r.right(), r.top()
+                        max_w, max_h = ax, 1.0 - ay
+                    else:  # HANDLE_BR
+                        ax, ay = r.left(), r.top()
+                        max_w, max_h = 1.0 - ax, 1.0 - ay
+
+                    fit_max_w = min(max_w, max_h * norm_ratio)
+                    fit_min_w = min(fit_max_w, min_w)
+                    candidate_w = h * norm_ratio if abs(dy_norm) > abs(dx_norm) else w
+                    w = max(fit_min_w, min(fit_max_w, candidate_w))
+                    h = w / norm_ratio
+
+                    if self.active_handle == HANDLE_TL:
+                        left, right = ax - w, ax
+                        top, bottom = ay - h, ay
+                    elif self.active_handle == HANDLE_TR:
+                        left, right = ax, ax + w
+                        top, bottom = ay - h, ay
+                    elif self.active_handle == HANDLE_BL:
+                        left, right = ax - w, ax
+                        top, bottom = ay, ay + h
                     else:
-                        bottom = min(1.0, top + target_h)
+                        left, right = ax, ax + w
+                        top, bottom = ay, ay + h
 
             self.crop_norm = QRectF(left, top, right - left, bottom - top)
 
@@ -308,9 +364,10 @@ class CropCanvas(QWidget):
         painter.drawRoundedRect(QRectF(x + w - hs/2, y + h/2 - hs/2, hs, hs), 2, 2)
 
 
-class CropDialog(QDialog):
+class CropDialog(DraggableMixin, QDialog):
     def __init__(self, parent=None, pixmap: QPixmap = None, source_w: int = 1920, source_h: int = 1080, initial_params: dict = None):
         super().__init__(parent)
+        self._init_draggable()
         self.setWindowTitle("Кадрирование видео")
         self.resize(820, 620)
         self.setMinimumSize(720, 520)
@@ -455,12 +512,29 @@ class CropDialog(QDialog):
                 initial_params['w_norm'],
                 initial_params['h_norm']
             )
+            saved_ratio = initial_params.get('aspect_ratio')
+            matched_ratio, matched_btn = self._match_preset(saved_ratio)
+            self.canvas.aspect_ratio = matched_ratio
+            self._highlight_preset_button(matched_btn)
             self.canvas.update()
             self._on_crop_changed(self.canvas.get_crop_params())
         else:
             self._reset()
 
-    def _set_preset(self, ratio: float, active_btn: QPushButton):
+    def _match_preset(self, ratio):
+        presets = [
+            (1.0, self.pill_1_1),
+            (9.0 / 16.0, self.pill_9_16),
+            (16.0 / 9.0, self.pill_16_9),
+            (4.0 / 5.0, self.pill_4_5),
+        ]
+        if ratio is not None:
+            for preset_ratio, btn in presets:
+                if abs(float(ratio) - preset_ratio) < 1e-4:
+                    return preset_ratio, btn
+        return None, self.pill_free
+
+    def _highlight_preset_button(self, active_btn: QPushButton):
         for btn in [self.pill_free, self.pill_1_1, self.pill_9_16, self.pill_16_9, self.pill_4_5]:
             btn.setProperty("active", "false")
             btn.style().unpolish(btn)
@@ -470,6 +544,8 @@ class CropDialog(QDialog):
         active_btn.style().unpolish(active_btn)
         active_btn.style().polish(active_btn)
 
+    def _set_preset(self, ratio: float, active_btn: QPushButton):
+        self._highlight_preset_button(active_btn)
         self.canvas.set_aspect_ratio(ratio)
 
     def _reset(self):
@@ -486,16 +562,6 @@ class CropDialog(QDialog):
     def _apply(self):
         self.applied_crop_params = self.canvas.get_crop_params()
         self.accept()
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-            event.accept()
-
-    def mouseMoveEvent(self, event):
-        if event.buttons() == Qt.LeftButton and self._drag_pos is not None:
-            self.move(event.globalPosition().toPoint() - self._drag_pos)
-            event.accept()
 
     def keyPressEvent(self, event):
         key = event.key()

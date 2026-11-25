@@ -1,11 +1,13 @@
 import os
-import subprocess
 from PySide6.QtWidgets import (
-    QDialog, QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QWidget, QSizePolicy
+    QDialog, QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QScrollArea, QWidget, QSizePolicy, QMessageBox
 )
 from PySide6.QtCore import Qt, QSize
 from core.history import history
+from core.process_utils import open_path_in_os, reveal_in_explorer
 from assets.icons import get_svg_icon
+from ui.common_widgets import DraggableMixin
 
 
 class ElidedLabel(QLabel):
@@ -134,26 +136,21 @@ class HistoryItemWidget(QFrame):
             layout.addWidget(self.folder_btn)
 
     def _play(self):
-        fp = self.item.get("file_path")
-        if fp and os.path.exists(fp):
-            os.startfile(fp)
+        open_path_in_os(self.item.get("file_path"))
 
     def _open_folder(self):
-        fp = self.item.get("file_path")
-        if fp and os.path.exists(fp):
-            subprocess.run(['explorer', '/select,', os.path.normpath(fp)])
+        reveal_in_explorer(self.item.get("file_path"))
 
 
-class HistoryModal(QDialog):
+class HistoryModal(DraggableMixin, QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._init_draggable()
         self.setWindowTitle("История загрузок")
         self.resize(680, 500)
         self.setMinimumSize(580, 420)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
-
-        self._drag_pos = None
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -324,15 +321,16 @@ class HistoryModal(QDialog):
                 self.list_layout.insertWidget(self.list_layout.count() - 1, widget)
 
     def _clear_history(self):
+        if not history.get_all():
+            return
+        reply = QMessageBox.question(
+            self,
+            "Очистить историю",
+            "Вы уверены, что хотите очистить всю историю загрузок?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
         history.clear()
         self._refresh()
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-            event.accept()
-
-    def mouseMoveEvent(self, event):
-        if event.buttons() == Qt.LeftButton and self._drag_pos is not None:
-            self.move(event.globalPosition().toPoint() - self._drag_pos)
-            event.accept()

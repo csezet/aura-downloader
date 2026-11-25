@@ -1,7 +1,6 @@
 import os
 import re
 import time
-import subprocess
 import shutil
 import requests
 import copy
@@ -15,13 +14,55 @@ from core.settings import settings
 from core.js_runtime import javascript_options
 from core.cookies_helper import get_cookies_config
 import json
+from core.http_utils import parse_content_length as _parse_content_length
 from core.media_converter import (
     convert_to_gif, compress_to_target_size, crop_video, get_unique_path,
-    get_unique_base_for_group, get_video_duration, probe_video_stream, get_ffmpeg_path, transform_video
+    get_unique_base_for_group, probe_video_stream, get_ffmpeg_path,
+    transform_video, needs_scale
 )
 from core.interpolator import interpolate_video
-from core.media_options import parse_time_str, trim_range, resolution_bounds
+from core.media_options import trim_range, resolution_bounds
 from core.temp_files import OwnedDirectory, OWNER_FILE, LOCK_FILE, remove_owned_directory
+
+WINDOWS_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
+
+def sanitize_filename(name: str, fallback: str = "media", max_len: int = 120) -> str:
+    """Sanitize a filename stem: strip unsafe chars, cap length, avoid empty/Windows reserved names."""
+    text = str(name or "").strip()
+    cleaned = re.sub(r'[^\w\-]', '_', text)
+    cleaned = re.sub(r'_+', '_', cleaned).strip('_. ')
+    if len(cleaned) > max_len:
+        cleaned = cleaned[:max_len].rstrip('_. ')
+    if not cleaned:
+        cleaned = fallback
+    if cleaned.upper() in WINDOWS_RESERVED_NAMES:
+        cleaned = f"_{cleaned}"
+    return cleaned
+
+
+def _choose_instagram_carousel_video_url(entry: dict):
+    """Select the highest-quality progressive MP4 stream that includes audio (avoiding acodec == 'none')."""
+    formats = [f for f in (entry.get('formats') or []) if f.get('url') and f.get('vcodec') != 'none']
+    if not formats:
+        return entry.get('url')
+
+    def score(fmt):
+        acodec = fmt.get('acodec')
+        protocol = (fmt.get('protocol') or '').lower()
+        is_progressive = protocol in ('', 'http', 'https')
+        not_video_only = (acodec != 'none')
+        is_mp4 = (fmt.get('ext') or '').lower() == 'mp4'
+        has_explicit_audio = acodec not in (None, 'none')
+        pixels = (fmt.get('height') or 0) * (fmt.get('width') or 0)
+        tbr = fmt.get('tbr') or 0
+        return (is_progressive, not_video_only, is_mp4, has_explicit_audio, pixels, tbr)
+
+    return max(formats, key=score).get('url')
 
 def format_bytes(bytes_val):
     if bytes_val is None or bytes_val <= 0:
@@ -42,12 +83,12 @@ def format_seconds(seconds_val):
     return f"{m:02d}:{s:02d}"
 
 def detect_platform(url):
-    url_lower = url.lower()
+    url_lower = (url or "").lower()
     if "youtube.com" in url_lower or "youtu.be" in url_lower:
         return "YouTube"
     elif "tiktok.com" in url_lower:
         return "TikTok"
-    elif "instagram.com" in url_lower:
+    elif "instagram.com" in url_lower or "instagr.am" in url_lower:
         return "Instagram"
     elif "twitter.com" in url_lower or "x.com" in url_lower:
         return "X / Twitter"
@@ -55,10 +96,14 @@ def detect_platform(url):
         return "VK Video"
     elif "twitch.tv" in url_lower:
         return "Twitch"
-    elif "reddit.com" in url_lower:
+    elif "reddit.com" in url_lower or "redd.it" in url_lower:
         return "Reddit"
-    elif "pinterest.com" in url_lower:
+    elif "pinterest.com" in url_lower or "pin.it" in url_lower:
         return "Pinterest"
+    elif "vimeo.com" in url_lower:
+        return "Vimeo"
+    elif "facebook.com" in url_lower or "fb.watch" in url_lower:
+        return "Facebook"
     return "Web Video"
 
 
@@ -162,7 +207,7 @@ class MetadataWorker(QThread):
 
         info = None
         # Extract Instagram once; reuse video metadata instead of extracting it again.
-        if 'instagram.com' in self.url.lower():
+        if 'instagram.com' in self.url.lower() or 'instagr.am' in self.url.lower():
             clean_ig_url = re.sub(r'\?.*$', '', self.url)
             urls_to_try = [clean_ig_url]
 
@@ -185,11 +230,11 @@ class MetadataWorker(QThread):
                             if len(entries) > 1:
                                 items = []
                                 for idx, e in enumerate(entries):
-                                    is_vid = bool(e.get('formats'))
-                                    thumbs = e.get('thumbnails', [])
+                                    video_formats = [f for f in (e.get('formats') or []) if f.get('vcodec') != 'none']
+                                    is_vid = bool(video_formats)
                                     best_img = metadata_thumbnail(e)
                                     preview_thumb = best_img
-                                    vid_url = e.get('formats', [])[-1].get('url') if is_vid else None
+                                    vid_url = _choose_instagram_carousel_video_url(e) if is_vid else None
                                     items.append({
                                         'id': e.get('id', f'item_{idx+1}'),
                                         'index': idx + 1,
@@ -198,7 +243,7 @@ class MetadataWorker(QThread):
                                         'url': vid_url if is_vid else best_img,
                                         'best_image': best_img,
                                         'thumbnail': preview_thumb,
-                                        'title': e.get('title') or f"Instagram Фото #{idx+1}",
+                                        'title': e.get('title') or f"Instagram {'Видео' if is_vid else 'Фото'} #{idx+1}",
                                         'uploader': info.get('uploader') or info.get('channel') or 'Instagram',
                                         'duration': e.get('duration'),
                                         'width': e.get('width'),
@@ -214,7 +259,7 @@ class MetadataWorker(QThread):
 
                             # 2. Single photo item (or single item inside entries)
                             target_entry = entries[0] if entries else info
-                            is_vid = bool(target_entry.get('formats'))
+                            is_vid = bool([f for f in (target_entry.get('formats') or []) if f.get('vcodec') != 'none'])
                             thumbs = target_entry.get('thumbnails', [])
                             if not is_vid and thumbs:
                                 best_img = metadata_thumbnail(target_entry)
@@ -231,7 +276,7 @@ class MetadataWorker(QThread):
                                         'direct_media_url': best_img,
                                         'is_photo': True,
                                         'platform': 'Instagram',
-                                        'available_resolutions': ['Оригинал (JPG)']
+                                        'available_res': ['Оригинал (JPG)']
                                     })
                                     return
                             if is_vid:
@@ -281,31 +326,48 @@ class MetadataWorker(QThread):
             return
 
         try:
+            # Materialize entries safely (yt-dlp can return a generator for playlists)
+            raw_entries = [e for e in (info.get('entries') or []) if e] if 'entries' in info else []
+            playlist_platform = detect_platform(self.url)
+            is_youtube_playlist = playlist_platform == 'YouTube'
+
             # Detect playlist with multiple entries
-            if is_playlist_url and 'entries' in info and len(info['entries']) > 1:
+            if is_playlist_url and len(raw_entries) > 1:
                 entries = []
-                for e in info.get('entries', []):
-                    if e:
-                        vid = e.get('id')
-                        v_url = e.get('url') or (f"https://www.youtube.com/watch?v={vid}" if vid else None)
-                        entries.append({
-                            'url': v_url,
-                            'title': e.get('title', 'Без названия'),
-                            'duration': e.get('duration', 0),
-                            'duration_str': format_seconds(e.get('duration', 0)),
-                            'thumbnail': e.get('thumbnail') or (f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg" if vid else None),
-                            'uploader': e.get('uploader') or e.get('channel') or info.get('uploader') or 'Автор'
-                        })
+                for e in raw_entries:
+                    vid = e.get('id')
+                    raw_url = e.get('webpage_url') or e.get('url')
+                    if raw_url and str(raw_url).lower().startswith(('http://', 'https://')):
+                        v_url = raw_url
+                    elif is_youtube_playlist and vid:
+                        v_url = f"https://www.youtube.com/watch?v={vid}"
+                    else:
+                        v_url = raw_url
+                    thumb = metadata_thumbnail(e)
+                    if not thumb and is_youtube_playlist and vid:
+                        thumb = f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
+                    entries.append({
+                        'url': v_url,
+                        'title': e.get('title', 'Без названия'),
+                        'duration': e.get('duration', 0),
+                        'duration_str': format_seconds(e.get('duration', 0)),
+                        'thumbnail': thumb,
+                        'uploader': e.get('uploader') or e.get('channel') or info.get('uploader') or 'Автор',
+                        'platform': detect_platform(v_url) if v_url else playlist_platform,
+                        'width': e.get('width'),
+                        'height': e.get('height'),
+                    })
                 valid_entries = [e for e in entries if e['url']]
                 if valid_entries and not self.is_cancelled:
                     self._publish('playlist_ready', {
-                        'title': info.get('title', 'Плейлист YouTube'),
+                        'title': info.get('title') or f'Плейлист {playlist_platform}',
+                        'platform': playlist_platform,
                         'entries': valid_entries
                     })
                     return
 
-            if 'entries' in info and info['entries']:
-                info = info['entries'][0]
+            if raw_entries:
+                info = raw_entries[0]
 
             title = info.get('title', 'Без названия')
             uploader = info.get('uploader') or info.get('channel') or info.get('creator') or 'Неизвестный автор'
@@ -479,7 +541,7 @@ class DownloadWorker(QThread):
 
             # A file is downloaded via direct HTTP only if it has an explicit direct media URL
             # or is clearly a media file CDN and NOT a web page
-            is_photo = (is_explicit_photo or any(target_clean.endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.webp'])) and not is_explicit_video and (direct_media_url or not is_page_url)
+            is_photo = (is_explicit_photo or any(target_clean.endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.webp', '.avif'])) and not is_explicit_video and (direct_media_url or not is_page_url)
             is_direct_video = is_explicit_video and (direct_media_url or not is_page_url) and (
                 'cdninstagram.com' in target_url or 'fbcdn.net' in target_url or any(target_clean.endswith(ext) for ext in ['.mp4', '.mkv', '.webm'])
             )
@@ -494,24 +556,30 @@ class DownloadWorker(QThread):
                     'Referer': 'https://www.instagram.com/',
                     **(self.options.get('http_headers') or {}),
                 }
-                resp = requests.get(download_target, headers=headers, stream=True, timeout=25)
-                resp.raise_for_status()
-                total_bytes = int(resp.headers.get('content-length', 0))
-                downloaded_bytes = 0
-                t0 = time.time()
-
-                title = self.options.get('title') or ("Instagram_Video" if is_direct_video else "Instagram_Photo")
-                clean_title = re.sub(r'[^\w\-]', '_', title)
-                staging_session = OwnedDirectory(self.save_dir, ".aura_staging_", "staging")
-                staging_dir = str(staging_session.path)
-                file_path = os.path.join(staging_dir, f"{clean_title}.{media_ext}")
-                part_path = f"{file_path}.part"
+                resp = None
+                part_path = None
+                default_title = "Instagram_Video" if is_direct_video else "Instagram_Photo"
+                title = self.options.get('title') or default_title
+                clean_title = sanitize_filename(title, fallback=default_title)
 
                 try:
+                    resp = requests.get(download_target, headers=headers, stream=True, timeout=25)
+                    resp.raise_for_status()
+                    total_bytes = _parse_content_length(resp.headers)
+                    downloaded_bytes = 0
+                    t0 = time.time()
+
+                    staging_session = OwnedDirectory(self.save_dir, ".aura_staging_", "staging")
+                    staging_dir = str(staging_session.path)
+                    file_path = os.path.join(staging_dir, f"{clean_title}.{media_ext}")
+                    part_path = f"{file_path}.part"
+
                     with open(part_path, 'wb') as f:
                         for chunk in resp.iter_content(chunk_size=65536):
                             if self.is_cancelled:
                                 raise Exception("Загрузка отменена.")
+                            if not chunk:
+                                continue
                             f.write(chunk)
                             downloaded_bytes += len(chunk)
                             dt = time.time() - t0
@@ -549,14 +617,15 @@ class DownloadWorker(QThread):
 
                     os.rename(part_path, file_path)
                 except Exception as ex:
-                    if os.path.exists(part_path):
+                    if part_path and os.path.exists(part_path):
                         try:
                             os.remove(part_path)
                         except Exception:
                             pass
                     raise ex
                 finally:
-                    resp.close()
+                    if resp is not None:
+                        resp.close()
 
                 if is_direct_video and (mode != "best" or self.options.get("trim_enabled") or
                                         self.options.get("crop_enabled") or self.options.get("smooth_enabled") or
@@ -605,6 +674,7 @@ class DownloadWorker(QThread):
                 'progress_hooks': [self._progress_hook],
                 'quiet': True,
                 'no_warnings': True,
+                'noplaylist': True,
                 'ignoreerrors': False,
                 'windowsfilenames': True,
                 'overwrites': False,
@@ -623,12 +693,13 @@ class DownloadWorker(QThread):
             if ffmpeg_exe and (shutil.which(ffmpeg_exe) or os.path.isfile(ffmpeg_exe)):
                 ydl_opts['ffmpeg_location'] = ffmpeg_exe
 
-            # Validate ranges before network work; yt-dlp performs the download-side cut.
-            if trim_enabled and (trim_start or trim_end):
+            # Validate ranges before network work; only cut when an actual sub-range is requested.
+            if trim_enabled:
                 start_sec, end_sec = trim_range(self.options)
-                ydl_opts['download_ranges'] = yt_dlp.utils.download_range_func(
-                    None, [(start_sec, end_sec if end_sec is not None else float('inf'))])
-                ydl_opts['force_keyframes_at_cuts'] = True
+                if start_sec > 0 or end_sec is not None:
+                    ydl_opts['download_ranges'] = yt_dlp.utils.download_range_func(
+                        None, [(start_sec, end_sec if end_sec is not None else float('inf'))])
+                    ydl_opts['force_keyframes_at_cuts'] = True
 
             # Subtitle support
             download_subs = self.options.get('download_subs', settings.get('download_subtitles', False))
@@ -728,7 +799,8 @@ class DownloadWorker(QThread):
             if not os.path.exists(final_path) and staging_dir and os.path.exists(staging_dir):
                 for f in os.listdir(staging_dir):
                     candidate = os.path.join(staging_dir, f)
-                    if os.path.isfile(candidate) and not f.startswith('.') and not candidate.endswith('.part') and not any(candidate.endswith(ext) for ext in ['.srt', '.vtt', '.lrc', '.ass']):
+                    lower_cand = candidate.lower()
+                    if os.path.isfile(candidate) and not f.startswith('.') and not lower_cand.endswith('.part') and not any(lower_cand.endswith(ext) for ext in ('.srt', '.vtt', '.lrc', '.ass', '.ttml', '.json3')):
                         final_path = candidate
                         break
 
@@ -738,7 +810,12 @@ class DownloadWorker(QThread):
             if self.is_cancelled:
                 return
 
-            needs_transform = mode == "video_only" or (mode == "custom" and target_res)
+            crop_enabled = bool(self.options.get('crop_enabled', False) and self.options.get('crop_params'))
+            crop_params = self.options.get('crop_params')
+            needs_transform = (
+                mode == "video_only"
+                or (mode == "custom" and bool(target_res) and (crop_enabled or needs_scale(final_path, target_res)))
+            )
             if needs_transform:
                 self.status_message.emit("Применение разрешения и параметров видео...")
                 transformed = transform_video(final_path, {**self.options, "trim_enabled": False},
@@ -750,8 +827,6 @@ class DownloadWorker(QThread):
                 final_path = transformed
 
             # Crop post processing
-            crop_enabled = self.options.get('crop_enabled', False)
-            crop_params = self.options.get('crop_params')
             if crop_enabled and crop_params and mode != 'audio_only' and not needs_transform and os.path.exists(final_path):
                 self.status_message.emit("Кадрирование видео (FFmpeg Crop)...")
                 cropped_path = crop_video(final_path, crop_params, is_cancelled_cb=lambda: self.is_cancelled)
@@ -821,7 +896,8 @@ class DownloadWorker(QThread):
                 # Search inside staging_dir for any matching media file if name changed
                 for f in os.listdir(staging_dir):
                     candidate = os.path.join(staging_dir, f)
-                    if os.path.isfile(candidate) and not f.startswith('.') and not candidate.endswith('.part') and not any(candidate.endswith(ext) for ext in ['.srt', '.vtt', '.lrc', '.ass']):
+                    lower_cand = candidate.lower()
+                    if os.path.isfile(candidate) and not f.startswith('.') and not lower_cand.endswith('.part') and not any(lower_cand.endswith(ext) for ext in ('.srt', '.vtt', '.lrc', '.ass', '.ttml', '.json3')):
                         final_path = candidate
                         break
 
@@ -835,10 +911,10 @@ class DownloadWorker(QThread):
             sidecar_files = []
             if os.path.exists(staging_dir):
                 for f in sorted(os.listdir(staging_dir)):
-                    if f in (OWNER_FILE, LOCK_FILE):
+                    if f in (OWNER_FILE, LOCK_FILE) or f.startswith('.'):
                         continue
                     full_p = os.path.join(staging_dir, f)
-                    if not os.path.isfile(full_p) or full_p.endswith('.part') or full_p == final_path:
+                    if not os.path.isfile(full_p) or full_p.lower().endswith('.part') or full_p == final_path:
                         continue
                     if raw_downloaded_stem and f.startswith(raw_downloaded_stem):
                         sub_suffix = f[len(raw_downloaded_stem):]
@@ -1031,13 +1107,15 @@ class GalleryDownloadWorker(QThread):
 
             media_type = item.get('media_type', 'photo')
             is_video = bool(item.get('is_video', False) or media_type == 'video')
-            uploader = item.get('uploader', 'Instagram')
+            platform = item.get('platform') or 'Instagram'
+            uploader = item.get('uploader', platform)
             item_id = item.get('id', str(i + 1))
             ext = 'mp4' if is_video else 'jpg'
 
-            clean_uploader = re.sub(r'[^\w\-]', '_', uploader)
-            clean_id = re.sub(r'[^\w\-]', '_', str(item_id))
-            filename = f"Instagram_{clean_uploader}_{clean_id}.{ext}"
+            clean_platform = sanitize_filename(platform, fallback='Instagram', max_len=30)
+            clean_uploader = sanitize_filename(uploader, fallback=clean_platform, max_len=50)
+            clean_id = sanitize_filename(str(item_id), fallback=str(i + 1), max_len=50)
+            filename = f"{clean_platform}_{clean_uploader}_{clean_id}.{ext}"
             file_path = get_unique_path(os.path.join(self.save_dir, filename))
 
             self.status_message.emit(f"Скачивание {i + 1}/{total_items}: {filename}")
@@ -1050,9 +1128,10 @@ class GalleryDownloadWorker(QThread):
             resp = None
 
             try:
-                resp = requests.get(download_url, headers=headers, stream=True, timeout=25)
+                req_headers = {**headers, **(item.get('http_headers') or {})}
+                resp = requests.get(download_url, headers=req_headers, stream=True, timeout=25)
                 resp.raise_for_status()
-                total_bytes = int(resp.headers.get('content-length', 0))
+                total_bytes = _parse_content_length(resp.headers)
                 downloaded_bytes = 0
                 t0 = time.time()
 
@@ -1060,6 +1139,8 @@ class GalleryDownloadWorker(QThread):
                     for chunk in resp.iter_content(chunk_size=65536):
                         if self.is_cancelled:
                             break
+                        if not chunk:
+                            continue
                         f.write(chunk)
                         downloaded_bytes += len(chunk)
                         dt = time.time() - t0
@@ -1094,7 +1175,12 @@ class GalleryDownloadWorker(QThread):
                     try:
                         from PIL import Image
                         with Image.open(part_path) as img:
+                            image_format = img.format
                             img.verify()
+                        extension = {'JPEG': 'jpg', 'PNG': 'png', 'WEBP': 'webp',
+                                     'AVIF': 'avif', 'GIF': 'gif'}.get(image_format)
+                        if extension:
+                            file_path = str(Path(file_path).with_suffix('.' + extension))
                     except Exception:
                         raise Exception(f"Файл {filename} не является корректным изображением.")
 
@@ -1114,7 +1200,7 @@ class GalleryDownloadWorker(QThread):
                     'file_path': file_path,
                     'file_size': file_size,
                     'file_size_str': format_bytes(file_size),
-                    'mode': 'MP4' if is_video else 'JPG',
+                    'mode': Path(file_path).suffix.lstrip('.').upper() or ('MP4' if is_video else 'JPG'),
                     'thumbnail': file_path if not is_video else None
                 }
                 results.append(result_item)

@@ -8,6 +8,7 @@ import re
 import sys
 import tempfile
 import threading
+import time
 from urllib.parse import urlsplit
 
 from core.version import APP_VERSION
@@ -44,25 +45,76 @@ class LogStream:
     def __init__(self, level):
         self.level = level
         self.buffers = {}
+        self._lock = threading.Lock()
 
     def write(self, value):
+        raw = str(value)
         key = threading.get_ident()
-        text = self.buffers.get(key, "") + str(value)
-        lines = text.split("\n")
-        self.buffers[key] = lines.pop()[-8192:]
+        with self._lock:
+            text = self.buffers.get(key, "") + raw
+            lines = text.split("\n")
+            remainder = lines.pop()[-8192:]
+            if remainder:
+                self.buffers[key] = remainder
+            else:
+                self.buffers.pop(key, None)
+            if len(self.buffers) > 128:
+                alive = {t.ident for t in threading.enumerate()}
+                for dead_key in [k for k in self.buffers if k not in alive]:
+                    leftover = self.buffers.pop(dead_key, "")
+                    if leftover.strip():
+                        lines.append(leftover)
         for line in lines:
             if line.strip():
                 logging.getLogger("aura.console").log(self.level, line.rstrip())
         return len(value)
 
     def flush(self):
-        for key, value in list(self.buffers.items()):
+        with self._lock:
+            items = list(self.buffers.items())
+            self.buffers.clear()
+        for _, value in items:
             if value.strip():
-                logging.getLogger("aura.console").log(self.level, value)
-            self.buffers.pop(key, None)
+                logging.getLogger("aura.console").log(self.level, value.rstrip())
 
     def isatty(self):
         return False
+
+
+def cleanup_old_logs(folder: Path, max_files: int = 15, max_age_days: float = 14.0):
+    """Prune old PID-specific log files while preserving active logs."""
+    try:
+        folder = Path(folder)
+        if not folder.is_dir():
+            return 0
+        current_prefix = f"aura-{os.getpid()}.log"
+        cutoff = time.time() - (max_age_days * 86400.0)
+        candidates = []
+        for entry in folder.iterdir():
+            if not entry.is_file():
+                continue
+            name = entry.name
+            if not name.startswith("aura-") or ".log" not in name:
+                continue
+            if name == current_prefix or name.startswith(current_prefix + "."):
+                continue
+            try:
+                mtime = entry.stat().st_mtime
+            except OSError:
+                continue
+            candidates.append((mtime, entry))
+        candidates.sort(key=lambda pair: pair[0], reverse=True)
+        removed = 0
+        for index, (mtime, entry) in enumerate(candidates):
+            if index >= max_files or mtime < cutoff:
+                try:
+                    entry.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+        return removed
+    except OSError:
+        return 0
 
 
 class SafeRotatingFileHandler(RotatingFileHandler):
@@ -75,16 +127,20 @@ def configure_logging(redirect=False):
     root = logging.getLogger()
     handler = next((h for h in root.handlers if getattr(h, "aura_handler", False)), None)
     if handler is None:
+        log_folder = None
         for folder in (get_log_dir(), Path(tempfile.gettempdir()) / "AuraDownloader" / "logs"):
             try:
                 folder.mkdir(parents=True, exist_ok=True)
                 handler = SafeRotatingFileHandler(folder / f"aura-{os.getpid()}.log", maxBytes=2 * 1024 * 1024,
                                               backupCount=3, encoding="utf-8")
+                log_folder = folder
                 break
             except OSError:
                 continue
         if handler is None:
             return None
+        if log_folder is not None:
+            cleanup_old_logs(log_folder)
         handler.aura_handler = True
         handler.setFormatter(PrivateFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
         root.addHandler(handler)
@@ -111,5 +167,7 @@ def install_qt_logging():
     levels = {QtMsgType.QtDebugMsg: logging.DEBUG, QtMsgType.QtInfoMsg: logging.INFO,
               QtMsgType.QtWarningMsg: logging.WARNING, QtMsgType.QtCriticalMsg: logging.ERROR,
               QtMsgType.QtFatalMsg: logging.CRITICAL}
-    qInstallMessageHandler(lambda kind, context, message: logging.getLogger("aura.qt").log(levels[kind], message))
+    qInstallMessageHandler(
+        lambda kind, context, message: logging.getLogger("aura.qt").log(levels.get(kind, logging.WARNING), message)
+    )
     logging.getLogger("aura").info("Starting Aura Downloader %s (frozen=%s)", APP_VERSION, bool(getattr(sys, "frozen", False)))

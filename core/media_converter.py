@@ -1,27 +1,27 @@
 import os
 import sys
 import time
+import math
 import shutil
 import tempfile
 import json
 import subprocess
+from fractions import Fraction
 from pathlib import Path
+from core.process_utils import CREATE_NO_WINDOW, get_startupinfo
 from core.temp_files import cache_root, get_cache_dir, remove_owned_directory, directory_is_active
-from core.media_options import scale_filter, trim_range
+from core.media_options import scale_filter, trim_range, resolution_bounds
 
-CREATE_NO_WINDOW = 0x08000000
+WMF_COMPATIBLE_CONTAINERS = {'.mp4', '.m4v', '.mov', '.wmv', '.avi'}
+WMF_COMPATIBLE_CODECS = {'h264', 'avc1', 'mp4v', 'mjpeg'}
+WMF_COMPATIBLE_PIX_FMTS = {'yuv420p', 'yuvj420p', 'nv12'}
+
 
 def remove_partial(path):
     try:
         os.remove(path)
     except OSError:
         pass
-
-def get_startupinfo():
-    startupinfo = subprocess.STARTUPINFO()
-    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = subprocess.SW_HIDE
-    return startupinfo
 
 def get_unique_path(target_path: str) -> str:
     if not os.path.exists(target_path):
@@ -114,7 +114,6 @@ def check_ffmpeg_available() -> tuple:
         return True, " | ".join(versions)
     except Exception as e:
         return False, f"Ошибка запуска FFmpeg: {e}"
-    return False, "FFmpeg вернул ненулевой код завершения."
 
 def run_ffmpeg_cancellable(cmd: list, temp_output: str = None, is_cancelled_cb=None) -> bool:
     if cmd and cmd[0] == "ffmpeg":
@@ -160,119 +159,129 @@ def run_ffmpeg_cancellable(cmd: list, temp_output: str = None, is_cancelled_cb=N
             raise Exception(f"FFmpeg error: {err_text}")
         return True
 
-def probe_video_stream(file_path: str) -> bool:
-    """Verifies that the file actually contains a valid, decodable video stream (not audio/HTML/corrupted)."""
-    if not file_path or not os.path.exists(file_path):
-        return False
-    try:
-        import json
-        cmd = [
-            get_ffprobe_path(), "-v", "error",
-            "-select_streams", "v:0",
-            "-show_entries", "stream=codec_type,codec_name,width,height",
-            "-of", "json",
-            file_path
-        ]
-        res = subprocess.run(
-            cmd,
-            startupinfo=get_startupinfo(),
-            creationflags=CREATE_NO_WINDOW,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True, encoding="utf-8", errors="replace",
-            timeout=10
-        )
-        if res.returncode != 0:
-            return False
-        data = json.loads(res.stdout)
-        streams = data.get("streams", [])
-        if not streams:
-            return False
-        s = streams[0]
-        if s.get("codec_type") != "video":
-            return False
-        w = int(s.get("width") or 0)
-        h = int(s.get("height") or 0)
-        return w > 0 and h > 0
-    except Exception:
-        return False
-
-def get_video_dimensions(input_path: str) -> tuple:
+def probe_media_info(input_path: str) -> dict:
+    """Single ffprobe call returning duration, width, height, fps, codec, pix_fmt, and has_video."""
+    empty = {
+        "duration": None,
+        "width": None,
+        "height": None,
+        "fps": None,
+        "codec": "",
+        "pix_fmt": "",
+        "has_video": False,
+    }
     if not input_path or not os.path.exists(input_path):
-        return None, None
-    try:
-        import json
-        # Compatible query for width, height across all FFprobe versions
-        cmd = [
-            get_ffprobe_path(), "-v", "error",
-            "-select_streams", "v:0",
-            "-show_entries", "stream=width,height",
-            "-of", "json",
-            input_path
-        ]
-        res = subprocess.run(
-            cmd,
-            startupinfo=get_startupinfo(),
-            creationflags=CREATE_NO_WINDOW,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True, encoding="utf-8", errors="replace",
-            timeout=10
-        )
-        if res.returncode != 0:
-            return None, None
+        return empty
 
-        data = json.loads(res.stdout)
-        streams = data.get("streams", [])
-        if not streams:
-            return None, None
-
-        s = streams[0]
-        w = int(s["width"]) if "width" in s else None
-        h = int(s["height"]) if "height" in s else None
-        if not w or not h:
-            return None, None
-
-        # Safe rotation detection (only if supported, without breaking width/height)
-        rotate = 0
+    entries_variants = (
+        "stream=codec_type,codec_name,pix_fmt,width,height,avg_frame_rate,r_frame_rate"
+        ":stream_tags=rotate:stream_side_data=rotation:format=duration",
+        "stream=codec_type,codec_name,pix_fmt,width,height,avg_frame_rate,r_frame_rate"
+        ":format=duration",
+    )
+    data = None
+    for entries in entries_variants:
         try:
-            cmd_rot = [
+            cmd = [
                 get_ffprobe_path(), "-v", "error",
                 "-select_streams", "v:0",
-                "-show_entries", "stream_tags=rotate:stream_side_data=rotation",
+                "-show_entries", entries,
                 "-of", "json",
-                input_path
+                input_path,
             ]
-            res_rot = subprocess.run(
-                cmd_rot,
+            res = subprocess.run(
+                cmd,
                 startupinfo=get_startupinfo(),
                 creationflags=CREATE_NO_WINDOW,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True, encoding="utf-8", errors="replace",
-                timeout=5
+                timeout=10,
             )
-            if res_rot.returncode == 0:
-                data_rot = json.loads(res_rot.stdout)
-                streams_rot = data_rot.get("streams", [])
-                if streams_rot:
-                    s_rot = streams_rot[0]
-                    tags = s_rot.get("tags", {})
-                    if "rotate" in tags:
-                        rotate = int(float(tags["rotate"]))
-                    for sd in s_rot.get("side_data_list", []):
-                        if "rotation" in sd:
-                            rotate = int(float(sd["rotation"]))
+            if res.returncode == 0 and res.stdout.strip():
+                data = json.loads(res.stdout)
+                break
         except Exception:
-            pass
+            continue
 
-        if abs(rotate) in [90, 270]:
-            w, h = h, w
+    if not isinstance(data, dict):
+        return empty
 
-        return w, h
-    except Exception:
+    result = dict(empty)
+    fmt = data.get("format") or {}
+    try:
+        dur = float(fmt.get("duration"))
+        if math.isfinite(dur) and dur > 0:
+            result["duration"] = dur
+    except (TypeError, ValueError):
         pass
-    return None, None
+
+    streams = data.get("streams") or []
+    if streams:
+        s = streams[0]
+        result["codec"] = str(s.get("codec_name") or "").strip().lower()
+        result["pix_fmt"] = str(s.get("pix_fmt") or "").strip().lower()
+        try:
+            w = int(s.get("width") or 0)
+            h = int(s.get("height") or 0)
+        except (TypeError, ValueError):
+            w, h = 0, 0
+
+        if w > 0 and h > 0:
+            rotate = 0
+            try:
+                tags = s.get("tags") or {}
+                if "rotate" in tags:
+                    rotate = int(float(tags["rotate"]))
+                for sd in s.get("side_data_list") or []:
+                    if isinstance(sd, dict) and "rotation" in sd:
+                        rotate = int(float(sd["rotation"]))
+            except (TypeError, ValueError):
+                pass
+            if abs(rotate) % 180 == 90:
+                w, h = h, w
+            result["width"] = w
+            result["height"] = h
+            result["has_video"] = (s.get("codec_type") == "video")
+
+        for field in ("avg_frame_rate", "r_frame_rate"):
+            val = s.get(field)
+            if val:
+                try:
+                    fps = float(Fraction(str(val).strip()))
+                    if math.isfinite(fps) and fps > 0:
+                        result["fps"] = fps
+                        break
+                except (ValueError, ZeroDivisionError):
+                    continue
+
+    return result
+
+
+def probe_video_stream(file_path: str) -> bool:
+    """Verifies that the file actually contains a valid, decodable video stream (not audio/HTML/corrupted)."""
+    return bool(probe_media_info(file_path)["has_video"])
+
+
+def get_video_dimensions(input_path: str) -> tuple:
+    info = probe_media_info(input_path)
+    return info["width"], info["height"]
+
+
+def needs_scale(input_path: str, target_res: str, dimensions: tuple = None) -> bool:
+    """Return True if the video (or post-crop dimensions) exceeds target_res bounds."""
+    bounds = resolution_bounds(target_res)
+    if not bounds:
+        return False
+    if dimensions is not None:
+        w, h = dimensions
+    else:
+        w, h = get_video_dimensions(input_path)
+    if not w or not h:
+        return True
+    if len(bounds) == 1:
+        return h > bounds[0]
+    return w > bounds[0] or h > bounds[1]
 
 def convert_to_gif(input_path: str, output_path: str = None, fps: int = 15, width: int = 480, is_cancelled_cb=None) -> str:
     if is_cancelled_cb and is_cancelled_cb():
@@ -313,33 +322,7 @@ def convert_to_gif(input_path: str, output_path: str = None, fps: int = 15, widt
         raise e
 
 def get_video_duration(input_path: str):
-    if not input_path or not os.path.exists(input_path):
-        return None
-    try:
-        cmd = [
-            get_ffprobe_path(), "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            input_path
-        ]
-        res = subprocess.run(
-            cmd,
-            startupinfo=get_startupinfo(),
-            creationflags=CREATE_NO_WINDOW,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True, encoding="utf-8", errors="replace",
-            timeout=10
-        )
-        if res.returncode == 0:
-            val = res.stdout.strip()
-            if val:
-                dur = float(val)
-                if dur > 0:
-                    return dur
-    except Exception:
-        pass
-    return None
+    return probe_media_info(input_path)["duration"]
 
 def compress_to_target_size(input_path: str, target_mb: float = 8.0, output_path: str = None, is_cancelled_cb=None) -> str:
     if is_cancelled_cb and is_cancelled_cb():
@@ -379,12 +362,14 @@ def compress_to_target_size(input_path: str, target_mb: float = 8.0, output_path
             cmd.extend(vf_args)
         cmd.extend([
             "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
             "-b:v", f"{video_bitrate}k",
             "-maxrate", f"{int(video_bitrate * 1.2)}k",
             "-bufsize", f"{int(video_bitrate * 1.5)}k",
             "-preset", "faster",
             "-c:a", "aac",
             "-b:a", f"{audio_bitrate}k",
+            "-movflags", "+faststart",
             part_path
         ])
 
@@ -404,12 +389,14 @@ def compress_to_target_size(input_path: str, target_mb: float = 8.0, output_path
                 "-i", input_path,
                 "-vf", scale_filter("640x360"),
                 "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
                 "-b:v", f"{lower_bitrate}k",
                 "-maxrate", f"{int(lower_bitrate * 1.15)}k",
                 "-bufsize", f"{int(lower_bitrate * 1.4)}k",
                 "-preset", "faster",
                 "-c:a", "aac",
                 "-b:a", "48k",
+                "-movflags", "+faststart",
                 part_path
             ]
             if not run_ffmpeg_cancellable(cmd_reencode, part_path, is_cancelled_cb):
@@ -425,12 +412,14 @@ def compress_to_target_size(input_path: str, target_mb: float = 8.0, output_path
                 "-i", input_path,
                 "-vf", scale_filter("480x270"),
                 "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
                 "-b:v", f"{aggressive_bitrate}k",
                 "-maxrate", f"{int(aggressive_bitrate * 1.1)}k",
                 "-bufsize", f"{int(aggressive_bitrate * 1.2)}k",
                 "-preset", "fast",
                 "-c:a", "aac",
                 "-b:a", "32k",
+                "-movflags", "+faststart",
                 part_path
             ]
             if not run_ffmpeg_cancellable(cmd_reencode3, part_path, is_cancelled_cb):
@@ -457,11 +446,14 @@ def compress_to_target_size(input_path: str, target_mb: float = 8.0, output_path
                 pass
         raise e
 
-def get_crop_filter(input_path: str, crop_params: dict) -> str:
+def get_crop_filter(input_path: str, crop_params: dict, dimensions: tuple = None) -> str:
     if not input_path or not crop_params:
         return ""
     try:
-        real_w, real_h = get_video_dimensions(input_path)
+        if dimensions and dimensions[0] and dimensions[1]:
+            real_w, real_h = dimensions
+        else:
+            real_w, real_h = get_video_dimensions(input_path)
         if not real_w or not real_h:
             return ""
 
@@ -522,6 +514,7 @@ def crop_video(input_path: str, crop_params: dict, output_path: str = None, is_c
                 "-preset", "faster",
                 "-pix_fmt", "yuv420p",
                 "-c:a", "aac", "-b:a", "192k",
+                "-movflags", "+faststart",
                 part_path
             ]
 
@@ -543,9 +536,23 @@ def crop_video(input_path: str, crop_params: dict, output_path: str = None, is_c
                 pass
         raise e
 
+def _resolve_audio_bitrate(options, default_kbps: int) -> str:
+    raw = (options or {}).get("audio_q")
+    if raw in (None, ""):
+        raw = (options or {}).get("audio_quality")
+    if raw not in (None, ""):
+        text = str(raw).strip().lower().rstrip("k")
+        if text.isdigit():
+            val = int(text)
+            if 32 <= val <= 512:
+                return f"{val}k"
+    return f"{default_kbps}k"
+
+
 def transform_video(input_path, options, output_path=None, is_cancelled_cb=None):
     """Trim, crop, resize and optionally mute in one encoding pass."""
-    start, end = trim_range(options, get_video_duration(input_path))
+    media_info = probe_media_info(input_path)
+    start, end = trim_range(options, media_info["duration"])
     if not output_path:
         output_path = get_unique_path(f"{os.path.splitext(input_path)[0]}_processed.mp4")
     part_path = f"{output_path}.tmp.mp4"
@@ -556,13 +563,21 @@ def transform_video(input_path, options, output_path=None, is_cancelled_cb=None)
     if end is not None:
         cmd += ["-t", str(end - start)]
     filters = []
+    effective_dims = (media_info["width"], media_info["height"])
     if options.get("crop_enabled") and options.get("crop_params"):
-        crop = get_crop_filter(input_path, options["crop_params"])
+        crop = get_crop_filter(input_path, options["crop_params"], dimensions=effective_dims)
         if not crop:
             raise ValueError("Не удалось рассчитать параметры кадрирования.")
         filters.append(crop)
+        try:
+            _, dims = crop.split("=", 1)
+            cw, ch = (int(p) for p in dims.split(":")[:2])
+            effective_dims = (cw, ch)
+        except Exception:
+            effective_dims = (None, None)
     if options.get("mode") in ("custom", "video_only") and options.get("res"):
-        filters.append(scale_filter(options["res"]))
+        if needs_scale(input_path, options["res"], dimensions=effective_dims):
+            filters.append(scale_filter(options["res"]))
     cmd += ["-map", "0:v:0"]
     if options.get("mode") == "video_only":
         cmd += ["-an"]
@@ -570,7 +585,8 @@ def transform_video(input_path, options, output_path=None, is_cancelled_cb=None)
         cmd += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "192k"]
     if filters:
         cmd += ["-vf", ",".join(filters)]
-    if not filters and not options.get("trim_enabled") and get_video_codec(input_path) in ("h264", "hevc"):
+    has_trim = bool(start or end is not None)
+    if not filters and not has_trim and media_info["codec"] in ("h264", "hevc"):
         cmd += ["-c:v", "copy"]
     else:
         cmd += ["-c:v", "libx264", "-crf", "18", "-preset", "faster", "-pix_fmt", "yuv420p"]
@@ -590,9 +606,11 @@ def transform_video(input_path, options, output_path=None, is_cancelled_cb=None)
 
 def extract_audio(input_path, audio_fmt, options, output_path, is_cancelled_cb=None):
     codecs = {
-        "mp3": ["libmp3lame", "-b:a", "320k"],
-        "flac": ["flac"], "m4a": ["aac", "-b:a", "256k"],
-        "wav": ["pcm_s16le"], "opus": ["libopus", "-b:a", "192k"],
+        "mp3": ["libmp3lame", "-b:a", _resolve_audio_bitrate(options, 320)],
+        "flac": ["flac"],
+        "m4a": ["aac", "-b:a", _resolve_audio_bitrate(options, 256)],
+        "wav": ["pcm_s16le"],
+        "opus": ["libopus", "-b:a", _resolve_audio_bitrate(options, 192)],
     }
     if audio_fmt not in codecs:
         raise ValueError(f"Неподдерживаемый формат аудио: {audio_fmt}")
@@ -610,6 +628,8 @@ def extract_audio(input_path, audio_fmt, options, output_path, is_cancelled_cb=N
             return None
         if not run_ffmpeg_cancellable(cmd, part_path, is_cancelled_cb):
             return None
+        if not os.path.isfile(part_path) or not os.path.getsize(part_path):
+            raise ValueError("Извлечённый аудиофайл пуст.")
         os.rename(part_path, output_path)
         return output_path
     finally:
@@ -640,6 +660,49 @@ def is_recovery_staging_dir(staging_path: str) -> bool:
     except Exception:
         return True  # If unable to inspect, safer to preserve than delete
     return False
+
+
+def _build_recovery_session(staging_path: str, fallback_save_dir: str, fallback_mtime: float = None) -> dict:
+    marker = os.path.join(staging_path, ".aura_recovery.json")
+    info = {}
+    if os.path.exists(marker):
+        try:
+            with open(marker, "r", encoding="utf-8") as rf:
+                loaded = json.load(rf)
+                if isinstance(loaded, dict):
+                    info = loaded
+        except Exception:
+            pass
+
+    files_list = info.get('files')
+    if not files_list:
+        files_list = []
+        try:
+            for f in os.listdir(staging_path):
+                if not f.startswith('.'):
+                    fp = os.path.join(staging_path, f)
+                    files_list.append({
+                        'name': f,
+                        'size': os.path.getsize(fp) if os.path.isfile(fp) else 0
+                    })
+        except Exception:
+            pass
+
+    if fallback_mtime is None:
+        try:
+            fallback_mtime = os.path.getmtime(staging_path)
+        except OSError:
+            fallback_mtime = time.time()
+
+    return {
+        'path': os.path.normpath(staging_path),
+        'timestamp': info.get('timestamp', fallback_mtime),
+        'error': info.get('error', 'Восстановимые файлы'),
+        'save_dir': info.get('save_dir', fallback_save_dir),
+        'url': info.get('url', ''),
+        'files': files_list,
+        'is_accessible': True,
+    }
 
 
 def get_recovery_sessions(target_dirs: list = None) -> list:
@@ -706,39 +769,7 @@ def get_recovery_sessions(target_dirs: list = None) -> list:
                                 settings_ref.register_recovery_session(norm_entry)
                             except Exception:
                                 pass
-
-                        marker = os.path.join(entry.path, ".aura_recovery.json")
-                        info = {}
-                        if os.path.exists(marker):
-                            try:
-                                with open(marker, "r", encoding="utf-8") as rf:
-                                    info = json.load(rf)
-                            except Exception:
-                                pass
-
-                        files_list = info.get('files')
-                        if not files_list:
-                            files_list = []
-                            try:
-                                for f in os.listdir(entry.path):
-                                    if not f.startswith('.'):
-                                        fp = os.path.join(entry.path, f)
-                                        files_list.append({
-                                            'name': f,
-                                            'size': os.path.getsize(fp) if os.path.isfile(fp) else 0
-                                        })
-                            except Exception:
-                                pass
-
-                        sessions.append({
-                            'path': norm_entry,
-                            'timestamp': info.get('timestamp', entry.stat().st_mtime),
-                            'error': info.get('error', 'Восстановимые файлы'),
-                            'save_dir': info.get('save_dir', d),
-                            'url': info.get('url', ''),
-                            'files': files_list,
-                            'is_accessible': True
-                        })
+                        sessions.append(_build_recovery_session(entry.path, d, entry.stat().st_mtime))
         except Exception:
             pass
 
@@ -762,37 +793,7 @@ def get_recovery_sessions(target_dirs: list = None) -> list:
                 'is_accessible': False
             })
         elif os.path.isdir(rp) and is_recovery_staging_dir(rp):
-            marker = os.path.join(rp, ".aura_recovery.json")
-            info = {}
-            if os.path.exists(marker):
-                try:
-                    with open(marker, "r", encoding="utf-8") as rf:
-                        info = json.load(rf)
-                except Exception:
-                    pass
-            files_list = info.get('files')
-            if not files_list:
-                files_list = []
-                try:
-                    for f in os.listdir(rp):
-                        if not f.startswith('.'):
-                            fp = os.path.join(rp, f)
-                            files_list.append({
-                                'name': f,
-                                'size': os.path.getsize(fp) if os.path.isfile(fp) else 0
-                            })
-                except Exception:
-                    pass
-
-            sessions.append({
-                'path': rp,
-                'timestamp': info.get('timestamp', os.path.getmtime(rp)),
-                'error': info.get('error', 'Восстановимые файлы'),
-                'save_dir': info.get('save_dir', parent_dir),
-                'url': info.get('url', ''),
-                'files': files_list,
-                'is_accessible': True
-            })
+            sessions.append(_build_recovery_session(rp, parent_dir))
         elif not os.path.exists(rp):
             if settings_ref:
                 try:
@@ -828,14 +829,17 @@ def cleanup_aura_temp_files(max_age_hours: float = 24.0, extra_dirs: list = None
         from core.settings import settings
         dl_dir = settings.get("download_dir")
         if dl_dir and os.path.isdir(dl_dir):
-            scan_dirs.add(dl_dir)
+            scan_dirs.add(os.path.normpath(dl_dir))
+        for kd in settings.get("known_download_dirs", []):
+            if kd and os.path.isdir(kd):
+                scan_dirs.add(os.path.normpath(kd))
     except Exception:
         pass
 
     if extra_dirs:
         for d in extra_dirs:
             if d and os.path.isdir(d):
-                scan_dirs.add(d)
+                scan_dirs.add(os.path.normpath(d))
 
     for target_dir in scan_dirs:
         try:
@@ -855,46 +859,28 @@ def cleanup_aura_temp_files(max_age_hours: float = 24.0, extra_dirs: list = None
     return cleaned_count
 
 
-
 def get_video_codec(input_path: str) -> str:
-    if not input_path or not os.path.exists(input_path):
-        return ""
-    try:
-        cmd = [
-            get_ffprobe_path(), "-v", "error",
-            "-select_streams", "v:0",
-            "-show_entries", "stream=codec_name",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            input_path
-        ]
-        res = subprocess.run(
-            cmd,
-            startupinfo=get_startupinfo(),
-            creationflags=CREATE_NO_WINDOW,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True, encoding="utf-8", errors="replace",
-            check=True,
-            timeout=10
-        )
-        return res.stdout.strip().lower()
-    except Exception:
-        return ""
+    return probe_media_info(input_path)["codec"]
 
 
 def get_or_create_preview_proxy(input_path: str, is_cancelled_cb=None) -> str:
     """
-    Ensures the video is playable in Qt Multimedia without D3D11 hardware acceleration failures.
-    If the video is already h264/avc1/mp4v, returns input_path.
-    If it's av1, vp9, hevc, etc. or exotic format, creates a fast lightweight H.264 proxy.
+    Ensures the video is playable in Qt Multimedia (WMF on Windows) without decode failures.
+    Only returns input_path directly if container, codec, and 8-bit 4:2:0 pixel format are WMF-compatible.
+    Otherwise creates a fast lightweight 8-bit yuv420p H.264 MP4 proxy.
     """
     if not input_path or not os.path.exists(input_path):
         return input_path
 
     if is_cancelled_cb and is_cancelled_cb():
         return None
-    codec = get_video_codec(input_path)
-    if codec in ['h264', 'avc1', 'mp4v', 'mjpeg']:
+    ext = Path(input_path).suffix.lower()
+    info = probe_media_info(input_path)
+    codec = info["codec"]
+    pix_fmt = info["pix_fmt"]
+    if (ext in WMF_COMPATIBLE_CONTAINERS
+            and codec in WMF_COMPATIBLE_CODECS
+            and pix_fmt in WMF_COMPATIBLE_PIX_FMTS):
         return input_path
 
     try:
@@ -911,12 +897,14 @@ def get_or_create_preview_proxy(input_path: str, is_cancelled_cb=None) -> str:
             get_ffmpeg_path(), "-y",
             "-i", input_path,
             "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
             "-preset", "ultrafast",
             "-crf", "26",
             "-tune", "fastdecode",
             "-vf", "scale='min(1280,iw)':-2",
             "-c:a", "aac",
             "-b:a", "128k",
+            "-movflags", "+faststart",
             part_path
         ]
         try:

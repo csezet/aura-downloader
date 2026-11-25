@@ -1,7 +1,7 @@
 import os
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QPushButton, QSpacerItem, QSizePolicy
-from PySide6.QtCore import Qt, QPoint, QSize, QByteArray
-from PySide6.QtGui import QIcon, QPixmap, QPainter
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QPixmap, QPainter
 from PySide6.QtSvg import QSvgRenderer
 
 class CustomTitleBar(QWidget):
@@ -57,8 +57,7 @@ class CustomTitleBar(QWidget):
         self.max_btn.clicked.connect(self._maximize_restore)
 
         self.close_btn = QPushButton("✕")
-        self.close_btn.setObjectName("TitleButton")
-        self.close_btn.setProperty("id", "CloseButton")
+        self.close_btn.setObjectName("CloseButton")
         self.close_btn.setToolTip("Закрыть")
         self.close_btn.clicked.connect(self._close)
 
@@ -89,12 +88,19 @@ class CustomTitleBar(QWidget):
             event.accept()
 
     def mouseMoveEvent(self, event):
-        if event.buttons() == Qt.LeftButton and self._drag_pos is not None:
+        if (event.buttons() & Qt.LeftButton) and self._drag_pos is not None:
             if self.parent_window.isMaximized():
                 self.parent_window.showNormal()
                 self.max_btn.setText("□")
             self.parent_window.move(event.globalPosition().toPoint() - self._drag_pos)
             event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if self._drag_pos is not None:
+            self._drag_pos = None
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.LeftButton:

@@ -12,7 +12,8 @@ import tempfile
 import time
 import uuid
 
-from core.media_converter import get_ffmpeg_path, get_ffprobe_path, CREATE_NO_WINDOW, get_startupinfo
+from core.media_converter import get_ffmpeg_path, get_ffprobe_path
+from core.process_utils import CREATE_NO_WINDOW, get_startupinfo
 from core.temp_files import OwnedDirectory, cache_root, remove_owned_directory
 
 
@@ -70,7 +71,7 @@ class FrameCaptureSession:
         if not url:
             raise ValueError('Не указан исходный ролик для сохранения кадра.')
         headers = dict(source.get('http_headers') or {})
-        if not url.startswith(('http://', 'https://')):
+        if not url.lower().startswith(('http://', 'https://')):
             if not Path(url).is_file():
                 raise ValueError('Исходный видеофайл удалён или перемещён.')
             media_url = str(Path(url).resolve())
@@ -102,7 +103,7 @@ class FrameCaptureSession:
                     headers['Cookie'] = cookie_header
         if cancelled():
             raise CaptureCancelled()
-        network = media_url.startswith(('https://', 'http://'))
+        network = media_url.lower().startswith(('https://', 'http://'))
         arguments = []
         if network:
             arguments += ['-rw_timeout', '8000000']
@@ -113,7 +114,7 @@ class FrameCaptureSession:
                 arguments += ['-headers', safe_headers]
         status('Подготовка исходного видео…')
         raw = run_command([get_ffprobe_path(), '-v', 'error', *arguments, '-select_streams', 'v:0',
-                           '-show_entries', 'stream=start_time,duration,color_transfer:format=duration,start_time',
+                           '-show_entries', 'stream=start_time,duration,color_transfer,color_primaries,color_space:format=duration,start_time',
                            '-of', 'json', media_url], cancelled)
         data = json.loads(raw)
         stream = (data.get('streams') or [{}])[0]
@@ -124,7 +125,8 @@ class FrameCaptureSession:
         duration = float(stream.get('duration') or container.get('duration') or 0)
         self.workspace = OwnedDirectory(cache_root(), 'frames_', 'cache')
         self.media = {'url': media_url, 'arguments': arguments, 'start': start,
-                      'duration': duration, 'transfer': stream.get('color_transfer')}
+                      'duration': duration, 'transfer': stream.get('color_transfer'),
+                      'primaries': stream.get('color_primaries'), 'color_space': stream.get('color_space')}
 
     def capture(self, position, direction=0, cancelled=lambda: False, status=lambda value: None):
         self._prepare(cancelled, status)
@@ -135,7 +137,11 @@ class FrameCaptureSession:
         position = min(position, max(0, duration - .000001)) if duration > 0 else position
         times = self.timestamps
         index = bisect.bisect_right(times, position + .000002) - 1
-        if not self.window or not (self.window[0] <= position <= self.window[1]) or index < 1 or index + 2 >= len(times):
+        at_start_boundary = bool(self.window and self.window[0] <= 0.0)
+        at_end_boundary = bool(self.window and duration > 0 and self.window[1] >= duration)
+        need_earlier = (index < 1) and not at_start_boundary
+        need_later = (index + 2 >= len(times)) and not at_end_boundary
+        if not self.window or not (self.window[0] <= position <= self.window[1]) or need_earlier or need_later:
             lower, upper = max(0, position - 1), position + 1
             interval = f'{media["start"] + lower:.9f}%{media["start"] + upper:.9f}'
             raw = run_command([get_ffprobe_path(), '-v', 'error', *media['arguments'],
@@ -155,17 +161,41 @@ class FrameCaptureSession:
         if key not in self.snapshots:
             status('Извлечение кадра в исходном разрешении…')
             path = self.workspace.path / (uuid.uuid4().hex + '.png')
-            filters = [f'select=gte(t\\,{max(0, timestamp - .000002):.9f})']
-            if media['transfer'] in ('smpte2084', 'arib-std-b67'):
-                filters += ['zscale=t=linear:npl=100', 'format=gbrpf32le', 'tonemap=hable:desat=0',
-                            'zscale=p=bt709:t=iec61966-2-1:m=gbr:r=full', 'format=rgb24']
-            command = [get_ffmpeg_path(), '-hide_banner', '-loglevel', 'error', '-nostdin', '-y',
-                       '-ss', f'{max(0, timestamp - .25):.9f}', '-copyts', '-start_at_zero',
-                       *media['arguments'], '-i', media['url'], '-map', '0:v:0', '-an', '-sn', '-dn',
-                       '-vf', ','.join(filters), '-frames:v', '1', '-fps_mode', 'passthrough',
-                       '-c:v', 'png', '-update', '1', str(path)]
+            select_filter = f'select=gte(t\\,{max(0, timestamp - .000002):.9f})'
+            is_hdr = media['transfer'] in ('smpte2084', 'arib-std-b67')
+            filter_chains = []
+            if is_hdr:
+                zscale_in = 'zscale=t=linear:npl=100'
+                if media.get('primaries') in (None, '', 'unknown'):
+                    zscale_in += ':pin=bt2020'
+                if media.get('color_space') in (None, '', 'unknown'):
+                    zscale_in += ':min=bt2020nc'
+                filter_chains.append([
+                    select_filter, zscale_in, 'format=gbrpf32le', 'tonemap=hable:desat=0',
+                    'zscale=p=bt709:t=iec61966-2-1:m=gbr:r=full', 'format=rgb24'
+                ])
+            filter_chains.append([select_filter])
             try:
-                run_command(command, cancelled)
+                last_error = None
+                for chain_idx, filters in enumerate(filter_chains):
+                    command = [get_ffmpeg_path(), '-hide_banner', '-loglevel', 'error', '-nostdin', '-y',
+                               '-ss', f'{max(0, timestamp - .25):.9f}', '-copyts', '-start_at_zero',
+                               *media['arguments'], '-i', media['url'], '-map', '0:v:0', '-an', '-sn', '-dn',
+                               '-vf', ','.join(filters), '-frames:v', '1', '-fps_mode', 'passthrough',
+                               '-c:v', 'png', '-update', '1', str(path)]
+                    try:
+                        run_command(command, cancelled)
+                        last_error = None
+                        break
+                    except ValueError as err:
+                        last_error = err
+                        path.unlink(missing_ok=True)
+                        if chain_idx + 1 < len(filter_chains):
+                            logging.getLogger('aura.frame').warning('HDR tonemapping failed; falling back to direct frame decode')
+                            continue
+                        raise
+                if last_error is not None:
+                    raise last_error
                 if not path.is_file() or not path.stat().st_size:
                     raise ValueError('Декодер не вернул изображение выбранного кадра.')
                 from PIL import Image

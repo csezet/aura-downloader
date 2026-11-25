@@ -133,10 +133,12 @@ def build(argv=None):
         shutil.copy2(PROJECT / name, distribution / name)
     revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=PROJECT, capture_output=True, text=True)
     changes = subprocess.run(["git", "status", "--porcelain"], cwd=PROJECT, capture_output=True, text=True)
+    with deno.open("rb") as stream:
+        deno_sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
     manifest = {"version": APP_VERSION, "python": platform.python_version(), "packages": packages,
                 "git_revision": revision.stdout.strip(), "working_tree_dirty": bool(changes.stdout.strip()),
                 "tool_sha256": tool_config["files"],
-                "deno_sha256": hashlib.sha256(deno.read_bytes()).hexdigest()}
+                "deno_sha256": deno_sha256}
     (distribution / "build-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     from scripts.check_packaged_app import check_packaged_app
     check_packaged_app(distribution / "AuraDownloader.exe", PROJECT / "dist" / "smoke-report.json")

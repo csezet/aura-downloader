@@ -32,6 +32,7 @@ class OwnedDirectory:
         self.kind = kind
         self.lock = _directory_lock(self.path)
         if not self.lock.tryLock(0):
+            shutil.rmtree(self.path, ignore_errors=True)
             raise OSError("Не удалось защитить временный каталог.")
         try:
             with (self.path / OWNER_FILE).open("w", encoding="utf-8") as stream:
@@ -39,6 +40,7 @@ class OwnedDirectory:
                            "kind": kind, "path": str(self.path)}, stream)
         except Exception:
             self.lock.unlock()
+            shutil.rmtree(self.path, ignore_errors=True)
             raise
 
     def release(self):
@@ -80,9 +82,20 @@ def remove_owned_directory(path, parent, kind):
         target = path.resolve()
         if target.parent != parent:
             return False
-        # The unique directory is never reused. A live owner's lock prevents entry.
+        # Remove payload files/subdirs before removing the ownership marker so a
+        # partial failure (e.g. locked file) preserves ownership for future cleanup.
+        for child in list(target.iterdir()):
+            if child.name in (OWNER_FILE, LOCK_FILE):
+                continue
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+        # All payload is gone; release lock and remove marker + directory last.
         lock.unlock()
-        shutil.rmtree(target)
+        (target / LOCK_FILE).unlink(missing_ok=True)
+        (target / OWNER_FILE).unlink(missing_ok=True)
+        target.rmdir()
         return True
     except OSError:
         return False

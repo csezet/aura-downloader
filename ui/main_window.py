@@ -1,26 +1,24 @@
 import os
 import copy
-import subprocess
-import ctypes
 from ctypes import wintypes
-from pathlib import Path
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
     QPushButton, QLabel, QComboBox, QFrame, QApplication,
     QSizePolicy, QFileDialog, QSizeGrip, QGridLayout
 )
-from PySide6.QtCore import Qt, QSize, QEvent, QTimer, Slot
-from PySide6.QtGui import QColor, QPixmap, QIcon, QShortcut, QKeySequence
+from PySide6.QtCore import Qt, QSize, QTimer, Slot
+from PySide6.QtGui import QIcon, QShortcut, QKeySequence
 
 from core.settings import settings
 from core.history import history
-from core.downloader import MetadataWorker
+from core.downloader import MetadataWorker, detect_platform
+from core.process_utils import open_path_in_os
 from core.unified_batch_worker import UnifiedBatchWorker
 from core.clipboard import ClipboardWatcher
 from core.media_converter import check_ffmpeg_available
 from assets.styles import get_stylesheet
 from assets.icons import get_svg_icon
-from ui.window_effects import apply_acrylic_effect, set_native_window_icon
+from ui.window_effects import apply_acrylic_effect, set_native_window_icon, destroy_native_icons
 from ui.title_bar import CustomTitleBar
 from ui.video_cards_list import VideoCardsListWidget
 from ui.progress_widget import ProgressWidget
@@ -108,7 +106,9 @@ class MainWindow(QMainWindow):
         self._import_generation = 0
         self.notification_manager = NotificationManager(parent=self, icon_path=self.icon_path)
 
-        self._active_workers = []
+        self._hicon_big = None
+        self._hicon_small = None
+        self._dwm_initialized_hwnd = None
         self._closing = False
         self._close_timer = QTimer(self)
         self._close_timer.setInterval(50)
@@ -125,17 +125,8 @@ class MainWindow(QMainWindow):
         self._setup_shortcuts()
 
     def _track_worker(self, worker):
-        worker_registry().track(worker)
-        if worker and worker not in self._active_workers:
-            self._active_workers.append(worker)
-            try:
-                worker.finished.connect(lambda: self._untrack_worker(worker))
-            except Exception:
-                pass
-
-    def _untrack_worker(self, worker):
-        if worker in self._active_workers:
-            self._active_workers.remove(worker)
+        if worker:
+            worker_registry().track(worker)
 
     def closeEvent(self, event):
         registry = worker_registry()
@@ -150,6 +141,11 @@ class MainWindow(QMainWindow):
             self._close_timer.start()
             return
         self._close_timer.stop()
+        if self._hicon_big or self._hicon_small:
+            destroy_native_icons(self._hicon_big, self._hicon_small, hwnd=self._dwm_initialized_hwnd)
+            self._hicon_big = None
+            self._hicon_small = None
+        self._dwm_initialized_hwnd = None
         super().closeEvent(event)
 
     def _finish_pending_close(self):
@@ -159,13 +155,17 @@ class MainWindow(QMainWindow):
     def showEvent(self, event):
         super().showEvent(event)
         hwnd = int(self.winId())
-        if self.icon_path and os.path.exists(self.icon_path):
-            h_big, h_sm = set_native_window_icon(hwnd, self.icon_path)
-            if h_big:
+        if self._dwm_initialized_hwnd != hwnd:
+            if self._hicon_big or self._hicon_small:
+                destroy_native_icons(self._hicon_big, self._hicon_small, hwnd=self._dwm_initialized_hwnd)
+                self._hicon_big = None
+                self._hicon_small = None
+            if self.icon_path and os.path.exists(self.icon_path):
+                h_big, h_sm = set_native_window_icon(hwnd, self.icon_path)
                 self._hicon_big = h_big
-            if h_sm:
                 self._hicon_small = h_sm
-        apply_acrylic_effect(hwnd, icon_path=self.icon_path)
+            apply_acrylic_effect(hwnd, enable_blur=bool(settings.get("acrylic_blur", True)))
+            self._dwm_initialized_hwnd = hwnd
         sb = self.statusBar()
         if sb:
             sb.setSizeGripEnabled(False)
@@ -216,7 +216,10 @@ class MainWindow(QMainWindow):
         self.drop_overlay.hide_overlay()
         sources = []
         if event.mimeData().hasUrls():
-            sources = [url.toLocalFile() if url.isLocalFile() else url.toString() for url in event.mimeData().urls()]
+            raw_items = [url.toLocalFile() if url.isLocalFile() else url.toString() for url in event.mimeData().urls()]
+            sources, errors = parse_sources("\n".join(item for item in raw_items if item))
+            if errors and not sources:
+                self._show_input_error("\n".join(errors))
         elif event.mimeData().hasText():
             sources, errors = parse_sources(event.mimeData().text())
             if errors:
@@ -227,9 +230,16 @@ class MainWindow(QMainWindow):
         else:
             event.ignore()
 
-    def _apply_theme(self):
-        opacity = settings.get("glass_opacity", 0.45)
+    def _apply_theme(self, opacity=None):
+        if opacity is None:
+            opacity = settings.get("glass_opacity", 0.45)
         self.setStyleSheet(get_stylesheet(opacity))
+
+    def _on_blur_changed(self, enabled: bool):
+        try:
+            apply_acrylic_effect(int(self.winId()), enable_blur=bool(enabled))
+        except Exception:
+            pass
 
     def _init_ui(self):
         self.central_container = QFrame(self)
@@ -809,7 +819,7 @@ class MainWindow(QMainWindow):
         self.url_input.blockSignals(True)
         self.url_input.clear()
         self.url_input.blockSignals(False)
-        if len(sources) != 1 or not sources[0].startswith(('http://', 'https://')):
+        if len(sources) != 1 or not sources[0].lower().startswith(('http://', 'https://')):
             self._import_sources(sources, default_options(settings))
             return
         self._start_metadata_worker(sources[0])
@@ -912,8 +922,8 @@ class MainWindow(QMainWindow):
                     'duration': item.get('duration', 0),
                     'duration_str': item.get('duration_str', '--:--'),
                     'thumbnail': item.get('thumbnail'),
-                    'platform': 'youtube',
-                    'available_res': ['1080p Full HD', '720p HD', '480p'],
+                    'platform': item.get('platform') or playlist_data.get('platform') or detect_platform(item.get('url') or ''),
+                    'available_res': list(RESOLUTIONS),
                     'has_video': True,
                     'width': item.get('width'),
                     'height': item.get('height')
@@ -1112,7 +1122,7 @@ class MainWindow(QMainWindow):
         last_res = dict(results[-1]) if results else {'file_path': settings.get("download_dir"), 'file_size_str': f"{len(results)} файлов"}
         last_res['success_count'] = success_count
         last_res['total_count'] = total
-        is_all_photos = all(r.get('mode') in ['JPG', 'PNG', 'WEBP'] for r in results) if results else False
+        is_all_photos = all(r.get('mode') in ('JPG', 'JPEG', 'PNG', 'WEBP', 'AVIF') for r in results) if results else False
         last_res['mode'] = f"Галерея ({len(results)} фото)" if is_all_photos else f"Пакет ({len(results)} шт)"
 
         if errors:
@@ -1131,62 +1141,10 @@ class MainWindow(QMainWindow):
                     file_path=last_res.get('file_path')
                 )
 
-    def _on_batch_success(self, results: list):
-        errors = getattr(self.download_worker, 'errors', [])
-        failed_items = getattr(self.download_worker, 'failed_items', [])
-        self._on_batch_summary({
-            'results': results,
-            'errors': errors,
-            'failed_items': failed_items,
-            'total': len(results) + len(errors),
-            'success_count': len(results)
-        })
-
     def _retry_failed_batch_items(self):
         if self._queue_busy or not self._last_failed_items:
             return
         self._launch_queue(copy.deepcopy(self._last_failed_items), self._last_queue_save_dir or settings.get('download_dir'))
-
-    def _on_download_success(self, result: dict):
-        self.download_btn.setEnabled(True)
-        self._update_download_button_text()
-        self.progress_widget.complete(result)
-
-        fmt_title = result.get('mode', 'MP4').upper()
-        if self.current_mode == 'audio_only':
-            fmt_title = result.get('file_path', '').split('.')[-1].upper()
-        elif self.current_mode == 'custom':
-            fmt_title = self.res_combo.currentText()
-
-        history.add_entry(
-            title=result.get('title'),
-            url=result.get('url'),
-            file_path=result.get('file_path'),
-            format_type=result.get('format_type') or fmt_title,
-            size_bytes=result.get('file_size', 0),
-            thumbnail=result.get('thumbnail')
-        )
-
-        if hasattr(self, 'notification_manager'):
-            self.notification_manager.show_download_complete(
-                title=result.get('title', 'Файл'),
-                file_path=result.get('file_path')
-            )
-
-    def _on_download_fail(self, error_msg: str):
-        if self.download_worker and getattr(self.download_worker, 'is_cancelled', False):
-            return
-        self.download_btn.setEnabled(True)
-        self._update_download_button_text()
-        if isinstance(self.download_worker, UnifiedBatchWorker):
-            return
-        recovery_dir = getattr(self, '_last_single_recovery_dir', None)
-        self.progress_widget.set_error(error_msg, recovery_dir=recovery_dir)
-
-    def _on_worker_cancelled(self):
-        self.progress_widget.hide_progress()
-        self.download_btn.setEnabled(True)
-        self._update_download_button_text()
 
     def _cancel_download(self):
         if self._queue_busy and self.download_worker:
@@ -1208,12 +1166,11 @@ class MainWindow(QMainWindow):
 
     def _open_settings(self):
         dialog = SettingsModal(self)
-        dialog.opacity_changed.connect(lambda: self._apply_theme())
+        dialog.opacity_changed.connect(self._apply_theme)
+        dialog.blur_changed.connect(self._on_blur_changed)
         if dialog.exec():
             self.dest_lbl.setText(f"DIR: {settings.get('download_dir')}")
             self._apply_theme()
 
     def _open_dest_dir(self):
-        folder = settings.get("download_dir")
-        if os.path.exists(folder):
-            os.startfile(folder)
+        open_path_in_os(settings.get("download_dir"))

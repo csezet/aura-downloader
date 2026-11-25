@@ -1,9 +1,10 @@
+import logging
 import os
-import subprocess
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QGraphicsOpacityEffect
 )
-from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve
+from PySide6.QtCore import Signal, QPropertyAnimation, QEasingCurve
+from core.process_utils import open_path_in_os
 from ui.animations import SmoothProgressBar
 
 class ProgressWidget(QFrame):
@@ -90,6 +91,7 @@ class ProgressWidget(QFrame):
         self.anim_opacity = QPropertyAnimation(self.opacity_effect, b"opacity")
         self.anim_opacity.setDuration(240)
         self.anim_opacity.setEasingCurve(QEasingCurve.OutCubic)
+        self.anim_opacity.finished.connect(self._on_hide_done)
 
     def start_progress(self, message="⚡ СКАЧИВАНИЕ..."):
         self.cancel_btn.setEnabled(True)
@@ -309,7 +311,6 @@ class ProgressWidget(QFrame):
         self.anim_opacity.stop()
         self.anim_opacity.setStartValue(self.opacity_effect.opacity())
         self.anim_opacity.setEndValue(0.0)
-        self.anim_opacity.finished.connect(self._on_hide_done)
         self.anim_opacity.start()
 
     def _on_hide_done(self):
@@ -317,11 +318,7 @@ class ProgressWidget(QFrame):
             self.setVisible(False)
 
     def _open_file(self):
-        if self._current_file_path and os.path.exists(self._current_file_path):
-            try:
-                os.startfile(self._current_file_path)
-            except Exception:
-                pass
+        open_path_in_os(self._current_file_path)
 
     def _open_dir(self):
         btn_text = self.open_dir_btn.text()
@@ -329,15 +326,9 @@ class ProgressWidget(QFrame):
             if len(self._recovery_dirs) > 1:
                 self._show_recovery_choice_dialog(self._recovery_dirs)
             elif self._recovery_dirs and os.path.exists(self._recovery_dirs[0]):
-                try:
-                    os.startfile(self._recovery_dirs[0])
-                except Exception:
-                    pass
+                open_path_in_os(self._recovery_dirs[0])
             elif self._recovery_dir and os.path.exists(self._recovery_dir):
-                try:
-                    os.startfile(self._recovery_dir)
-                except Exception:
-                    pass
+                open_path_in_os(self._recovery_dir)
         else:
             # Open successful download target directory
             target_dir = None
@@ -345,103 +336,26 @@ class ProgressWidget(QFrame):
                 target_dir = self._current_file_path if os.path.isdir(self._current_file_path) else os.path.dirname(self._current_file_path)
             elif self._save_dir and os.path.exists(self._save_dir):
                 target_dir = self._save_dir
-            if target_dir and os.path.exists(target_dir):
-                try:
-                    os.startfile(target_dir)
-                except Exception:
-                    pass
+            if target_dir:
+                open_path_in_os(target_dir)
 
     def _show_recovery_choice_dialog(self, recovery_dirs: list):
         try:
-            import json
-            from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QScrollArea, QWidget, QFrame, QHBoxLayout
+            from core.media_converter import _build_recovery_session
+            from ui.common_widgets import show_recovery_sessions_dialog
 
-            dialog = QDialog(self)
-            dialog.setWindowTitle("Выбор каталога восстановления")
-            dialog.setMinimumWidth(520)
-            dialog.setMinimumHeight(300)
-            dialog.setStyleSheet("""
-                QDialog { background-color: #121217; color: #EDEDED; }
-                QLabel { color: #EDEDED; }
-                QPushButton {
-                    background-color: rgba(255, 255, 255, 0.08);
-                    border: 1px solid rgba(255, 255, 255, 0.15);
-                    border-radius: 6px;
-                    padding: 4px 10px;
-                    color: #EDEDED;
-                    font-weight: 600;
-                    font-size: 11px;
-                }
-                QPushButton:hover { background-color: rgba(255, 255, 255, 0.16); }
-                QScrollArea { border: none; background: transparent; }
-            """)
-            d_layout = QVBoxLayout(dialog)
-            d_layout.setContentsMargins(16, 16, 16, 16)
-            d_layout.setSpacing(10)
-
-            header = QLabel(f"📁 Обнаружено каталогов восстановления: {len(recovery_dirs)}")
-            header.setStyleSheet("font-weight: 700; font-size: 13px; color: #FFFFFF;")
-            d_layout.addWidget(header)
-
-            scroll = QScrollArea()
-            scroll.setWidgetResizable(True)
-            content = QWidget()
-            c_layout = QVBoxLayout(content)
-            c_layout.setSpacing(8)
-
+            sessions = []
             for idx, p in enumerate(recovery_dirs, 1):
-                card = QFrame()
-                card.setStyleSheet("background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; padding: 8px;")
-                card_lay = QVBoxLayout(card)
+                session = _build_recovery_session(p, os.path.dirname(p))
+                session["label"] = f"Элемент #{idx}: {os.path.basename(p)}"
+                session["error"] = ""
+                sessions.append(session)
 
-                marker_p = os.path.join(p, ".aura_recovery.json")
-                files_desc = ""
-                if os.path.exists(marker_p):
-                    try:
-                        with open(marker_p, 'r', encoding='utf-8') as mf:
-                            m_data = json.load(mf)
-                            files_list = m_data.get('files', [])
-                            if files_list:
-                                files_desc = ", ".join(f.get('name', '') for f in files_list)
-                    except Exception:
-                        pass
-                if not files_desc and os.path.exists(p):
-                    try:
-                        files_desc = ", ".join(f for f in os.listdir(p) if not f.startswith('.'))
-                    except Exception:
-                        files_desc = os.path.basename(p)
-
-                lbl_title = QLabel(f"Элемент #{idx}: {os.path.basename(p)}")
-                lbl_title.setStyleSheet("font-weight: 700; color: #60A5FA; font-size: 11px;")
-                card_lay.addWidget(lbl_title)
-
-                lbl_path = QLabel(f"Путь: {p}")
-                lbl_path.setStyleSheet("color: #9CA3AF; font-size: 10px; font-family: monospace;")
-                lbl_path.setWordWrap(True)
-                card_lay.addWidget(lbl_path)
-
-                lbl_files = QLabel(f"Файлы: {files_desc}")
-                lbl_files.setStyleSheet("color: #D1D5DB; font-size: 10px;")
-                lbl_files.setWordWrap(True)
-                card_lay.addWidget(lbl_files)
-
-                btn_row = QHBoxLayout()
-                btn_open = QPushButton("📂 Открыть каталог в Проводнике")
-                btn_open.clicked.connect(lambda _, target=p: os.startfile(target) if os.path.exists(target) else None)
-                btn_row.addWidget(btn_open)
-                btn_row.addStretch()
-                card_lay.addLayout(btn_row)
-
-                c_layout.addWidget(card)
-
-            c_layout.addStretch()
-            scroll.setWidget(content)
-            d_layout.addWidget(scroll)
-
-            btn_close = QPushButton("Закрыть")
-            btn_close.clicked.connect(dialog.accept)
-            d_layout.addWidget(btn_close, alignment=Qt.AlignRight)
-
-            dialog.exec()
+            show_recovery_sessions_dialog(
+                self,
+                sessions,
+                title="Выбор каталога восстановления",
+                header_text=f"📁 Обнаружено каталогов восстановления: {len(recovery_dirs)}",
+            )
         except Exception as e:
-            print(f"Error opening recovery choice dialog: {e}")
+            logging.getLogger("aura.ui").warning("Error opening recovery choice dialog: %s", e)

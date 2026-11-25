@@ -4,6 +4,7 @@ import os
 import shutil
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 
@@ -26,7 +27,7 @@ def load_json(path, validate, default):
     return default, errors
 
 
-def _replace_bytes(path, payload):
+def _replace_bytes(path, payload, retries=4, retry_delay=0.02):
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.",
@@ -35,7 +36,14 @@ def _replace_bytes(path, payload):
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        for attempt in range(retries):
+            try:
+                os.replace(temporary, path)
+                return
+            except PermissionError:
+                if attempt + 1 >= retries:
+                    raise
+                time.sleep(retry_delay * (attempt + 1))
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
@@ -43,7 +51,8 @@ def _replace_bytes(path, payload):
 
 def save_json(path, data, validate):
     path = Path(path)
-    payload = json.dumps(data, indent=4, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    validated = validate(data)
+    payload = json.dumps(validated, indent=4, ensure_ascii=False, allow_nan=False).encode("utf-8")
     with STORAGE_LOCK:
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():

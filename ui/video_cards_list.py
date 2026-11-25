@@ -3,15 +3,17 @@ import uuid
 import copy
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QWidget, QSizePolicy, QApplication, QCheckBox
+    QScrollArea, QWidget, QSizePolicy, QCheckBox
 )
-from PySide6.QtCore import Qt, Signal, Slot, QSize, QByteArray
+from PySide6.QtCore import Qt, Signal, Slot, QByteArray
 from PySide6.QtGui import QPixmap, QImage, QPainter, QPainterPath
 import requests
-from assets.icons import get_svg_icon
-from core.workers import CancellableThread, start_worker, cancel_worker
+from core.http_utils import MAX_THUMBNAIL_BYTES, read_limited_response
+from core.process_utils import open_path_in_os
+from core.workers import PooledWorker, start_worker, cancel_worker
 
-class ImageLoaderWorker(CancellableThread):
+
+class ImageLoaderWorker(PooledWorker):
     image_loaded = Signal(QImage)
 
     def __init__(self, url, headers=None):
@@ -27,12 +29,14 @@ class ImageLoaderWorker(CancellableThread):
                 'Referer': 'https://www.instagram.com/',
                 **self.headers,
             }
-            resp = requests.get(self.url, headers=headers, timeout=8)
+            resp = requests.get(self.url, headers=headers, timeout=8, stream=True)
             if resp.status_code == 200 and not self.isInterruptionRequested():
-                image = QImage()
-                image.loadFromData(QByteArray(resp.content))
-                if not image.isNull() and not self.isInterruptionRequested():
-                    self.image_loaded.emit(image)
+                data = read_limited_response(resp, MAX_THUMBNAIL_BYTES, self.isInterruptionRequested)
+                if data and not self.isInterruptionRequested():
+                    image = QImage()
+                    image.loadFromData(QByteArray(data))
+                    if not image.isNull() and not self.isInterruptionRequested():
+                        self.image_loaded.emit(image)
         except Exception:
             pass
         finally:
@@ -251,7 +255,7 @@ class VideoCardWidget(QFrame):
 
     def _open_result(self):
         if self.result_path and os.path.isfile(self.result_path):
-            os.startfile(self.result_path)
+            open_path_in_os(self.result_path)
 
     def _update_style(self, selected: bool):
         self._is_selected = selected
@@ -300,7 +304,7 @@ class VideoCardWidget(QFrame):
         if isinstance(thumb_val, str) and os.path.exists(thumb_val):
             pix = QPixmap(thumb_val)
             self._on_image_loaded(pix)
-        elif isinstance(thumb_val, str) and thumb_val.startswith("http"):
+        elif isinstance(thumb_val, str) and thumb_val.lower().startswith(("http://", "https://")):
             self.thumb_label.setText("Загрузка...")
             if self._image_worker and self._image_worker.isRunning():
                 cancel_worker(self._image_worker)
@@ -329,7 +333,9 @@ class VideoCardWidget(QFrame):
             path = QPainterPath()
             path.addRoundedRect(0, 0, 115, 72, 6, 6)
             painter.setClipPath(path)
-            painter.drawPixmap(0, 0, scaled)
+            offset_x = (115 - scaled.width()) // 2
+            offset_y = (72 - scaled.height()) // 2
+            painter.drawPixmap(offset_x, offset_y, scaled)
             painter.end()
 
             self.thumb_label.setPixmap(target)
@@ -464,7 +470,8 @@ class VideoCardsListWidget(QWidget):
         if card:
             card.data.update(copy.deepcopy(info))
             card.title_label.setText(card.data.get('title', 'Без названия'))
-            card.duration_badge.setText(card.data.get('duration_str', '--:--'))
+            dur_icon = "📸" if card.data.get("is_photo") else "⏱"
+            card.duration_badge.setText(f"{dur_icon} {card.data.get('duration_str', '--:--')}")
             card.author_label.setText(card.data.get('uploader') or '')
             card._load_thumb(card.data.get('thumbnail'))
             if item_id == self.active_id:

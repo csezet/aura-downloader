@@ -1,59 +1,10 @@
-import os
 from PySide6.QtWidgets import (
     QDialog, QFrame, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QScrollArea, QWidget, QCheckBox
+    QPushButton, QScrollArea, QWidget
 )
 from PySide6.QtCore import Qt, Signal, QSize
-from PySide6.QtGui import QColor
-from assets.icons import get_svg_icon, get_svg_pixmap
-
-class CheckmarkBox(QFrame):
-    def __init__(self, checked=True, parent=None):
-        super().__init__(parent)
-        self.setObjectName("CheckmarkBox")
-        self.setFixedSize(22, 22)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self._checked = checked
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setAlignment(Qt.AlignCenter)
-
-        self.icon_lbl = QLabel(self)
-        self.icon_lbl.setAlignment(Qt.AlignCenter)
-        self.icon_lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self.icon_lbl.setStyleSheet("border: none; background: transparent;")
-        layout.addWidget(self.icon_lbl)
-
-        self._update_appearance()
-
-    def isChecked(self) -> bool:
-        return self._checked
-
-    def setChecked(self, val: bool):
-        if self._checked != val:
-            self._checked = val
-            self._update_appearance()
-
-    def _update_appearance(self):
-        if self._checked:
-            self.icon_lbl.setPixmap(get_svg_pixmap("check", color="#000000", size=13))
-            self.setStyleSheet("""
-                QFrame#CheckmarkBox {
-                    background-color: #FFFFFF;
-                    border: 1px solid #FFFFFF;
-                    border-radius: 6px;
-                }
-            """)
-        else:
-            self.icon_lbl.clear()
-            self.setStyleSheet("""
-                QFrame#CheckmarkBox {
-                    background-color: rgba(0, 0, 0, 0.45);
-                    border: 1.5px solid rgba(255, 255, 255, 0.40);
-                    border-radius: 6px;
-                }
-            """)
+from assets.icons import get_svg_icon
+from ui.common_widgets import CheckmarkBox, DraggableMixin
 
 
 class PlaylistItemWidget(QFrame):
@@ -149,6 +100,8 @@ class PlaylistItemWidget(QFrame):
         if event.button() == Qt.LeftButton:
             self.set_selected(not self._is_selected)
             self.toggled.emit()
+            event.accept()
+            return
         super().mousePressEvent(event)
 
     def is_selected(self) -> bool:
@@ -160,9 +113,10 @@ class PlaylistItemWidget(QFrame):
         self._update_appearance()
 
 
-class PlaylistDialog(QDialog):
+class PlaylistDialog(DraggableMixin, QDialog):
     def __init__(self, playlist_data: dict, parent=None):
         super().__init__(parent)
+        self._init_draggable(drag_height=60)
         self.setWindowTitle("Выбор видео из плейлиста")
         self.resize(680, 540)
         self.setMinimumSize(580, 440)
@@ -197,7 +151,7 @@ class PlaylistDialog(QDialog):
         header_icon.setPixmap(get_svg_icon("video", color="#FFFFFF", size=18).pixmap(18, 18))
         header.addWidget(header_icon)
 
-        pl_title = playlist_data.get('title', 'Плейлист YouTube')
+        pl_title = playlist_data.get('title') or 'Плейлист'
         if len(pl_title) > 35:
             pl_title = pl_title[:32] + "..."
         title = QLabel(pl_title)

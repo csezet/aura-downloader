@@ -36,7 +36,7 @@ def get_stylesheet(glass_opacity: float = 0.45) -> str:
         text-transform: uppercase;
     }}
 
-    #TitleButton {{
+    #TitleButton, #CloseButton {{
         background-color: transparent;
         border: none;
         border-radius: 6px;
@@ -298,27 +298,6 @@ def get_stylesheet(glass_opacity: float = 0.45) -> str:
         font-weight: 800;
         letter-spacing: 0.5px;
         text-transform: uppercase;
-    }}
-
-    /* ScrollBars */
-    QScrollBar:vertical {{
-        background: transparent;
-        width: 6px;
-        margin: 0px;
-    }}
-    QScrollBar::handle:vertical {{
-        background: rgba(255, 255, 255, 0.15);
-        min-height: 20px;
-        border-radius: 3px;
-    }}
-    QScrollBar::handle:vertical:hover {{
-        background: #FFFFFF;
-    }}
-    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
-        height: 0px;
-    }}
-    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
-        background: none;
     }}
 
     /* Tooltips */

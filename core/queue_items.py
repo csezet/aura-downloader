@@ -31,7 +31,7 @@ def normalize_item(item, fallback_options=None):
     source = str(source).strip().strip('"').strip("'")
     data["url"] = source
     data.setdefault("item_id", uuid.uuid4().hex)
-    data.setdefault("title", unquote(urlsplit(source).path.rsplit("/", 1)[-1]) if source.startswith("http") else Path(source).name)
+    data.setdefault("title", unquote(urlsplit(source).path.rsplit("/", 1)[-1]) if source.lower().startswith(("http://", "https://")) else Path(source).name)
     data["title"] = data["title"] or source or "Без названия"
     options = copy.deepcopy(fallback_options or {})
     options.update(copy.deepcopy(data.get("options") or {}))

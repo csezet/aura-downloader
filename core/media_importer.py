@@ -43,7 +43,7 @@ class MediaImportWorker(CancellableThread):
                         if self.isInterruptionRequested():
                             break
                     ext = Path(urlsplit(source).path).suffix.lower()
-                    photo = ext in (".jpg", ".jpeg", ".png", ".webp")
+                    photo = ext in (".jpg", ".jpeg", ".png", ".webp", ".avif")
                     direct_video = ext in (".mp4", ".webm", ".mkv")
                     info = {"url": source, "platform": detect_platform(source), "is_photo": photo,
                             "has_video": not photo, "is_video": direct_video, "duration": 0,

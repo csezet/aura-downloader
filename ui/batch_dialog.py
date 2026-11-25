@@ -1,15 +1,18 @@
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QTextEdit,
-    QPushButton, QProgressBar, QComboBox, QFrame, QWidget
+    QPushButton, QProgressBar, QComboBox, QFrame
 )
 from PySide6.QtCore import Qt, QSize
 from assets.icons import get_svg_icon
 from core.queue_items import parse_sources
+from ui.common_widgets import DraggableMixin
 from ui.worker_dialog import WorkerDialog
 
-class BatchDialog(WorkerDialog):
+
+class BatchDialog(DraggableMixin, WorkerDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._init_draggable()
         self.setWindowTitle("Добавить в очередь")
         self.setFixedSize(540, 490)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)

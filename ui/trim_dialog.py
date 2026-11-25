@@ -2,18 +2,19 @@ import os
 from pathlib import Path
 import re
 from PySide6.QtWidgets import (
-    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QSizePolicy, QSlider, QStackedWidget, QFileDialog
 )
 from PySide6.QtCore import Qt, QUrl, Signal, Slot, QSize
-from PySide6.QtGui import QIcon, QColor, QFont, QImage, QPixmap, QDesktopServices
+from PySide6.QtGui import QImage, QPixmap, QDesktopServices
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
 
 from assets.icons import get_svg_icon
-from ui.timeline_slider import TimelineRangeSlider, ms_to_time_str
+from ui.timeline_slider import TimelineRangeSlider
 from core.media_converter import get_or_create_preview_proxy
 from core.workers import CancellableThread, start_worker
+from ui.common_widgets import DraggableMixin
 from ui.worker_dialog import WorkerDialog
 from core.settings import settings
 from core.frame_capture import FrameCaptureSession, CaptureCancelled, save_frame
@@ -122,9 +123,10 @@ def ms_to_clock(ms: int) -> str:
     return f'{hours:02d}:{minutes:02d}:{seconds:02d}'
 
 
-class TrimDialog(WorkerDialog):
+class TrimDialog(DraggableMixin, WorkerDialog):
     def __init__(self, parent=None, video_source=None, duration_sec: float = 60, initial_start="00:00", initial_end=None, capture_source=None):
         super().__init__(parent)
+        self._init_draggable()
         self.setWindowTitle("Визуальная вырезка отрезка видео")
         self.resize(880, 680)
         self.setMinimumSize(760, 560)
@@ -554,7 +556,7 @@ class TrimDialog(WorkerDialog):
         self.player.errorOccurred.connect(self._on_player_error)
 
         if self.video_source:
-            if isinstance(self.video_source, str) and self.video_source.startswith(("http://", "https://")):
+            if isinstance(self.video_source, str) and self.video_source.lower().startswith(("http://", "https://")):
                 self._on_proxy_ready(self.video_source)
             elif isinstance(self.video_source, dict) or os.path.exists(self.video_source):
                 self._proxy_worker = PreviewProxyWorker(self.video_source)
@@ -612,7 +614,7 @@ class TrimDialog(WorkerDialog):
         self.btn_play.setText(" ВОСПРОИЗВЕДЕНИЕ")
         self.btn_play.setEnabled(not self._frame_busy)
         self.preview_status.hide()
-        self.player.setSource(QUrl(playable) if playable.startswith(('http://', 'https://')) else QUrl.fromLocalFile(playable))
+        self.player.setSource(QUrl(playable) if playable.lower().startswith(('http://', 'https://')) else QUrl.fromLocalFile(playable))
         self.player.pause()
         if not self._frame_busy and not self._frame_result:
             self._seek_to_ms(self.start_ms)
@@ -655,7 +657,7 @@ class TrimDialog(WorkerDialog):
             self._seek_to_ms(self.start_ms)
 
     def _toggle_playback(self):
-        if self._frame_busy:
+        if self._frame_busy or not self._preview_loaded:
             return
         if self.video_stack.currentWidget() is self.frame_preview:
             self.video_stack.setCurrentWidget(self.video_widget)
@@ -704,8 +706,6 @@ class TrimDialog(WorkerDialog):
         self.start_ms = max(0, min(self.duration_ms - 1, start_ms))
         self.end_ms = max(self.start_ms + 1, min(self.duration_ms, end_ms))
         self._update_badges()
-        if self.player.playbackState() != QMediaPlayer.PlayingState:
-            self._seek_to_ms(end_ms)
 
     def _update_badges(self):
         self.badge_start.setText(f"ОТ: {ms_to_fmt(self.start_ms)}")
@@ -879,16 +879,6 @@ class TrimDialog(WorkerDialog):
             self._frame_session = None
         super().done(result)
 
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-            event.accept()
-
-    def mouseMoveEvent(self, event):
-        if event.buttons() == Qt.LeftButton and self._drag_pos is not None:
-            self.move(event.globalPosition().toPoint() - self._drag_pos)
-            event.accept()
-
     def keyPressEvent(self, event):
         key = event.key()
         modifiers = event.modifiers()
@@ -898,11 +888,15 @@ class TrimDialog(WorkerDialog):
                 self._cancel_frame()
             event.accept()
             return
-        if key in (Qt.Key_Comma, Qt.Key_Period):
-            self._request_frame(-1 if key == Qt.Key_Comma else 1)
+        if key in (Qt.Key_Comma, 1041, 1073):  # , or Russian Б / б
+            self._request_frame(-1)
             event.accept()
             return
-        if key == Qt.Key_S and modifiers & Qt.ControlModifier:
+        if key in (Qt.Key_Period, 1070, 1102):  # . or Russian Ю / ю
+            self._request_frame(1)
+            event.accept()
+            return
+        if key in (Qt.Key_S, 1067, 1099) and (modifiers & Qt.ControlModifier):  # Ctrl+S or Russian Ы / ы
             self._save_current_frame()
             event.accept()
             return

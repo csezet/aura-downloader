@@ -1,12 +1,12 @@
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QComboBox, QPushButton, QWidget, QSizePolicy
 )
-from PySide6.QtCore import Qt, Signal, QSize
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import Signal, QSize
 from assets.icons import get_svg_icon
 from ui.toggle_switch import ToggleSwitch
-from core.interpolator import is_rife_available, download_rife_engine
+from core.interpolator import is_rife_available, download_rife_engine, invalidate_rife_cache
 from core.workers import CancellableThread, start_worker
+
 
 class RifeDownloaderThread(CancellableThread):
     status_updated = Signal(str)
@@ -18,6 +18,7 @@ class RifeDownloaderThread(CancellableThread):
         if not self.isInterruptionRequested():
             self.download_finished.emit(success)
 
+
 class SmoothWidget(QFrame):
     smooth_toggled = Signal(bool)
 
@@ -27,6 +28,9 @@ class SmoothWidget(QFrame):
         self.setFixedHeight(44)
 
         self._dl_thread = None
+        self._downloading = False
+        self._last_download_status = ""
+        self._download_error_text = ""
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 6, 12, 6)
@@ -113,9 +117,15 @@ class SmoothWidget(QFrame):
 
         self._update_engine_ui()
 
-    def _update_engine_ui(self):
+    def _is_downloading(self) -> bool:
+        return self._downloading
+
+    def _update_engine_ui(self, force_refresh: bool = False):
         checked = self.toggle.isChecked()
-        if is_rife_available():
+        if self._is_downloading():
+            return
+        if is_rife_available(force_refresh=force_refresh):
+            self._download_error_text = ""
             self.engine_btn.setText(" AI RIFE (Vulkan)")
             self.engine_btn.setIcon(get_svg_icon("zap", color="#22C55E" if checked else "#52525B", size=12))
             if checked:
@@ -150,6 +160,7 @@ class SmoothWidget(QFrame):
                 """)
                 self.status_lbl.setStyleSheet("color: #71717A; font-size: 11px; font-weight: 600; background: transparent; border: none;")
             self.status_lbl.setText("RIFE v4.6 · Vulkan")
+            self.status_lbl.setToolTip("")
         else:
             self.engine_btn.setText(" СКАЧАТЬ RIFE AI")
             self.engine_btn.setIcon(get_svg_icon("download", color="#3B82F6" if checked else "#52525B", size=12))
@@ -182,31 +193,65 @@ class SmoothWidget(QFrame):
                         background: rgba(0, 0, 0, 0.2);
                     }
                 """)
-            self.status_lbl.setText("FFmpeg · CPU (можно скачать RIFE)")
+            if self._download_error_text:
+                self.status_lbl.setStyleSheet("color: #FCA5A5; font-size: 11px; font-weight: 600; background: transparent; border: none;")
+                self.status_lbl.setText(self._download_error_text)
+                self.status_lbl.setToolTip(self._download_error_text)
+            else:
+                self.status_lbl.setStyleSheet("color: #71717A; font-size: 11px; font-weight: 600; background: transparent; border: none;")
+                self.status_lbl.setText("FFmpeg · CPU (можно скачать RIFE)")
+                self.status_lbl.setToolTip("")
 
     def _on_toggled(self, checked: bool):
         self.fps_combo.setEnabled(checked)
-        self.engine_btn.setEnabled(checked)
+        self.engine_btn.setEnabled(checked and not self._is_downloading())
         self._update_engine_ui()
         self.smooth_toggled.emit(checked)
 
     def _toggle_engine(self):
-        if not is_rife_available():
+        if not is_rife_available(force_refresh=True):
             self._start_download()
+        else:
+            self._update_engine_ui()
+
+    def _on_download_status(self, message: str):
+        self._last_download_status = message
+        self.status_lbl.setText(message)
+        self.status_lbl.setToolTip(message)
 
     def _start_download(self):
-        if self._dl_thread and self._dl_thread.isRunning():
+        if self._is_downloading():
             return
+        self._downloading = True
+        self._last_download_status = ""
+        self._download_error_text = ""
         self.engine_btn.setEnabled(False)
         self.engine_btn.setText(" ЗАГРУЗКА...")
+        self.status_lbl.setStyleSheet("color: #60A5FA; font-size: 11px; font-weight: 600; background: transparent; border: none;")
         self._dl_thread = RifeDownloaderThread()
-        self._dl_thread.status_updated.connect(lambda s: self.status_lbl.setText(s))
+        self._dl_thread.status_updated.connect(self._on_download_status)
         self._dl_thread.download_finished.connect(self._on_download_finished)
+        self._dl_thread.finished.connect(self._on_download_thread_finished)
         start_worker(self._dl_thread, self)
 
+    def _on_download_thread_finished(self):
+        if self._downloading:
+            self._downloading = False
+            self.engine_btn.setEnabled(self.toggle.isChecked())
+            self._update_engine_ui(force_refresh=True)
+
     def _on_download_finished(self, success: bool):
-        self.engine_btn.setEnabled(True)
-        self._update_engine_ui()
+        self._downloading = False
+        invalidate_rife_cache()
+        self.engine_btn.setEnabled(self.toggle.isChecked())
+        if success:
+            self._download_error_text = ""
+        else:
+            msg = self._last_download_status
+            if not msg or any(prefix in msg for prefix in ("Загрузка AI", "Проверка и распаковка")):
+                msg = "Не удалось скачать RIFE (проверьте сеть)"
+            self._download_error_text = msg
+        self._update_engine_ui(force_refresh=True)
 
     def is_smooth_enabled(self) -> bool:
         return self.toggle.isChecked()

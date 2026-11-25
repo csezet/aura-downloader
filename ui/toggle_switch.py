@@ -1,6 +1,7 @@
 from PySide6.QtWidgets import QWidget
-from PySide6.QtCore import Qt, Signal, QRectF, QPropertyAnimation, Property
+from PySide6.QtCore import Qt, Signal, QRectF, QEvent
 from PySide6.QtGui import QPainter, QColor, QBrush, QPen
+
 
 class ToggleSwitch(QWidget):
     toggled = Signal(bool)
@@ -22,7 +23,16 @@ class ToggleSwitch(QWidget):
             self.update()
             self.toggled.emit(self._checked)
 
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.EnabledChange:
+            self.setCursor(Qt.PointingHandCursor if self.isEnabled() else Qt.ArrowCursor)
+            self.update()
+
     def mousePressEvent(self, event):
+        if not self.isEnabled():
+            event.ignore()
+            return
         if event.button() == Qt.LeftButton:
             self.setChecked(not self._checked)
             event.accept()
@@ -37,7 +47,11 @@ class ToggleSwitch(QWidget):
 
         # Background track
         track_rect = QRectF(0, 0, width, height)
-        if self._checked:
+        if not self.isEnabled():
+            track_color = QColor(255, 255, 255, 28) if self._checked else QColor(255, 255, 255, 10)
+            border_color = QColor(255, 255, 255, 35)
+            thumb_color = QColor(113, 113, 122, 180)
+        elif self._checked:
             track_color = QColor(255, 255, 255, 255)  # Stark White
             border_color = QColor(255, 255, 255, 255)
             thumb_color = QColor(0, 0, 0, 255)        # Pure Black knob
