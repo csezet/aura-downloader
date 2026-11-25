@@ -25,9 +25,9 @@ def get_log_dir():
 class PrivateFormatter(logging.Formatter):
     def format(self, record):
         message = super().format(record)
-        # URLs can contain signed CDN tokens or private media identifiers.
-        message = re.sub(r"https?://[^\s<>\"']+", self._hide_url, message)
-        return re.sub(r"(?i)\b(authorization|cookie|password|token)\s*[:=]\s*[^\r\n]+",
+        # URLs can contain signed CDN tokens, private media IDs, or proxy credentials.
+        message = re.sub(r"(?:https?|socks[45][ah]?)://[^\s<>\"']+", self._hide_url, message, flags=re.IGNORECASE)
+        return re.sub(r"(?i)\b(authorization|cookie|password|token|proxy)\s*[:=]\s*[^\r\n]+",
                       r"\1=<redacted>", message)
 
     @staticmethod

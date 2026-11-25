@@ -10,7 +10,7 @@ import hashlib
 import math
 from fractions import Fraction
 import requests
-from core.http_utils import parse_content_length as _parse_content_length
+from core.http_utils import http_get, parse_content_length as _parse_content_length
 from core.media_converter import (
     get_unique_path, run_ffmpeg_cancellable, get_video_duration,
     get_ffprobe_path, get_ffmpeg_path,  # noqa: F401
@@ -106,7 +106,7 @@ def download_rife_engine(progress_callback=None, is_cancelled_cb=None) -> bool:
         if progress_callback:
             progress_callback("Загрузка AI модели RIFE (~25 МБ)...")
 
-        resp = requests.get(url, stream=True, timeout=(5, 15))
+        resp = http_get(url, requests_mod=requests, stream=True, timeout=(5, 15))
         resp.raise_for_status()
 
         total_size = _parse_content_length(resp.headers)

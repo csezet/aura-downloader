@@ -60,9 +60,12 @@ def resolve_tiktok_post(url, is_cancelled_cb=lambda: False):
     if not match and TikTokIE.suitable(url):
         return url, None
     from core.cookies_helper import get_cookies_config
+    from core.http_utils import get_ytdlp_proxy_opts
     from core.js_runtime import javascript_options
+    proxy_opts = get_ytdlp_proxy_opts()
     options = {**javascript_options(), 'quiet': True, 'no_warnings': True,
-               'socket_timeout': 8, 'retries': 0, 'extractor_retries': 1, 'noplaylist': True}
+               'socket_timeout': 15 if proxy_opts else 8, 'retries': 0, 'extractor_retries': 1,
+               'noplaylist': True, **proxy_opts}
     cookies = get_cookies_config()
     if cookies:
         options['cookiesfrombrowser'] = cookies

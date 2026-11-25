@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, Slot, QByteArray
 from PySide6.QtGui import QPixmap, QImage, QPainter, QPainterPath
 import requests
-from core.http_utils import MAX_THUMBNAIL_BYTES, read_limited_response
+from core.http_utils import MAX_THUMBNAIL_BYTES, http_get, read_limited_response
 from core.process_utils import open_path_in_os
 from core.workers import PooledWorker, start_worker, cancel_worker
 
@@ -29,7 +29,7 @@ class ImageLoaderWorker(PooledWorker):
                 'Referer': 'https://www.instagram.com/',
                 **self.headers,
             }
-            resp = requests.get(self.url, headers=headers, timeout=8, stream=True)
+            resp = http_get(self.url, requests_mod=requests, headers=headers, timeout=12, stream=True)
             if resp.status_code == 200 and not self.isInterruptionRequested():
                 data = read_limited_response(resp, MAX_THUMBNAIL_BYTES, self.isInterruptionRequested)
                 if data and not self.isInterruptionRequested():

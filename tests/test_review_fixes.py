@@ -18,7 +18,7 @@ from PySide6.QtGui import QColor, QImage, QKeyEvent, QMouseEvent, QPixmap
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from assets.styles import get_stylesheet
-from core.app_logging import LogStream, cleanup_old_logs
+from core.app_logging import LogStream, PrivateFormatter, cleanup_old_logs
 from core.clipboard import extract_supported_url
 from core.downloader import (
     DownloadWorker,
@@ -29,7 +29,13 @@ from core.downloader import (
     sanitize_filename,
 )
 from core.frame_capture import FrameCaptureSession
-from core.http_utils import read_limited_response
+from core.http_utils import (
+    http_get,
+    mask_proxy_url,
+    normalize_proxy_url,
+    read_limited_response,
+    validate_proxy_url,
+)
 from core import interpolator
 from core import media_converter
 from core.persistence import save_json, _replace_bytes
@@ -998,6 +1004,91 @@ class TestUIFixes(unittest.TestCase):
             modal.close()
             modal.deleteLater()
             pw.deleteLater()
+
+    def test_proxy_validation_normalization_masking_and_log_redaction(self):
+        self.assertEqual(validate_proxy_url("  "), "")
+        self.assertEqual(
+            validate_proxy_url(" socks5://u:p@1.2.3.4:8000 "),
+            "socks5://u:p@1.2.3.4:8000",
+        )
+        self.assertEqual(
+            normalize_proxy_url("socks5://u:p@1.2.3.4:8000"),
+            "socks5h://u:p@1.2.3.4:8000",
+        )
+        self.assertEqual(
+            normalize_proxy_url("socks4://1.2.3.4:1080"),
+            "socks4a://1.2.3.4:1080",
+        )
+        self.assertEqual(
+            mask_proxy_url("socks5://secretuser:secretpass@1.2.3.4:8000"),
+            "socks5://***@1.2.3.4:8000",
+        )
+        for bad in ("ftp://1.2.3.4:21", "socks5://1.2.3.4:99999", "http://bad host:80", "socks5://:8000"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                validate_proxy_url(bad)
+
+        fmt = PrivateFormatter("%(message)s")
+        rec = logging.LogRecord(
+            "aura", logging.ERROR, __file__, 1,
+            "Failed via socks5h://secretuser:secretpass@1.2.3.4:8000 proxy=socks5://u2:p2@9.9.9.9:8000",
+            (), None,
+        )
+        redacted = fmt.format(rec)
+        self.assertNotIn("secretuser", redacted)
+        self.assertNotIn("secretpass", redacted)
+        self.assertNotIn("u2:p2", redacted)
+
+    def test_proxy_wired_into_http_get_workers_and_settings_ui(self):
+        # 1. http_get routes SOCKS5 through curl_cffi with remote DNS & context manager support
+        fake_cffi_resp = MagicMock()
+        del fake_cffi_resp.__enter__  # simulate curl_cffi Response lacking __enter__
+        fake_cffi_resp.status_code = 200
+        with patch.object(settings, "get", side_effect=lambda k, d=None: "socks5://u:p@1.2.3.4:8000" if k == "proxy_url" else d), \
+             patch("curl_cffi.requests.get", return_value=fake_cffi_resp) as cffi_get:
+            with http_get("https://example.test/file", timeout=(5, 15)) as resp:
+                self.assertEqual(resp.status_code, 200)
+        cffi_get.assert_called_once_with(
+            "https://example.test/file",
+            timeout=(5, 15),
+            proxies={"http": "socks5h://u:p@1.2.3.4:8000", "https": "socks5h://u:p@1.2.3.4:8000"},
+        )
+        fake_cffi_resp.close.assert_called_once()
+
+        # 2. MetadataWorker uses configured proxy without falling back to empty proxy
+        MetadataWorker._cache.clear()
+        worker = MetadataWorker("https://vimeo.com/12345")
+        errors = []
+        worker.info_error.connect(errors.append)
+        ydl = MagicMock()
+        ydl.extract_info.side_effect = RuntimeError("Connection timed out")
+        with patch.object(settings, "get", side_effect=lambda k, d=None: "socks5://u:p@1.2.3.4:8000" if k == "proxy_url" else d), \
+             patch("core.downloader.yt_dlp.YoutubeDL") as factory:
+            factory.return_value.__enter__.return_value = ydl
+            worker.run()
+        self.assertEqual(factory.call_count, 1)
+        used_opts = factory.call_args.args[0]
+        self.assertEqual(used_opts["proxy"], "socks5h://u:p@1.2.3.4:8000")
+        self.assertEqual(used_opts["socket_timeout"], 15)
+
+        # 3. SettingsModal proxy UI validates, saves, masks password, and clears
+        modal = SettingsModal()
+        try:
+            with patch.object(settings, "save", return_value=True):
+                modal.proxy_input.setText("invalid-proxy")
+                self.assertFalse(modal._save_proxy())
+                self.assertEqual(settings.get("proxy_url", ""), "")
+
+                modal.proxy_input.setText("socks5://myuser:mypass@1.2.3.4:8000")
+                self.assertTrue(modal._save_proxy())
+                self.assertEqual(settings.get("proxy_url", ""), "socks5://myuser:mypass@1.2.3.4:8000")
+                self.assertNotIn("mypass", modal.util_status_lbl.text())
+                self.assertIn("1.2.3.4:8000", modal.util_status_lbl.text())
+
+                modal._clear_proxy()
+                self.assertEqual(settings.get("proxy_url", ""), "")
+        finally:
+            modal.close()
+            modal.deleteLater()
 
 
 if __name__ == "__main__":

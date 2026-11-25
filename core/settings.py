@@ -3,9 +3,11 @@ import os
 import tempfile
 import threading
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from core.persistence import load_json, save_json
 
+ALLOWED_PROXY_SCHEMES = ("http", "https", "socks4", "socks4a", "socks5", "socks5h")
 DEFAULT_DOWNLOAD_DIR = str(Path.home() / "Downloads" / "AuraDownloads")
 DEFAULT_SETTINGS = {
     "download_dir": DEFAULT_DOWNLOAD_DIR,
@@ -20,6 +22,7 @@ DEFAULT_SETTINGS = {
     "acrylic_blur": True,
     "glass_opacity": 0.45,
     "browser_cookies": "none",
+    "proxy_url": "",
     "sound_notification": True,
     "notifications_enabled": True,
     "download_subtitles": False,
@@ -31,6 +34,21 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 
 def _valid_path(value):
     return isinstance(value, str) and bool(value.strip()) and "\0" not in value and os.path.isabs(value)
+
+
+def _valid_proxy_url(value):
+    if not isinstance(value, str):
+        return False
+    if value == "":
+        return True
+    if value != value.strip() or any(ch in value for ch in "\r\n\t\0 "):
+        return False
+    try:
+        parsed = urlsplit(value)
+        _ = parsed.port
+    except ValueError:
+        return False
+    return parsed.scheme.lower() in ALLOWED_PROXY_SCHEMES and bool(parsed.hostname)
 
 
 def _validate_settings(data):
@@ -63,6 +81,9 @@ def _validate_settings(data):
                 result[key] = value
         elif key == "audio_quality":
             if isinstance(value, str) and value.isascii() and value.isdigit() and len(value) <= 3 and 0 <= int(value) <= 512:
+                result[key] = value
+        elif key == "proxy_url":
+            if _valid_proxy_url(value):
                 result[key] = value
         elif type(value) is type(default):
             result[key] = value

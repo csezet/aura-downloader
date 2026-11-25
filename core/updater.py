@@ -2,6 +2,7 @@
 import re
 import requests
 
+from core.http_utils import http_get
 from core.version import APP_VERSION, REPOSITORY, RELEASES_URL
 
 
@@ -13,9 +14,10 @@ def version_tuple(value):
 
 
 def check_latest_release(current_version=APP_VERSION):
-    with requests.get(f"https://api.github.com/repos/{REPOSITORY}/releases/latest",
-                      headers={"Accept": "application/vnd.github+json", "User-Agent": "AuraDownloader"},
-                      timeout=(5, 15)) as response:
+    with http_get(f"https://api.github.com/repos/{REPOSITORY}/releases/latest",
+                  requests_mod=requests,
+                  headers={"Accept": "application/vnd.github+json", "User-Agent": "AuraDownloader"},
+                  timeout=(5, 15)) as response:
         if response.status_code == 404:
             return {"available": False, "message": "Опубликованных релизов пока нет.", "url": RELEASES_URL}
         response.raise_for_status()

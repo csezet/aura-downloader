@@ -5,11 +5,12 @@ import logging
 from pathlib import Path
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFileDialog,
-    QSlider, QComboBox, QFrame, QMessageBox
+    QSlider, QComboBox, QFrame, QMessageBox, QLineEdit
 )
 from PySide6.QtCore import Qt, Signal, QSize, QTimer
 from core.settings import settings
 from core.cookies_helper import SUPPORTED_BROWSERS
+from core.http_utils import mask_proxy_url, validate_proxy_url
 from core.media_converter import cleanup_aura_temp_files
 from core.process_utils import CREATE_NO_WINDOW, get_startupinfo
 from ui.toggle_switch import ToggleSwitch
@@ -325,6 +326,50 @@ class SettingsModal(DraggableMixin, WorkerDialog):
         sub_row.addWidget(self.sub_toggle)
         c2_layout.addLayout(sub_row)
 
+        # Proxy row
+        lbl_proxy = QLabel("Прокси (HTTP / SOCKS5, опционально):")
+        lbl_proxy.setProperty("class", "SectionHeader")
+        c2_layout.addWidget(lbl_proxy)
+
+        proxy_row = QHBoxLayout()
+        proxy_row.setSpacing(6)
+
+        self.proxy_input = QLineEdit(settings.get("proxy_url", ""))
+        self.proxy_input.setPlaceholderText("socks5://user:pass@host:port или http://127.0.0.1:10809")
+        self.proxy_input.setStyleSheet("""
+            QLineEdit {
+                background-color: rgba(0, 0, 0, 0.55);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 8px;
+                padding: 6px 10px;
+                color: #EDEDED;
+                font-size: 11px;
+                font-family: 'Consolas', monospace;
+            }
+            QLineEdit:focus {
+                border: 1px solid rgba(255, 255, 255, 0.32);
+            }
+        """)
+        self.proxy_input.returnPressed.connect(self._save_proxy)
+        proxy_row.addWidget(self.proxy_input, stretch=1)
+
+        self.proxy_save_btn = QPushButton("Применить")
+        self.proxy_save_btn.setProperty("class", "GlassButton")
+        self.proxy_save_btn.setCursor(Qt.PointingHandCursor)
+        self.proxy_save_btn.setStyleSheet("padding: 6px 10px; font-size: 11px; font-weight: 700;")
+        self.proxy_save_btn.clicked.connect(self._save_proxy)
+        proxy_row.addWidget(self.proxy_save_btn)
+
+        self.proxy_clear_btn = QPushButton("✕")
+        self.proxy_clear_btn.setFixedSize(28, 28)
+        self.proxy_clear_btn.setCursor(Qt.PointingHandCursor)
+        self.proxy_clear_btn.setToolTip("Отключить прокси")
+        self.proxy_clear_btn.setProperty("class", "GlassButton")
+        self.proxy_clear_btn.setStyleSheet("padding: 0; font-size: 11px; font-weight: 700;")
+        self.proxy_clear_btn.clicked.connect(self._clear_proxy)
+        proxy_row.addWidget(self.proxy_clear_btn)
+        c2_layout.addLayout(proxy_row)
+
         container_layout.addWidget(card2)
 
         # --- Card 3: Служебные утилиты и обновления ---
@@ -468,8 +513,52 @@ class SettingsModal(DraggableMixin, WorkerDialog):
         if self._save_setting("acrylic_blur", bool(enabled)):
             self.blur_changed.emit(bool(enabled))
 
+    def _save_proxy(self, silent: bool = False):
+        raw = self.proxy_input.text().strip()
+        try:
+            cleaned = validate_proxy_url(raw)
+        except ValueError as exc:
+            if not silent:
+                self.util_status_lbl.setText(str(exc))
+                self.util_status_lbl.setStyleSheet("font-size: 11px; color: #EF4444; font-weight: 600;")
+                self.util_status_lbl.setVisible(True)
+            return False
+
+        if cleaned == settings.get("proxy_url", ""):
+            if not silent:
+                msg = (
+                    f"✓ Прокси активен: {mask_proxy_url(cleaned)} (DNS через прокси)"
+                    if cleaned else "✓ Прокси отключён"
+                )
+                self.util_status_lbl.setText(msg)
+                self.util_status_lbl.setStyleSheet("font-size: 11px; color: #4ADE80; font-weight: 600;")
+                self.util_status_lbl.setVisible(True)
+            return True
+
+        if self._save_setting("proxy_url", cleaned):
+            from core.downloader import MetadataWorker
+            with MetadataWorker._cache_lock:
+                MetadataWorker._cache.clear()
+            self.proxy_input.setText(cleaned)
+            if not silent:
+                msg = (
+                    f"✓ Прокси сохранён: {mask_proxy_url(cleaned)} (DNS через прокси)"
+                    if cleaned else "✓ Прокси отключён"
+                )
+                self.util_status_lbl.setText(msg)
+                self.util_status_lbl.setStyleSheet("font-size: 11px; color: #4ADE80; font-weight: 600;")
+                self.util_status_lbl.setVisible(True)
+            return True
+        return False
+
+    def _clear_proxy(self):
+        self.proxy_input.clear()
+        self._save_proxy()
+
     def done(self, result):
         self._commit_opacity()
+        if self.proxy_input.text().strip() != settings.get("proxy_url", ""):
+            self._save_proxy(silent=True)
         super().done(result)
 
     def _on_cookies_changed(self, idx):

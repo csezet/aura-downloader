@@ -14,7 +14,12 @@ from core.settings import settings
 from core.js_runtime import javascript_options
 from core.cookies_helper import get_cookies_config
 import json
-from core.http_utils import parse_content_length as _parse_content_length
+from core.http_utils import (
+    get_configured_proxy,
+    get_ytdlp_proxy_opts,
+    http_get,
+    parse_content_length as _parse_content_length,
+)
 from core.media_converter import (
     convert_to_gif, compress_to_target_size, crop_video, get_unique_path,
     get_unique_base_for_group, probe_video_stream, get_ffmpeg_path,
@@ -152,7 +157,8 @@ class MetadataWorker(QThread):
     def run(self):
         if self.is_cancelled:
             return
-        self._cache_key = (self.url, get_cookies_config())
+        proxy = get_configured_proxy()
+        self._cache_key = (self.url, get_cookies_config(), proxy) if proxy else (self.url, get_cookies_config())
         with self._cache_lock:
             cached = self._cache.get(self._cache_key)
         if cached and time.monotonic() - cached[0] < self.CACHE_TTL:
@@ -186,6 +192,7 @@ class MetadataWorker(QThread):
         parsed = urlsplit(self.url)
         query = parse_qs(parsed.query)
         is_playlist_url = '/playlist' in parsed.path or ('list' in query and 'v' not in query)
+        proxy_opts = get_ytdlp_proxy_opts()
         ydl_opts = {
             **javascript_options(),
             'quiet': True,
@@ -197,9 +204,10 @@ class MetadataWorker(QThread):
             'geo_bypass': True,
             'http_headers': DEFAULT_HTTP_HEADERS,
             'extractor_args': DEFAULT_EXTRACTOR_ARGS,
-            'socket_timeout': 8,
+            'socket_timeout': 15 if proxy_opts else 8,
             'extractor_retries': 1,
             'retries': 0,
+            **proxy_opts,
         }
         cookies = get_cookies_config()
         if cookies:
@@ -290,7 +298,8 @@ class MetadataWorker(QThread):
                     break
 
         extract_error = None
-        for attempt_no, try_opts in enumerate([ydl_opts, {**ydl_opts, 'proxy': ''}]):
+        attempts = [ydl_opts] if proxy_opts else [ydl_opts, {**ydl_opts, 'proxy': ''}]
+        for attempt_no, try_opts in enumerate(attempts):
             if info:
                 break
             if self.is_cancelled:
@@ -563,7 +572,7 @@ class DownloadWorker(QThread):
                 clean_title = sanitize_filename(title, fallback=default_title)
 
                 try:
-                    resp = requests.get(download_target, headers=headers, stream=True, timeout=25)
+                    resp = http_get(download_target, requests_mod=requests, headers=headers, stream=True, timeout=25)
                     resp.raise_for_status()
                     total_bytes = _parse_content_length(resp.headers)
                     downloaded_bytes = 0
@@ -668,6 +677,7 @@ class DownloadWorker(QThread):
             staging_dir = str(staging_session.path)
             out_template = os.path.join(staging_dir, '%(title)s [%(id)s].%(ext)s')
 
+            proxy_opts = get_ytdlp_proxy_opts()
             ydl_opts = {
                 **javascript_options(),
                 'outtmpl': out_template,
@@ -682,7 +692,8 @@ class DownloadWorker(QThread):
                 'geo_bypass': True,
                 'http_headers': DEFAULT_HTTP_HEADERS,
                 'extractor_args': DEFAULT_EXTRACTOR_ARGS,
-                'socket_timeout': 10,
+                'socket_timeout': 20 if proxy_opts else 10,
+                **proxy_opts,
             }
 
             cookies = get_cookies_config()
@@ -764,7 +775,8 @@ class DownloadWorker(QThread):
             info = None
             dl_err = None
             used_opts = ydl_opts
-            for attempt_no, cur_opts in enumerate([ydl_opts, {**ydl_opts, 'proxy': ''}]):
+            dl_attempts = [ydl_opts] if proxy_opts else [ydl_opts, {**ydl_opts, 'proxy': ''}]
+            for attempt_no, cur_opts in enumerate(dl_attempts):
                 if self.is_cancelled:
                     return
                 try:
@@ -1129,7 +1141,7 @@ class GalleryDownloadWorker(QThread):
 
             try:
                 req_headers = {**headers, **(item.get('http_headers') or {})}
-                resp = requests.get(download_url, headers=req_headers, stream=True, timeout=25)
+                resp = http_get(download_url, requests_mod=requests, headers=req_headers, stream=True, timeout=25)
                 resp.raise_for_status()
                 total_bytes = _parse_content_length(resp.headers)
                 downloaded_bytes = 0

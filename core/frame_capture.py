@@ -84,11 +84,14 @@ class FrameCaptureSession:
             import yt_dlp
             from core.downloader import DEFAULT_HTTP_HEADERS, DEFAULT_EXTRACTOR_ARGS
             from core.cookies_helper import get_cookies_config
+            from core.http_utils import get_ytdlp_proxy_opts
             from core.js_runtime import javascript_options
+            proxy_opts = get_ytdlp_proxy_opts()
             options = {**javascript_options(), 'quiet': True, 'no_warnings': True,
                        'noplaylist': True, 'format': 'bestvideo/best', 'skip_download': True,
-                       'socket_timeout': 8, 'retries': 0, 'extractor_retries': 1,
-                       'http_headers': DEFAULT_HTTP_HEADERS, 'extractor_args': DEFAULT_EXTRACTOR_ARGS}
+                       'socket_timeout': 15 if proxy_opts else 8, 'retries': 0, 'extractor_retries': 1,
+                       'http_headers': DEFAULT_HTTP_HEADERS, 'extractor_args': DEFAULT_EXTRACTOR_ARGS,
+                       **proxy_opts}
             cookies = get_cookies_config()
             if cookies:
                 options['cookiesfrombrowser'] = cookies

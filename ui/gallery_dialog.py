@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, Slot, QSize
 from PySide6.QtGui import QColor, QPixmap, QImage, QPainter, QPainterPath
 from assets.icons import get_svg_icon, get_svg_pixmap
-from core.http_utils import MAX_THUMBNAIL_BYTES, read_limited_response
+from core.http_utils import MAX_THUMBNAIL_BYTES, http_get, read_limited_response
 from core.workers import PooledWorker, start_worker
 from ui.common_widgets import CheckmarkBox, DraggableMixin
 from ui.worker_dialog import WorkerDialog
@@ -29,7 +29,7 @@ class ThumbnailLoader(PooledWorker):
                 'Referer': 'https://www.instagram.com/',
                 **self.headers,
             }
-            resp = requests.get(self.url, headers=headers, timeout=8, stream=True)
+            resp = http_get(self.url, requests_mod=requests, headers=headers, timeout=12, stream=True)
             if resp.status_code == 200 and not self.isInterruptionRequested():
                 data = read_limited_response(resp, MAX_THUMBNAIL_BYTES, self.isInterruptionRequested)
                 if data and not self.isInterruptionRequested():
