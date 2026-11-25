@@ -314,29 +314,15 @@ class SettingsModal(DraggableMixin, WorkerDialog):
 
         c2_layout.addLayout(dropdown_row)
 
-        # Subtitle row
-        sub_row = QHBoxLayout()
-        sub_row.setContentsMargins(0, 4, 0, 0)
-        lbl_sub = QLabel("Скачивать субтитры (при наличии: RU / EN)")
-        lbl_sub.setStyleSheet("color: #E4E4E7; font-size: 12px; font-weight: 600;")
-        sub_row.addWidget(lbl_sub, stretch=1)
+        # Cookies.txt file row (recommended for Chrome on Windows / YouTube)
+        lbl_cookies_file = QLabel("Файл cookies.txt (для Chrome / YouTube):")
+        lbl_cookies_file.setProperty("class", "SectionHeader")
+        c2_layout.addWidget(lbl_cookies_file)
 
-        self.sub_toggle = ToggleSwitch(checked=settings.get("download_subtitles", False))
-        self.sub_toggle.toggled.connect(lambda v: self._save_setting("download_subtitles", v))
-        sub_row.addWidget(self.sub_toggle)
-        c2_layout.addLayout(sub_row)
+        cookies_file_row = QHBoxLayout()
+        cookies_file_row.setSpacing(6)
 
-        # Proxy row
-        lbl_proxy = QLabel("Прокси (HTTP / SOCKS5, опционально):")
-        lbl_proxy.setProperty("class", "SectionHeader")
-        c2_layout.addWidget(lbl_proxy)
-
-        proxy_row = QHBoxLayout()
-        proxy_row.setSpacing(6)
-
-        self.proxy_input = QLineEdit(settings.get("proxy_url", ""))
-        self.proxy_input.setPlaceholderText("socks5://user:pass@host:port или http://127.0.0.1:10809")
-        self.proxy_input.setStyleSheet("""
+        line_edit_style = """
             QLineEdit {
                 background-color: rgba(0, 0, 0, 0.55);
                 border: 1px solid rgba(255, 255, 255, 0.12);
@@ -349,7 +335,61 @@ class SettingsModal(DraggableMixin, WorkerDialog):
             QLineEdit:focus {
                 border: 1px solid rgba(255, 255, 255, 0.32);
             }
-        """)
+        """
+
+        self.cookies_file_input = QLineEdit(settings.get("cookies_file", ""))
+        self.cookies_file_input.setReadOnly(True)
+        self.cookies_file_input.setPlaceholderText("Не выбран — экспорт Netscape cookies.txt работает при открытом Chrome")
+        self.cookies_file_input.setStyleSheet(line_edit_style)
+        cookies_file_row.addWidget(self.cookies_file_input, stretch=1)
+
+        self.cookies_file_browse_btn = QPushButton("Файл...")
+        self.cookies_file_browse_btn.setProperty("class", "GlassButton")
+        self.cookies_file_browse_btn.setCursor(Qt.PointingHandCursor)
+        self.cookies_file_browse_btn.setStyleSheet("padding: 6px 10px; font-size: 11px; font-weight: 700;")
+        self.cookies_file_browse_btn.clicked.connect(self._browse_cookies_file)
+        cookies_file_row.addWidget(self.cookies_file_browse_btn)
+
+        self.cookies_file_clear_btn = QPushButton("✕")
+        self.cookies_file_clear_btn.setFixedSize(28, 28)
+        self.cookies_file_clear_btn.setCursor(Qt.PointingHandCursor)
+        self.cookies_file_clear_btn.setToolTip("Убрать файл cookies.txt")
+        self.cookies_file_clear_btn.setProperty("class", "GlassButton")
+        self.cookies_file_clear_btn.setStyleSheet("padding: 0; font-size: 11px; font-weight: 700;")
+        self.cookies_file_clear_btn.clicked.connect(self._clear_cookies_file)
+        cookies_file_row.addWidget(self.cookies_file_clear_btn)
+        c2_layout.addLayout(cookies_file_row)
+
+        # Subtitle row
+        sub_row = QHBoxLayout()
+        sub_row.setContentsMargins(0, 4, 0, 0)
+        lbl_sub = QLabel("Скачивать субтитры (при наличии: RU / EN)")
+        lbl_sub.setStyleSheet("color: #E4E4E7; font-size: 12px; font-weight: 600;")
+        sub_row.addWidget(lbl_sub, stretch=1)
+
+        self.sub_toggle = ToggleSwitch(checked=settings.get("download_subtitles", False))
+        self.sub_toggle.toggled.connect(lambda v: self._save_setting("download_subtitles", v))
+        sub_row.addWidget(self.sub_toggle)
+        c2_layout.addLayout(sub_row)
+
+        # Proxy header + toggle row
+        proxy_header = QHBoxLayout()
+        proxy_header.setContentsMargins(0, 2, 0, 0)
+        lbl_proxy = QLabel("Прокси (HTTP / SOCKS5):")
+        lbl_proxy.setProperty("class", "SectionHeader")
+        proxy_header.addWidget(lbl_proxy, stretch=1)
+
+        self.proxy_toggle = ToggleSwitch(checked=settings.get("proxy_enabled", True))
+        self.proxy_toggle.toggled.connect(self._on_proxy_toggled)
+        proxy_header.addWidget(self.proxy_toggle)
+        c2_layout.addLayout(proxy_header)
+
+        proxy_row = QHBoxLayout()
+        proxy_row.setSpacing(6)
+
+        self.proxy_input = QLineEdit(settings.get("proxy_url", ""))
+        self.proxy_input.setPlaceholderText("socks5://user:pass@host:port или http://127.0.0.1:10809")
+        self.proxy_input.setStyleSheet(line_edit_style)
         self.proxy_input.returnPressed.connect(self._save_proxy)
         proxy_row.addWidget(self.proxy_input, stretch=1)
 
@@ -363,7 +403,7 @@ class SettingsModal(DraggableMixin, WorkerDialog):
         self.proxy_clear_btn = QPushButton("✕")
         self.proxy_clear_btn.setFixedSize(28, 28)
         self.proxy_clear_btn.setCursor(Qt.PointingHandCursor)
-        self.proxy_clear_btn.setToolTip("Отключить прокси")
+        self.proxy_clear_btn.setToolTip("Удалить адрес прокси")
         self.proxy_clear_btn.setProperty("class", "GlassButton")
         self.proxy_clear_btn.setStyleSheet("padding: 0; font-size: 11px; font-weight: 700;")
         self.proxy_clear_btn.clicked.connect(self._clear_proxy)
@@ -513,6 +553,25 @@ class SettingsModal(DraggableMixin, WorkerDialog):
         if self._save_setting("acrylic_blur", bool(enabled)):
             self.blur_changed.emit(bool(enabled))
 
+    def _clear_metadata_cache(self):
+        from core.downloader import MetadataWorker
+        with MetadataWorker._cache_lock:
+            MetadataWorker._cache.clear()
+
+    def _on_proxy_toggled(self, enabled: bool):
+        if self._save_setting("proxy_enabled", bool(enabled)):
+            self._clear_metadata_cache()
+            proxy = settings.get("proxy_url", "")
+            if enabled and proxy:
+                msg = f"✓ Прокси включён: {mask_proxy_url(proxy)}"
+            elif enabled:
+                msg = "✓ Прокси включён (введите адрес прокси)"
+            else:
+                msg = "✓ Прокси временно отключён"
+            self.util_status_lbl.setText(msg)
+            self.util_status_lbl.setStyleSheet("font-size: 11px; color: #4ADE80; font-weight: 600;")
+            self.util_status_lbl.setVisible(True)
+
     def _save_proxy(self, silent: bool = False):
         raw = self.proxy_input.text().strip()
         try:
@@ -525,6 +584,8 @@ class SettingsModal(DraggableMixin, WorkerDialog):
             return False
 
         if cleaned == settings.get("proxy_url", ""):
+            if cleaned and not self.proxy_toggle.isChecked():
+                self.proxy_toggle.setChecked(True)
             if not silent:
                 msg = (
                     f"✓ Прокси активен: {mask_proxy_url(cleaned)} (DNS через прокси)"
@@ -536,10 +597,10 @@ class SettingsModal(DraggableMixin, WorkerDialog):
             return True
 
         if self._save_setting("proxy_url", cleaned):
-            from core.downloader import MetadataWorker
-            with MetadataWorker._cache_lock:
-                MetadataWorker._cache.clear()
+            self._clear_metadata_cache()
             self.proxy_input.setText(cleaned)
+            if cleaned and not self.proxy_toggle.isChecked():
+                self.proxy_toggle.setChecked(True)
             if not silent:
                 msg = (
                     f"✓ Прокси сохранён: {mask_proxy_url(cleaned)} (DNS через прокси)"
@@ -555,6 +616,30 @@ class SettingsModal(DraggableMixin, WorkerDialog):
         self.proxy_input.clear()
         self._save_proxy()
 
+    def _browse_cookies_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Выберите файл cookies.txt (формат Netscape)",
+            os.path.dirname(settings.get("cookies_file", "")) or str(Path.home()),
+            "Cookies (*.txt);;Все файлы (*.*)",
+        )
+        if not path:
+            return
+        if self._save_setting("cookies_file", path):
+            self._clear_metadata_cache()
+            self.cookies_file_input.setText(path)
+            self.util_status_lbl.setText(f"✓ Файл cookies подключён: {os.path.basename(path)}")
+            self.util_status_lbl.setStyleSheet("font-size: 11px; color: #4ADE80; font-weight: 600;")
+            self.util_status_lbl.setVisible(True)
+
+    def _clear_cookies_file(self):
+        if self._save_setting("cookies_file", ""):
+            self._clear_metadata_cache()
+            self.cookies_file_input.clear()
+            self.util_status_lbl.setText("✓ Файл cookies.txt отключён")
+            self.util_status_lbl.setStyleSheet("font-size: 11px; color: #4ADE80; font-weight: 600;")
+            self.util_status_lbl.setVisible(True)
+
     def done(self, result):
         self._commit_opacity()
         if self.proxy_input.text().strip() != settings.get("proxy_url", ""):
@@ -563,7 +648,8 @@ class SettingsModal(DraggableMixin, WorkerDialog):
 
     def _on_cookies_changed(self, idx):
         browser_id = self.cookies_combo.itemData(idx)
-        self._save_setting("browser_cookies", browser_id)
+        if self._save_setting("browser_cookies", browser_id):
+            self._clear_metadata_cache()
 
     def _on_audio_format_changed(self, idx):
         formats = ["mp3", "flac", "m4a", "opus", "wav"]

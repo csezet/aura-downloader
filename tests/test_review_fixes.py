@@ -20,6 +20,11 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from assets.styles import get_stylesheet
 from core.app_logging import LogStream, PrivateFormatter, cleanup_old_logs
 from core.clipboard import extract_supported_url
+from core.cookies_helper import (
+    format_cookie_auth_error,
+    get_ytdlp_cookies_opts,
+    is_cookie_db_error,
+)
 from core.downloader import (
     DownloadWorker,
     MetadataWorker,
@@ -30,6 +35,7 @@ from core.downloader import (
 )
 from core.frame_capture import FrameCaptureSession
 from core.http_utils import (
+    get_configured_proxy,
     http_get,
     mask_proxy_url,
     normalize_proxy_url,
@@ -1086,6 +1092,113 @@ class TestUIFixes(unittest.TestCase):
 
                 modal._clear_proxy()
                 self.assertEqual(settings.get("proxy_url", ""), "")
+        finally:
+            modal.close()
+            modal.deleteLater()
+
+    def test_cookie_db_fallback_cookies_file_priority_and_proxy_toggle(self):
+        self.assertTrue(is_cookie_db_error("ERROR: Could not copy Chrome cookie database. See https://github.com/yt-dlp/yt-dlp/issues/7271"))
+        self.assertTrue(is_cookie_db_error("Failed to decrypt with DPAPI"))
+        self.assertFalse(is_cookie_db_error("HTTP Error 404"))
+
+        msg = format_cookie_auth_error(
+            "Sign in to confirm you're not a bot",
+            cookie_db_failed=True,
+            has_proxy=True,
+        )
+        self.assertIn("cookies.txt", msg)
+        self.assertIn("Firefox", msg)
+
+        self.assertEqual(
+            get_ytdlp_cookies_opts(("chrome",), "C:/tmp/cookies.txt"),
+            {"cookiefile": "C:/tmp/cookies.txt"},
+        )
+        self.assertEqual(
+            get_ytdlp_cookies_opts(("firefox",), None),
+            {"cookiesfrombrowser": ("firefox",)},
+        )
+
+        # proxy_enabled=False disables proxy without erasing proxy_url
+        with patch.object(settings, "get", side_effect=lambda k, d=None: (
+            False if k == "proxy_enabled" else ("socks5://u:p@1.2.3.4:8000" if k == "proxy_url" else d)
+        )):
+            self.assertEqual(get_configured_proxy(), "")
+
+        # MetadataWorker automatically retries without cookiesfrombrowser when Chrome DB is locked
+        MetadataWorker._cache.clear()
+        worker = MetadataWorker("https://www.youtube.com/watch?v=test123")
+        ready, errors = [], []
+        worker.info_ready.connect(ready.append)
+        worker.info_error.connect(errors.append)
+
+        seen_opts = []
+
+        class FakeYDL:
+            def __init__(self, opts):
+                self.opts = opts
+                seen_opts.append(dict(opts))
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def extract_info(self, url, download=False, process=False):
+                if "cookiesfrombrowser" in self.opts:
+                    raise RuntimeError("ERROR: Could not copy Chrome cookie database")
+                return {"title": "Public Clip", "uploader": "Tester", "duration": 10, "formats": []}
+
+        with patch("core.downloader.get_cookies_config", return_value=("chrome",)), \
+             patch("core.downloader.get_cookies_file", return_value=None), \
+             patch("core.downloader.yt_dlp.YoutubeDL", FakeYDL):
+            worker.run()
+        self.assertEqual(errors, [])
+        self.assertEqual(len(ready), 1)
+        self.assertEqual(ready[0]["title"], "Public Clip")
+        self.assertEqual(len(seen_opts), 2)
+        self.assertIn("cookiesfrombrowser", seen_opts[0])
+        self.assertNotIn("cookiesfrombrowser", seen_opts[1])
+
+        # When fallback STILL hits YouTube bot check, error gives clear Russian guidance
+        MetadataWorker._cache.clear()
+        worker2 = MetadataWorker("https://www.youtube.com/watch?v=bot123")
+        errors2 = []
+        worker2.info_error.connect(errors2.append)
+
+        class FakeBotYDL(FakeYDL):
+            def extract_info(self, url, download=False, process=False):
+                if "cookiesfrombrowser" in self.opts:
+                    raise RuntimeError("ERROR: Could not copy Chrome cookie database")
+                raise RuntimeError("Sign in to confirm you're not a bot")
+
+        with patch("core.downloader.get_cookies_config", return_value=("chrome",)), \
+             patch("core.downloader.get_cookies_file", return_value=None), \
+             patch("core.downloader.yt_dlp.YoutubeDL", FakeBotYDL):
+            worker2.run()
+        self.assertEqual(len(errors2), 1)
+        self.assertIn("cookies.txt", errors2[0])
+
+        # SettingsModal proxy_toggle & cookies_file save/clear
+        modal = SettingsModal()
+        try:
+            with patch.object(settings, "save", return_value=True):
+                modal._on_proxy_toggled(False)
+                self.assertFalse(settings.get("proxy_enabled", True))
+                modal._on_proxy_toggled(True)
+                self.assertTrue(settings.get("proxy_enabled", False))
+
+                with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as tf:
+                    cookie_path = tf.name
+                try:
+                    with patch("ui.settings_modal.QFileDialog.getOpenFileName", return_value=(cookie_path, "")):
+                        modal._browse_cookies_file()
+                    self.assertEqual(settings.get("cookies_file", ""), cookie_path)
+                    self.assertEqual(modal.cookies_file_input.text(), cookie_path)
+                    modal._clear_cookies_file()
+                    self.assertEqual(settings.get("cookies_file", ""), "")
+                finally:
+                    os.unlink(cookie_path)
         finally:
             modal.close()
             modal.deleteLater()

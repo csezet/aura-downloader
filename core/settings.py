@@ -22,6 +22,8 @@ DEFAULT_SETTINGS = {
     "acrylic_blur": True,
     "glass_opacity": 0.45,
     "browser_cookies": "none",
+    "cookies_file": "",
+    "proxy_enabled": True,
     "proxy_url": "",
     "sound_notification": True,
     "notifications_enabled": True,
@@ -84,6 +86,9 @@ def _validate_settings(data):
                 result[key] = value
         elif key == "proxy_url":
             if _valid_proxy_url(value):
+                result[key] = value
+        elif key == "cookies_file":
+            if value == "" or _valid_path(value):
                 result[key] = value
         elif type(value) is type(default):
             result[key] = value

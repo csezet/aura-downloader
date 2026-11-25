@@ -59,44 +59,60 @@ def resolve_tiktok_post(url, is_cancelled_cb=lambda: False):
         return f'https://www.tiktok.com{parsed.path.rstrip("/")}', None
     if not match and TikTokIE.suitable(url):
         return url, None
-    from core.cookies_helper import get_cookies_config
+    from core.cookies_helper import (
+        get_cookies_config,
+        get_cookies_file,
+        get_ytdlp_cookies_opts,
+        is_cookie_db_error,
+        strip_cookie_opts,
+    )
     from core.http_utils import get_ytdlp_proxy_opts
     from core.js_runtime import javascript_options
     proxy_opts = get_ytdlp_proxy_opts()
     options = {**javascript_options(), 'quiet': True, 'no_warnings': True,
                'socket_timeout': 15 if proxy_opts else 8, 'retries': 0, 'extractor_retries': 1,
                'noplaylist': True, **proxy_opts}
-    cookies = get_cookies_config()
-    if cookies:
-        options['cookiesfrombrowser'] = cookies
-    with yt_dlp.YoutubeDL(options) as downloader:
-        if not match:
-            response = downloader.urlopen(HEADRequest(url, headers={'User-Agent': 'facebookexternalhit/1.1'}))
-            try:
-                url = response.url
-            finally:
-                response.close()
+    cookie_opts = get_ytdlp_cookies_opts(get_cookies_config(), get_cookies_file())
+    if cookie_opts:
+        options.update(cookie_opts)
+
+    def _run_with_options(opts):
+        nonlocal url, parsed, match
+        with yt_dlp.YoutubeDL(opts) as downloader:
+            if not match:
+                response = downloader.urlopen(HEADRequest(url, headers={'User-Agent': 'facebookexternalhit/1.1'}))
+                try:
+                    url = response.url
+                finally:
+                    response.close()
+                if is_cancelled_cb():
+                    return url, None
+                if not is_tiktok_url(url):
+                    raise ValueError('Короткая ссылка TikTok ведёт на другой сайт.')
+                parsed = urlsplit(url)
+                match = POST_PATH.fullmatch(parsed.path)
+            if not match:
+                raise ValueError('Вставьте ссылку на конкретное видео или фото TikTok.')
+            canonical = f'https://www.tiktok.com{parsed.path.rstrip("/")}'
+            if match['kind'].lower() != 'photo' or is_cancelled_cb():
+                return canonical, None
+            # The photo route only renders an application shell. The video route for
+            # the same public post includes the original imagePost data in its SSR.
+            webpage = f'https://www.tiktok.com/@{match["author"]}/video/{match["id"]}'
+            post, status = TikTokIE(downloader)._extract_web_data_and_status(webpage, match['id'])
             if is_cancelled_cb():
-                return url, None
-            if not is_tiktok_url(url):
-                raise ValueError('Короткая ссылка TikTok ведёт на другой сайт.')
-            parsed = urlsplit(url)
-            match = POST_PATH.fullmatch(parsed.path)
-        if not match:
-            raise ValueError('Вставьте ссылку на конкретное видео или фото TikTok.')
-        canonical = f'https://www.tiktok.com{parsed.path.rstrip("/")}'
-        if match['kind'].lower() != 'photo' or is_cancelled_cb():
-            return canonical, None
-        # The photo route only renders an application shell. The video route for
-        # the same public post includes the original imagePost data in its SSR.
-        webpage = f'https://www.tiktok.com/@{match["author"]}/video/{match["id"]}'
-        post, status = TikTokIE(downloader)._extract_web_data_and_status(webpage, match['id'])
-        if is_cancelled_cb():
-            return canonical, None
-        if status in (10216, 10222):
-            raise ValueError('Фото TikTok доступны только после входа. Выберите Cookies браузера в настройках.')
-        if status == 10204:
-            raise ValueError('TikTok ограничил доступ с этого подключения. Попробуйте позже.')
-        if status != 0 or not post:
-            raise ValueError('Не удалось получить фотографии TikTok. Проверьте доступность публикации в браузере.')
-        return canonical, gallery_from_post(post, canonical)
+                return canonical, None
+            if status in (10216, 10222):
+                raise ValueError('Фото TikTok доступны только после входа. Выберите Cookies браузера или cookies.txt в настройках.')
+            if status == 10204:
+                raise ValueError('TikTok ограничил доступ с этого подключения. Попробуйте позже.')
+            if status != 0 or not post:
+                raise ValueError('Не удалось получить фотографии TikTok. Проверьте доступность публикации в браузере.')
+            return canonical, gallery_from_post(post, canonical)
+
+    try:
+        return _run_with_options(options)
+    except Exception as exc:
+        if is_cookie_db_error(exc) and 'cookiesfrombrowser' in options:
+            return _run_with_options(strip_cookie_opts(options))
+        raise

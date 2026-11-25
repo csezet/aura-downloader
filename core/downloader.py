@@ -12,7 +12,14 @@ import yt_dlp
 from yt_dlp.extractor.instagram import InstagramIE
 from core.settings import settings
 from core.js_runtime import javascript_options
-from core.cookies_helper import get_cookies_config
+from core.cookies_helper import (
+    format_cookie_auth_error,
+    get_cookies_config,
+    get_cookies_file,
+    get_ytdlp_cookies_opts,
+    is_cookie_db_error,
+    strip_cookie_opts,
+)
 import json
 from core.http_utils import (
     get_configured_proxy,
@@ -158,7 +165,11 @@ class MetadataWorker(QThread):
         if self.is_cancelled:
             return
         proxy = get_configured_proxy()
-        self._cache_key = (self.url, get_cookies_config(), proxy) if proxy else (self.url, get_cookies_config())
+        cookies_file = get_cookies_file()
+        if proxy or cookies_file:
+            self._cache_key = (self.url, get_cookies_config(), cookies_file, proxy)
+        else:
+            self._cache_key = (self.url, get_cookies_config())
         with self._cache_lock:
             cached = self._cache.get(self._cache_key)
         if cached and time.monotonic() - cached[0] < self.CACHE_TTL:
@@ -210,23 +221,24 @@ class MetadataWorker(QThread):
             **proxy_opts,
         }
         cookies = get_cookies_config()
-        if cookies:
-            ydl_opts['cookiesfrombrowser'] = cookies
+        cookies_file = get_cookies_file()
+        cookie_opts = get_ytdlp_cookies_opts(cookies, cookies_file)
+        if cookie_opts:
+            ydl_opts.update(cookie_opts)
 
         info = None
+        cookie_db_failed = False
         # Extract Instagram once; reuse video metadata instead of extracting it again.
         if 'instagram.com' in self.url.lower() or 'instagr.am' in self.url.lower():
             clean_ig_url = re.sub(r'\?.*$', '', self.url)
             urls_to_try = [clean_ig_url]
 
             for try_url in urls_to_try:
-                for with_cookies in ([True, False] if cookies else [False]):
+                for with_cookies in ([True, False] if cookie_opts else [False]):
                     if self.is_cancelled:
                         return
                     try:
-                        cur_opts = dict(ydl_opts)
-                        if not with_cookies and 'cookiesfrombrowser' in cur_opts:
-                            del cur_opts['cookiesfrombrowser']
+                        cur_opts = dict(ydl_opts) if with_cookies else strip_cookie_opts(ydl_opts)
                         with yt_dlp.YoutubeDL(cur_opts) as ydl_inst:
                             ie = InstagramIE(ydl_inst)
                             info = ie.extract(try_url)
@@ -299,9 +311,10 @@ class MetadataWorker(QThread):
 
         extract_error = None
         attempts = [ydl_opts] if proxy_opts else [ydl_opts, {**ydl_opts, 'proxy': ''}]
-        for attempt_no, try_opts in enumerate(attempts):
-            if info:
-                break
+        idx = 0
+        while idx < len(attempts) and not info:
+            try_opts = attempts[idx]
+            idx += 1
             if self.is_cancelled:
                 return
             try:
@@ -314,8 +327,14 @@ class MetadataWorker(QThread):
                         break
             except Exception as e:
                 extract_error = e
+                if is_cookie_db_error(e) and 'cookiesfrombrowser' in try_opts:
+                    cookie_db_failed = True
+                    fallback_opts = strip_cookie_opts(try_opts)
+                    attempts = [fallback_opts] if proxy_opts else [fallback_opts, {**fallback_opts, 'proxy': ''}]
+                    idx = 0
+                    continue
                 err_str = str(e).lower()
-                if attempt_no == 0 and any(keyword in err_str for keyword in ['ssl', 'proxy', 'tunnel', 'connection refused', 'timed out']):
+                if idx == 1 and len(attempts) > 1 and any(keyword in err_str for keyword in ['ssl', 'proxy', 'tunnel', 'connection refused', 'timed out']):
                     continue
                 break
 
@@ -326,11 +345,11 @@ class MetadataWorker(QThread):
             if "Unsupported URL" in err_msg:
                 err_msg = "Неподдерживаемая ссылка или ресурс недоступен."
             elif "Private video" in err_msg:
-                err_msg = "Приватное видео (включите Cookies браузера в настройках)."
-            elif "Sign in" in err_msg or "login" in err_msg.lower():
-                err_msg = "Требуется авторизация (включите Cookies браузера в настройках)."
+                err_msg = "Приватное видео (включите Cookies браузера или выберите cookies.txt в настройках)."
+            elif is_cookie_db_error(err_msg) or "sign in" in err_msg.lower() or "login" in err_msg.lower() or "confirm you" in err_msg.lower():
+                err_msg = format_cookie_auth_error(err_msg, cookie_db_failed=cookie_db_failed, has_proxy=bool(proxy_opts))
             elif "rate-limit" in err_msg.lower() or "429" in err_msg:
-                err_msg = "Ограничение частоты запросов. Попробуйте через минуту или включите Cookies."
+                err_msg = "Ограничение частоты запросов. Попробуйте через минуту или укажите cookies.txt."
             self.info_error.emit(err_msg)
             return
 
@@ -697,8 +716,10 @@ class DownloadWorker(QThread):
             }
 
             cookies = get_cookies_config()
-            if cookies:
-                ydl_opts['cookiesfrombrowser'] = cookies
+            cookies_file = get_cookies_file()
+            cookie_opts = get_ytdlp_cookies_opts(cookies, cookies_file)
+            if cookie_opts:
+                ydl_opts.update(cookie_opts)
 
             ffmpeg_exe = get_ffmpeg_path()
             if ffmpeg_exe and (shutil.which(ffmpeg_exe) or os.path.isfile(ffmpeg_exe)):
@@ -774,9 +795,13 @@ class DownloadWorker(QThread):
 
             info = None
             dl_err = None
+            cookie_db_failed = False
             used_opts = ydl_opts
             dl_attempts = [ydl_opts] if proxy_opts else [ydl_opts, {**ydl_opts, 'proxy': ''}]
-            for attempt_no, cur_opts in enumerate(dl_attempts):
+            dl_idx = 0
+            while dl_idx < len(dl_attempts):
+                cur_opts = dl_attempts[dl_idx]
+                dl_idx += 1
                 if self.is_cancelled:
                     return
                 try:
@@ -787,9 +812,17 @@ class DownloadWorker(QThread):
                             break
                 except Exception as e:
                     dl_err = e
-                    err_str = str(e).lower()
-                    if attempt_no == 0 and any(keyword in err_str for keyword in ['ssl', 'proxy', 'tunnel', 'connection refused', 'timed out']):
+                    if is_cookie_db_error(e) and 'cookiesfrombrowser' in cur_opts:
+                        cookie_db_failed = True
+                        fallback_opts = strip_cookie_opts(cur_opts)
+                        dl_attempts = [fallback_opts] if proxy_opts else [fallback_opts, {**fallback_opts, 'proxy': ''}]
+                        dl_idx = 0
                         continue
+                    err_str = str(e).lower()
+                    if dl_idx == 1 and len(dl_attempts) > 1 and any(keyword in err_str for keyword in ['ssl', 'proxy', 'tunnel', 'connection refused', 'timed out']):
+                        continue
+                    if cookie_db_failed or is_cookie_db_error(e) or any(k in err_str for k in ('sign in', 'confirm you', 'login', 'not a bot')):
+                        raise Exception(format_cookie_auth_error(str(e), cookie_db_failed=cookie_db_failed, has_proxy=bool(proxy_opts))) from e
                     raise e
 
             if not info:

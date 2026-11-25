@@ -22,7 +22,13 @@ def choose_preview_format(formats):
 
 def resolve_preview(url, is_cancelled_cb):
     import yt_dlp
-    from core.cookies_helper import get_cookies_config
+    from core.cookies_helper import (
+        get_cookies_config,
+        get_cookies_file,
+        get_ytdlp_cookies_opts,
+        is_cookie_db_error,
+        strip_cookie_opts,
+    )
     from core.downloader import DEFAULT_HTTP_HEADERS, DEFAULT_EXTRACTOR_ARGS
     from core.http_utils import get_ytdlp_proxy_opts
     from core.js_runtime import javascript_options
@@ -36,13 +42,24 @@ def resolve_preview(url, is_cancelled_cb):
                'extractor_retries': 1, 'retries': 0,
                'http_headers': DEFAULT_HTTP_HEADERS, 'extractor_args': DEFAULT_EXTRACTOR_ARGS,
                **proxy_opts}
-    cookies = get_cookies_config()
-    if cookies:
-        options['cookiesfrombrowser'] = cookies
-    with yt_dlp.YoutubeDL(options) as downloader:
-        info = downloader.extract_info(url, download=False, process=False)
-        if info and info.get('_type') in ('url', 'url_transparent'):
-            info = downloader.process_ie_result(info, download=False)
+    cookie_opts = get_ytdlp_cookies_opts(get_cookies_config(), get_cookies_file())
+    if cookie_opts:
+        options.update(cookie_opts)
+
+    def _extract_preview(opts):
+        with yt_dlp.YoutubeDL(opts) as downloader:
+            data = downloader.extract_info(url, download=False, process=False)
+            if data and data.get('_type') in ('url', 'url_transparent'):
+                data = downloader.process_ie_result(data, download=False)
+            return data
+
+    try:
+        info = _extract_preview(options)
+    except Exception as exc:
+        if is_cookie_db_error(exc) and 'cookiesfrombrowser' in options:
+            info = _extract_preview(strip_cookie_opts(options))
+        else:
+            raise
     if is_cancelled_cb():
         return None
     if not info:

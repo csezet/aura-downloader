@@ -83,7 +83,13 @@ class FrameCaptureSession:
             status('Получение видеопотока в лучшем качестве…')
             import yt_dlp
             from core.downloader import DEFAULT_HTTP_HEADERS, DEFAULT_EXTRACTOR_ARGS
-            from core.cookies_helper import get_cookies_config
+            from core.cookies_helper import (
+                get_cookies_config,
+                get_cookies_file,
+                get_ytdlp_cookies_opts,
+                is_cookie_db_error,
+                strip_cookie_opts,
+            )
             from core.http_utils import get_ytdlp_proxy_opts
             from core.js_runtime import javascript_options
             proxy_opts = get_ytdlp_proxy_opts()
@@ -92,18 +98,30 @@ class FrameCaptureSession:
                        'socket_timeout': 15 if proxy_opts else 8, 'retries': 0, 'extractor_retries': 1,
                        'http_headers': DEFAULT_HTTP_HEADERS, 'extractor_args': DEFAULT_EXTRACTOR_ARGS,
                        **proxy_opts}
-            cookies = get_cookies_config()
-            if cookies:
-                options['cookiesfrombrowser'] = cookies
-            with yt_dlp.YoutubeDL(options) as downloader:
-                info = downloader.extract_info(url, download=False)
-                if not info or not info.get('url') or info.get('vcodec') == 'none':
-                    raise ValueError('Сайт не предоставил видеопоток для сохранения кадра.')
-                media_url = info['url']
-                headers.update(info.get('http_headers') or {})
-                cookie_header = downloader.cookiejar.get_cookie_header(media_url)
-                if cookie_header:
-                    headers['Cookie'] = cookie_header
+            cookie_opts = get_ytdlp_cookies_opts(get_cookies_config(), get_cookies_file())
+            if cookie_opts:
+                options.update(cookie_opts)
+
+            def _extract_stream(opts):
+                with yt_dlp.YoutubeDL(opts) as downloader:
+                    info = downloader.extract_info(url, download=False)
+                    if not info or not info.get('url') or info.get('vcodec') == 'none':
+                        raise ValueError('Сайт не предоставил видеопоток для сохранения кадра.')
+                    m_url = info['url']
+                    extra_headers = dict(info.get('http_headers') or {})
+                    cookie_header = downloader.cookiejar.get_cookie_header(m_url)
+                    if cookie_header:
+                        extra_headers['Cookie'] = cookie_header
+                    return m_url, extra_headers
+
+            try:
+                media_url, extra_headers = _extract_stream(options)
+            except Exception as exc:
+                if is_cookie_db_error(exc) and 'cookiesfrombrowser' in options:
+                    media_url, extra_headers = _extract_stream(strip_cookie_opts(options))
+                else:
+                    raise
+            headers.update(extra_headers)
         if cancelled():
             raise CaptureCancelled()
         network = media_url.lower().startswith(('https://', 'http://'))

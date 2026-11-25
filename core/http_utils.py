@@ -79,6 +79,8 @@ def get_configured_proxy(remote_dns: bool = True) -> str:
     """Return normalized proxy URL from application settings, or '' if disabled."""
     try:
         from core.settings import settings
+        if not settings.get("proxy_enabled", True):
+            return ""
         raw = settings.get("proxy_url", "")
         if not raw:
             return ""
